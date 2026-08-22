@@ -1,11 +1,15 @@
-# workspace —— 任务 skill 锻造工作空间
+# workspace —— 已迁移到 /data/workspace
 
-每接到一个大型综合任务，按 `skills/task-skill-forge` 元 skill 的五阶段流程，在此建一个 `<task-slug>/` 目录：
+**注意**：工作空间已迁移到 100G 数据盘，真实路径是 **`/data/workspace/`**，本目录只保留本说明，不再存放任务产物。
+
+原因：系统盘仅 20G，任务工作空间（交付件、留档、复盘档案）统一放数据盘避免撑爆系统盘。约定见 `skills/task-skill-forge/SKILL.md` 的「存储盘约定」一节。
+
+每个任务在 `/data/workspace/` 下建一个 `<task-slug>/` 目录：
 
 ```
-workspace/<task-slug>/
+/data/workspace/<task-slug>/
 ├── 01_调研报告.md      # 阶段一
-├── 02_交付件定义.md    # 阶段二（阶段三回补中间交付件）
+├── 02_交付件定义.md    # 阶段二（阶段三回补中间交付件；存档位置必填）
 ├── 03_流程设计.md      # 阶段三
 ├── 04_分工方案.md      # 阶段四
 ├── 交付件规范/         # 阶段五：每个交付件的格式与内容规范
