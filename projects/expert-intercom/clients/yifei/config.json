@@ -1,0 +1,33 @@
+{
+  "hub_url": "http://115.190.64.190:8765",
+  "token": "env:INTERCOM_TOKEN_YIFEI",
+  "agent_name": "yifei",
+  "conversations": [
+    "grp_experts",
+    "dm_yifei"
+  ],
+  "data_dir": "./data",
+  "heartbeat_interval": 30,
+  "session_idle_timeout": 600,
+  "stop_cooldown": 60,
+  "backup_threshold": 300,
+  "alert_throttle": 1800,
+  "human_names": [],
+  "context_lines": 20,
+  "passive_listen": true,
+  "responder": {
+    "mode": "echo",
+    "claude_cmd": "claude",
+    "claude_args": [
+      "--dangerously-skip-permissions",
+      "-p"
+    ],
+    "claude_timeout": 120
+  },
+  "feishu": {
+    "enabled": true,
+    "credentials_path": "/opt/claude-plugins/claude-channel-feishu/config.json",
+    "chat_id": "",
+    "api_base": "https://open.feishu.cn"
+  }
+}

@@ -1,0 +1,29 @@
+# expert-intercom 亦菲端 systemd unit（manager 机）
+# 安装步骤（需要 sudo，详见 README.md）：
+#   sudo cp yifei-intercom.service /etc/systemd/system/
+#   sudo install -d -m 700 /etc/expert-intercom
+#   sudo install -m 600 /dev/null /etc/expert-intercom/yifei.env
+#   echo 'INTERCOM_TOKEN_YIFEI=<亦菲端 token>' | sudo tee /etc/expert-intercom/yifei.env
+#   sudo systemctl daemon-reload && sudo systemctl enable --now yifei-intercom
+[Unit]
+Description=expert-intercom yifei endpoint (F3)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=manager
+Group=manager
+WorkingDirectory=/data/workspace/expert-intercom/clients/yifei
+EnvironmentFile=/etc/expert-intercom/yifei.env
+# venv 路径按实际部署调整；websockets 为唯一第三方依赖
+ExecStart=/data/workspace/expert-intercom/deploy/hub/venv/bin/python client.py
+Restart=always
+RestartSec=5
+# 进程被杀（kill -9 / OOM）后 systemd 负责拉起；协议层断线由 client.py 自身 R6.3 重连
+NoNewPrivileges=true
+ProtectSystem=full
+ReadWritePaths=/data/workspace/expert-intercom/clients/yifei/data
+
+[Install]
+WantedBy=multi-user.target

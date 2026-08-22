@@ -1,0 +1,26 @@
+# expert-intercom Linux 专家端 systemd unit（模板）
+# 安装步骤（需要 sudo，详见 README.md《专家自助接入手册》）：
+#   sudo cp expert-intercom.service /etc/systemd/system/
+#   sudo install -d -m 700 /etc/expert-intercom
+#   echo 'INTERCOM_TOKEN=<你的 token>' | sudo tee /etc/expert-intercom/expert.env
+#   sudo chmod 600 /etc/expert-intercom/expert.env
+#   按需修改下方 User / WorkingDirectory / ExecStart
+#   sudo systemctl daemon-reload && sudo systemctl enable --now expert-intercom
+[Unit]
+Description=expert-intercom linux expert endpoint (F3)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 改成实际运行用户与部署路径
+User=expert
+WorkingDirectory=/opt/expert-intercom
+EnvironmentFile=/etc/expert-intercom/expert.env
+ExecStart=/opt/expert-intercom/venv/bin/python client.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
