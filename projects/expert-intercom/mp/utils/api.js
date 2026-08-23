@@ -23,7 +23,9 @@ function request({ method = 'GET', path, data, timeout = 20000, responseType }) 
         }
       },
       fail(err) {
-        reject({ status: 0, code: 'NETWORK', message: '网络不可用' });
+        // F7.2：打出 wx.request 原始错误（真机 vConsole 诊断用），并带 errMsg 供上层区分白名单/TLS/超时
+        console.error('[api]', method, path, 'fail:', JSON.stringify(err));
+        reject({ status: 0, code: 'NETWORK', message: '网络不可用', errMsg: err.errMsg });
       },
     });
   });
