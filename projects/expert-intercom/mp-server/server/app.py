@@ -55,13 +55,12 @@ def require_agent(handler):
 
 
 def check_conv_visible(request, conversation_id):
-    """可见性红线（照搬 F1 §5.2 语义）：无 dm scope 的 token 碰 dm_yifei 一律 403。"""
+    """可见性红线（F1 v1.3 §5.2 会话成员制语义，经 HubWSBridge.conv_visible 统一判定）：
+    role=gege 全会话可见（含各 dm_<expert>）；其余 token dm_yifei 需 dm scope、
+    dm_<expert> 一律 403、grp_* 需 group scope。"""
     agent = request["agent"]
-    if conversation_id == DM_CONV:
-        return "dm" in agent["scope"]
-    if conversation_id.startswith("grp_"):
-        return "group" in agent["scope"]
-    return False
+    return HubWSBridge.conv_visible(agent.get("role", ""), agent.get("scope") or [],
+                                    conversation_id)
 
 
 # ---------- 对话 API（桥接 hub F4） ----------
@@ -191,7 +190,7 @@ async def ws_handler(request):
     ws = web.WebSocketResponse(heartbeat=30)
     await ws.prepare(request)
     bridge = request.app["bridge"]
-    bridge.add_subscriber(ws, agent["scope"])
+    bridge.add_subscriber(ws, agent)
     await ws.send_json({
         "op": "hello", "agent": agent["name"],
         "last_seq": bridge.last_seq, "hub_connected": bridge.connected,

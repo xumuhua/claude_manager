@@ -44,10 +44,13 @@ async def hub_request(cfg, method, path, params=None, json_body=None):
 
 
 class HubWSBridge:
-    """与 hub 的持久 WS 连接：订阅 grp_experts + dm_yifei，deliver 帧广播给本地 WS 客户端。
+    """与 hub 的持久 WS 连接：订阅 hub 侧可见的全部会话（gege token → 全会话），
+    deliver 帧按 mp token 可见性广播给本地 WS 客户端。
 
     断线按 F1 R6.3 退避重连（5s→10s→30s→60s 封顶），重连后上报 last_seq 触发补发。
     本地 last_seq 持久化到文件（R6.5 同语义，进程重启不回退）。
+    v1.3：订阅列表每次连接时经 GET /conversations 动态拉取（hub 侧 SIGHUP
+    新增会话后，bridge 下次重连即自动纳入订阅）。
     """
 
     def __init__(self, cfg, state_path):
@@ -56,7 +59,7 @@ class HubWSBridge:
         self.last_seq = self._load_last_seq()
         self.hub_seq = 0
         self.connected = False
-        self._subscribers = set()  # 本地 WS 客户端: set of (ws_response, scope_set)
+        self._subscribers = set()  # 本地 WS 客户端: set of (ws_response, agent_frozen)
         self._task = None
 
     def _load_last_seq(self):
@@ -73,24 +76,38 @@ class HubWSBridge:
         except OSError as e:
             log.error("last_seq 落盘失败: %s", e)
 
-    def add_subscriber(self, ws, scope):
-        self._subscribers.add((ws, frozenset(scope)))
+    def add_subscriber(self, ws, agent):
+        # agent = mp token 登记 dict（name/role/scope）；冻结为可哈希二元组
+        self._subscribers.add((ws, (agent.get("role", ""), frozenset(agent.get("scope") or []))))
 
     def remove_subscriber(self, ws):
-        self._subscribers = {(w, s) for (w, s) in self._subscribers if w is not ws}
+        self._subscribers = {(w, a) for (w, a) in self._subscribers if w is not ws}
 
-    def _visible(self, scope, msg):
-        conv = msg.get("conversation_id", "")
+    @staticmethod
+    def conv_visible(agent_role, agent_scope, conv):
+        """v1.3 会话成员制下 mp 层可见性（与 F1 §5.2 语义对齐）：
+        - role=gege：哥哥视角，全会话可见（含各 dm_<expert> 专家私聊）
+        - 其余 token：dm_yifei 需 scope 含 dm；dm_<expert> 一律 403（专家私聊非哥哥不可见）；
+          grp_* 需 scope 含 group。默认拒绝。"""
+        if agent_role == "gege":
+            return True
         if conv == "dm_yifei":
-            return "dm" in scope
-        return conv.startswith("grp_") and "group" in scope
+            return "dm" in agent_scope
+        if conv.startswith("dm_"):
+            return False
+        return conv.startswith("grp_") and "group" in agent_scope
+
+    def _visible(self, sub, msg):
+        conv = msg.get("conversation_id", "")
+        role, scope = sub
+        return self.conv_visible(role, scope, conv)
 
     async def _broadcast(self, frame):
         msg = frame.get("msg", {})
         dead = []
-        for ws, scope in list(self._subscribers):
-            if not self._visible(scope, msg):
-                continue  # 可见性红线：dm 帧不下发给 group-only 客户端
+        for ws, sub in list(self._subscribers):
+            if not self._visible(sub, msg):
+                continue  # 可见性红线：越权会话帧不下发
             try:
                 await ws.send_json(frame)
             except Exception:
@@ -114,15 +131,22 @@ class HubWSBridge:
                 await asyncio.sleep(delay)
 
     async def _connect_once(self):
+        # v1.3：订阅列表动态拉取（gege token → hub 返回全部已登记会话，含各 dm_<expert>）
+        try:
+            data = await hub_request(self.cfg, "GET", "/conversations")
+            convs = data.get("conversations", [])
+        except HubError as e:
+            log.warning("GET /conversations 失败（%s），回退默认订阅列表", e)
+            convs = ["grp_experts", "dm_yifei"]
         url = f'{self.cfg["hub_ws_url"]}?token={self.cfg["hub_token"]}'
         timeout = aiohttp.ClientTimeout(total=None, sock_read=120)
         async with aiohttp.ClientSession(timeout=timeout) as s:
             async with s.ws_connect(url, heartbeat=30) as ws:
                 self.connected = True
-                log.info("hub WS 已连接，last_seq=%d", self.last_seq)
+                log.info("hub WS 已连接，last_seq=%d，订阅=%s", self.last_seq, convs)
                 await ws.send_json({
                     "op": "subscribe",
-                    "conversations": ["grp_experts", "dm_yifei"],
+                    "conversations": convs,
                     "last_seq": self.last_seq,
                 })
                 async for raw in ws:
