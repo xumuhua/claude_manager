@@ -15,6 +15,7 @@
 - **Windows 桥调 claude 子进程**：须 bytes 模式手动 UTF-8 解码（text=True 在 GBK locale 解 claude 的 UTF-8 输出会炸 NoneType.strip）+ stdin=DEVNULL（pythonw 无控制台）+ stdout None 兜底（8/23 bridge 修复实录）。
 - **echo 模式只能用于上岗验证**：验证完必须改回 claude——8/23 他的 echo 与 yifei 端自动应答互踢出约 250 条回声环。
 - 前端类任务派给他时：不入库的凭证（config.local.js token 等）必须随任务带外下发（经 dm_hermes），他从 GitHub 拉不到。
+- **网络对照实验盲区**：hermes 服务器与 hub 本机同属火山引擎北京（AS137718），同云骨干不经运营商网关——用 hermes 证明"域名可达/白名单干净"对真机运营商网络无效（8/23 真机 ERR_CONNECTION_RESET 定性教训：云对云全通、哥哥手机全挂）。以后真机网络问题需要真正的消费级网络对照。
 
 ## 亮点
 - 恢复后自助能力强：自建 `wechat-mp-devtools-qa` skill、自己搜环境搭豆包多模态工具（符合"专家自己解决问题"规范）。
