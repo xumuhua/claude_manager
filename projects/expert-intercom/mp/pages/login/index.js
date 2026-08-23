@@ -10,6 +10,8 @@ Page({
     canLogin: false,
     loading: false,
     errMsg: '',
+    pwdFocus: false,       // 用户名回车 → 聚焦密码框
+    keyboardHeight: 0,     // >0 时登录按钮悬浮键盘上方（真机防遮挡，F7.1）
   },
 
   onLoad() {
@@ -27,6 +29,20 @@ Page({
       errMsg: '',
       canLogin: !!(e.detail.value.trim() && this.data[field === 'username' ? 'password' : 'username'].trim()),
     });
+  },
+
+  onUsernameConfirm() {
+    this.setData({ pwdFocus: true });
+  },
+
+  onUsernameFocus() {
+    if (this.data.pwdFocus) this.setData({ pwdFocus: false });
+  },
+
+  // 真机键盘弹起时把按钮抬到键盘顶（adjust-position 只保证输入框可见，不保证按钮）；
+  // 键盘收起时本事件以 height=0 回调，按钮回到表单下方流式位
+  onKeyboardHeight(e) {
+    this.setData({ keyboardHeight: e.detail.height || 0 });
   },
 
   async onLogin() {

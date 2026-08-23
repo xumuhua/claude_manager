@@ -1,19 +1,25 @@
-<!-- pages/login — F7 登录页（深色沿用 theme.json 变量，无 AI 角标） -->
+<!-- pages/login — F7.1 显式登录按钮（深色沿用 theme.json 变量，无 AI 角标） -->
+<!-- 键盘弹起时按钮悬浮键盘上方（bindkeyboardheightchange），收起时回到表单下方流式位 -->
 <view class="login-wrap">
   <view class="logo">专家互通</view>
   <view class="subtitle fg2">登录后进入对话与阅读</view>
 
   <view class="form bg2">
     <input class="field" data-field="username" placeholder="用户名" placeholder-class="ph"
-           value="{{username}}" bindinput="onInput" auto-focus />
+           value="{{username}}" bindinput="onInput" adjust-position="{{true}}"
+           confirm-type="next" bindconfirm="onUsernameConfirm" bindfocus="onUsernameFocus"
+           bindkeyboardheightchange="onKeyboardHeight" />
     <view class="divider"></view>
     <input class="field" data-field="password" placeholder="密码" placeholder-class="ph"
-           password value="{{password}}" bindinput="onInput" confirm-type="done" bindconfirm="onLogin" />
+           password value="{{password}}" bindinput="onInput" adjust-position="{{true}}"
+           focus="{{pwdFocus}}" confirm-type="done" bindconfirm="onLogin"
+           bindkeyboardheightchange="onKeyboardHeight" />
   </view>
 
   <view wx:if="{{errMsg}}" class="err-msg err">{{errMsg}}</view>
 
-  <button class="login-btn {{canLogin && !loading ? 'active' : ''}}"
+  <button class="login-btn {{canLogin ? 'ready' : ''}} {{keyboardHeight ? 'float' : ''}}"
+          style="{{keyboardHeight ? 'bottom:' + keyboardHeight + 'px' : ''}}"
           disabled="{{!canLogin || loading}}" bindtap="onLogin">
     {{loading ? '登录中…' : '登 录'}}
   </button>

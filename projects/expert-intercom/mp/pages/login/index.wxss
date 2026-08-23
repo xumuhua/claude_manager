@@ -33,11 +33,25 @@
   margin-top: 48rpx;
   border-radius: 16rpx;
   font-size: 32rpx;
-  background: var(--bg2);
-  color: var(--fg2);
-}
-.login-btn.active {
+  font-weight: 600;
   background: var(--primary);
   color: #fff;
+  opacity: 0.45;               /* 账密未填齐：主色淡显，仍可一眼定位 */
+}
+.login-btn[disabled] {         /* 覆盖微信 button 默认 disabled 灰底 */
+  background: var(--primary);
+  color: #fff;
+  opacity: 0.45;
+}
+.login-btn.ready,
+.login-btn.ready[disabled] {   /* 可点 / 登录中：满主色 */
+  opacity: 1;
+}
+.login-btn.float {             /* 键盘弹起：悬浮键盘顶，左右与表单对齐 */
+  position: fixed;
+  left: 48rpx;
+  right: 48rpx;
+  margin-top: 0;
+  z-index: 10;
 }
 .login-btn::after { border: none; }
