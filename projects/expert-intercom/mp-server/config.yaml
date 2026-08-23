@@ -1,0 +1,52 @@
+# mp-backend 配置（F5 小程序后端）——入库模板：所有 token 一律 env: 引用，零明文。
+# 本机开发态：cp config.yaml config.local.yaml 填入开发 token（config.local.yaml 已 gitignore），
+# 或以环境变量注入：INTERCOM_HUB_TOKEN / MP_TOKEN_GEGE / MP_TOKEN_OUTSIDER / DOUBAO_*。
+# run_dev.sh 自动优先使用 config.local.yaml。
+
+port: 8766
+
+hub:
+  url: http://127.0.0.1:8765          # 内网调 hub（F1 §9），不动 hub 代码
+  token: "env:INTERCOM_HUB_TOKEN"     # hub 侧登记的哥哥 token（F1 §5.2）
+
+github:
+  max_bytes: 1048576                  # F5 规范：单文件限 1MB
+  timeout_s: 15
+  api_base: https://api.github.com
+  raw_base: https://raw.githubusercontent.com
+
+# AI 中转（D1 v2 §9 R-5/R-6/R-7）。红线：doubao key 只走 env 注入，不落本文件/GitHub。
+# DOUBAO_ARK_KEY：source /home/manager/keys/doubao.sh 后取 "$ANTHROPIC_AUTH_TOKEN"。
+# 语音（ASR/TTS）为 openspeech 独立 appid+token 体系：2026-08-23 实测 Ark key 不能直调
+# （401 grant not found，证据 tests/verify/）。凭证到位前 /ai/asr /ai/tts 按 D1 §5 降级
+# 返回 503 AI_UNAVAILABLE，不影响其余功能；到位后设 DOUBAO_SPEECH_APPID/TOKEN 即通。
+ai:
+  ark_base_url: https://ark.cn-beijing.volces.com/api/plan   # Anthropic 兼容端点（实测可用）
+  ark_model: ark-code-latest
+  ark_key: "env:DOUBAO_ARK_KEY"       # 缺省时 /ai/summary 降级 AI_UNAVAILABLE
+  summary_daily_limit: 50             # 哥哥 Q5 拍板
+  asr_daily_limit: 100                # 哥哥 Q5 拍板
+  tts_daily_chars: 200000             # 哥哥 Q5 拍板
+  rate_per_minute: 10                 # 频控：每 token 每分钟 AI 请求上限
+  timeout_s: 30
+  tts_max_chars: 2000                 # R-7：分段 ≤2000 字/次
+  openspeech_appid: "env:DOUBAO_SPEECH_APPID"   # 可选，未配置=降级
+  openspeech_token: "env:DOUBAO_SPEECH_TOKEN"
+  openspeech_cluster: volcano_tts
+  tts_voice: zh_male_M392_conversation_wvae_bigtts   # 默认男声（Q4 拍板：不做音色选择器）
+
+# 小程序端 token 登记区。scope 语义照搬 F1 §5.2：
+#   [group]      → 仅群会话可读
+#   [group, dm]  → 另含 dm_yifei（哥哥↔亦菲通道，哥哥专属；无 dm scope 一律 403）
+# openid 字段为企业主体微信登录绑定预留（token ↔ openid 绑定，到位后启用）。
+agents:
+  - name: gege_dev
+    role: gege
+    token: "env:MP_TOKEN_GEGE"        # 开发态 token，带外下发，不入库
+    scope: [group, dm]
+    openid: null
+  - name: outsider_dev               # 仅用于红线自测：非哥哥 token 打 dm 必须 403
+    role: tester
+    token: "env:MP_TOKEN_OUTSIDER"
+    scope: [group]
+    openid: null

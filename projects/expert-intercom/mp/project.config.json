@@ -1,0 +1,19 @@
+{
+  "appid": "wx3c131b9ebf398e56",
+  "compileType": "miniprogram",
+  "libVersion": "3.8.0",
+  "projectname": "expert-intercom",
+  "description": "专家互通工具小程序（F6）：对话 + GitHub 阅读",
+  "setting": {
+    "es6": true,
+    "enhance": true,
+    "minified": true,
+    "postcss": true,
+    "urlCheck": true
+  },
+  "packOptions": {
+    "ignore": [
+      { "type": "file", "value": "config.local.js" }
+    ]
+  }
+}

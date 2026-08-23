@@ -1,0 +1,51 @@
+.page { display: flex; flex-direction: column; height: 100vh; }
+.subtitle {
+  font-size: 11px; color: var(--fg2); padding: 4px 16px;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+
+/* 工具条 40pt */
+.toolbar {
+  display: flex; height: 40px; align-items: center;
+  border-top: 1px solid var(--divider); border-bottom: 1px solid var(--divider);
+  flex-shrink: 0;
+}
+.tool { flex: 1; text-align: center; font-size: 13px; font-weight: 500; color: var(--fg); }
+.tool.disabled { color: var(--fg2); }
+
+/* 搜索条 */
+.searchbar {
+  display: flex; align-items: center; height: 40px; padding: 0 12px;
+  border-bottom: 1px solid var(--divider); flex-shrink: 0;
+}
+.sb-icon { margin-right: 6px; }
+.sb-input { flex: 1; font-size: 14px; background: var(--bg2); border-radius: 6px; padding: 4px 8px; }
+.sb-count { font-size: 12px; color: var(--fg2); margin: 0 8px; min-width: 34px; text-align: center; }
+.sb-btn { font-size: 16px; color: var(--fg); padding: 4px 8px; }
+
+.content { flex: 1; }
+.doc-body { padding: 4px 16px 32px; }
+
+.error-box { margin: 60px 16px 0; text-align: center; }
+.error-text { color: var(--fg2); font-size: 14px; }
+.error-retry { color: var(--primary); font-size: 14px; margin-top: 12px; }
+.error-cached { color: var(--primary); font-size: 13px; margin-top: 16px; }
+
+/* 大纲抽屉 */
+.toc-mask {
+  position: fixed; inset: 0; z-index: 90; background: rgba(0, 0, 0, 0.4);
+}
+.toc-drawer {
+  position: absolute; right: 0; top: 0; bottom: 0; width: 80%;
+  background: var(--bg); box-shadow: -2px 0 12px rgba(0, 0, 0, 0.2);
+  display: flex; flex-direction: column;
+}
+.toc-title { font-size: 16px; font-weight: 600; padding: 16px; border-bottom: 1px solid var(--divider); }
+.toc-list { flex: 1; }
+.toc-item {
+  font-size: 14px; padding: 10px 16px; color: var(--fg);
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.toc-l2 { padding-left: 32px; color: var(--fg2); }
+.toc-l3 { padding-left: 48px; color: var(--fg2); font-size: 13px; }
+.toc-empty { padding: 24px 16px; color: var(--fg2); font-size: 13px; }

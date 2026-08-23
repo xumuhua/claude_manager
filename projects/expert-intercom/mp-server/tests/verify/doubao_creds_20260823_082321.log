@@ -1,0 +1,29 @@
+key 指纹: ark-********（入库前已抹除，本地原件留档）  base=https://ark.cn-beijing.volces.com/api/plan  model=ark-code-latest
+===== [1a] Anthropic 兼容 /api/plan/v1/messages (x-api-key)
+HTTP 200  1.909026s
+{"id":"021787444601629cb4471f0f910e4739f2e6b993dd0a5353c86d2","type":"message","role":"assistant","model":"auto","content":[{"type":"text","text":"专家互通工具是一种依托消息总线实现多AI专家协作的系统。"}],"stop_reason":"end_turn","usage":{"input_tokens":66,"output_tokens":17,"cache_read_input_tokens":0}}
+===== [1b Anthropic 兼容 Bearer] POST https://ark.cn-beijing.volces.com/api/plan/v1/messages
+HTTP 200  0.904908s
+{"id":"02178744460354320cfcaf0410bba00355b4c276f44ffed9be12d","type":"message","role":"assistant","model":"auto","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":51,"output_tokens":1,"cache_read_input_tokens":0}}
+===== [2 OpenAI 兼容 /api/v3 chat] POST https://ark.cn-beijing.volces.com/api/v3/chat/completions
+HTTP 401  0.025841s
+{"error":{"code":"AuthenticationError","message":"The API key or AK/SK in the request is missing or invalid. Request id: 021787444604453fa5ea4275a5d3d4c29bbd2274cbba1b3de4502","param":"","type":"Unauthorized"}}
+===== [3a] openspeech ASR (Ark key 直调探测)
+HTTP 401  0.609889s
+{"header":{"reqid":"probe-1787444604","code":45000010,"message":"load grant: requested grant not found in SaaS storage"}}
+--- 响应头（状态行在 X-Api-Status-Code）:
+HTTP/2 401 
+x-api-request-id: probe2-1787444605
+x-api-status-code: 45000010
+x-api-message: load grant: requested grant not found in SaaS storage
+access-control-allow-headers: DNT,X-Mx-ReqToken,Keep-Alive,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Authorization,X-Api-App-Key,X-Api-Access-Key,X-Api-Request-Id,X-Api-Resource-Id,X-Api-Sequence
+access-control-expose-headers: X-Tt-Logid,X-Api-Status-Code,X-Api-Message
+===== [4a] openspeech TTS (Ark key 直调探测)
+HTTP 401  0.333429s
+{"reqid":"probe","code":3001,"message":"load grant: requested grant not found in SaaS storage"}
+===== [5a Ark /api/v3/audio/speech] POST https://ark.cn-beijing.volces.com/api/v3/audio/speech
+HTTP 404  0.024801s
+
+===== [5b Ark /api/v3/audio/transcriptions] POST https://ark.cn-beijing.volces.com/api/v3/audio/transcriptions
+HTTP 404  0.027183s
+

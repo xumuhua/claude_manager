@@ -1,0 +1,36 @@
+<view class="ai-card">
+  <view class="ai-head">
+    <text class="ai-title">✦ {{title}}</text>
+    <text class="ai-badge">{{badge}}</text>
+  </view>
+
+  <view wx:if="{{loading}}" class="ai-body">
+    <view class="skel"></view><view class="skel"></view><view class="skel"></view>
+  </view>
+
+  <view wx:elif="{{error}}" class="ai-body">
+    <view class="ai-err">{{error}}</view>
+    <view class="ai-ops"><text class="ai-op" bindtap="onRetry">重试</text></view>
+  </view>
+
+  <block wx:else>
+    <view class="ai-disclaimer">{{disclaimer}}</view>
+    <block wx:if="{{!collapsed}}">
+      <view wx:for="{{points}}" wx:key="index" class="ai-point" data-point="{{item}}" bindtap="onPointTap">
+        <text class="ai-no">{{index + 1}}.</text>
+        <text class="ai-ptext">{{item.text}}</text>
+        <text wx:if="{{item.sourceLabel}}" class="ai-src">（{{item.sourceLabel}}）</text>
+      </view>
+      <view wx:for="{{mentions}}" wx:key="index" class="ai-mention" data-point="{{item}}" bindtap="onPointTap">
+        <text class="ai-mention-bar">▍</text>
+        <text class="ai-ptext">@你：{{item.text}}</text>
+        <text wx:if="{{item.sourceLabel}}" class="ai-src">（{{item.sourceLabel}}）</text>
+      </view>
+      <view wx:if="{{!points.length && !mentions.length}}" class="ai-err">没有可总结的内容</view>
+    </block>
+    <view class="ai-ops">
+      <text class="ai-op" bindtap="onFold">{{collapsed ? '展开' : '折叠'}}</text>
+      <text wx:if="{{canRegen}}" class="ai-op" bindtap="onRegen">重新生成</text>
+    </view>
+  </block>
+</view>

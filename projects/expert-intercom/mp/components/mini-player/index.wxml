@@ -1,0 +1,5 @@
+<view wx:if="{{visible}}" class="mini-player {{aboveTab ? 'above-tab' : ''}}">
+  <text class="mp-btn" bindtap="onToggle">{{loading ? '…' : (playing ? '⏸' : '▶')}}</text>
+  <text class="mp-title">{{loading ? '合成中…' : title}}</text>
+  <text class="mp-close" bindtap="onClose">✕</text>
+</view>

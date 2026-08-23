@@ -1,0 +1,59 @@
+<!-- components/md-block：按 block.type 分发渲染；每个 block 带 id 供 scroll-into-view 定位 -->
+<view wx:for="{{blocks}}" wx:key="id" id="{{item.id}}" class="blk">
+
+  <view wx:if="{{item.type === 'h'}}" class="md-h md-h{{item.level}}">{{item.text}}</view>
+
+  <view wx:elif="{{item.type === 'p'}}" class="md-p">
+    <text selectable>
+      <text wx:for="{{item.segs}}" wx:for-item="s" wx:key="index"
+            class="seg-{{s.t}} {{s.hit ? 'seg-hit' : ''}} {{s.cur ? 'seg-cur' : ''}}"
+            data-t="{{s.t}}" data-url="{{s.url}}" bindtap="onSegTap">{{s.text}}</text>
+    </text>
+  </view>
+
+  <view wx:elif="{{item.type === 'quote'}}" class="md-quote">
+    <text wx:for="{{item.segs}}" wx:for-item="s" wx:key="index"
+          class="seg-{{s.t}} {{s.hit ? 'seg-hit' : ''}}">{{s.text}}</text>
+  </view>
+
+  <view wx:elif="{{item.type === 'code'}}" class="md-code-wrap">
+    <scroll-view scroll-x enhanced show-scrollbar="{{false}}" class="md-code">
+      <text selectable>{{item.display}}</text>
+    </scroll-view>
+    <view wx:if="{{item.folded}}" class="md-code-more" data-idx="{{index}}" bindtap="expandCode">
+      展开全部（共 {{item.lines}} 行）
+    </view>
+  </view>
+
+  <view wx:elif="{{item.type === 'ul' || item.type === 'ol'}}" class="md-list">
+    <view wx:for="{{item.items}}" wx:for-item="li" wx:key="index"
+          class="md-li" style="padding-left: {{li.depth * 32}}rpx">
+      <text class="md-li-marker">{{item.type === 'ol' ? li.marker : '•'}}</text>
+      <text selectable>
+        <text wx:for="{{li.segs}}" wx:for-item="s" wx:key="index"
+              class="seg-{{s.t}} {{s.hit ? 'seg-hit' : ''}} {{s.cur ? 'seg-cur' : ''}}"
+              data-t="{{s.t}}" data-url="{{s.url}}" bindtap="onSegTap">{{s.text}}</text>
+      </text>
+    </view>
+  </view>
+
+  <scroll-view wx:elif="{{item.type === 'table'}}" scroll-x class="md-table-scroll">
+    <view class="md-table">
+      <view class="md-tr md-thead">
+        <view wx:for="{{item.header}}" wx:key="index" class="md-td">{{item}}</view>
+      </view>
+      <view wx:for="{{item.rows}}" wx:for-item="row" wx:key="index" class="md-tr">
+        <view wx:for="{{row}}" wx:for-item="cell" wx:key="index" class="md-td">{{cell}}</view>
+      </view>
+    </view>
+  </scroll-view>
+
+  <view wx:elif="{{item.type === 'hr'}}" class="md-hr"></view>
+
+  <view wx:elif="{{item.type === 'img'}}" class="md-img-wrap">
+    <image wx:if="{{!item.imgFailed}}" src="{{item.src}}" mode="widthFix" class="md-img"
+           data-idx="{{index}}" binderror="imgError" />
+    <view wx:else class="md-img-fail">[图片加载失败] {{item.alt}}</view>
+  </view>
+
+</view>

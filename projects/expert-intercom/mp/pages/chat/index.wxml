@@ -1,0 +1,101 @@
+<view class="page">
+  <!-- 顶栏：segmented 切会话 + 状态点 + @我过滤 + 速览（D1 §7 P1） -->
+  <view class="topbar">
+    <view class="seg">
+      <text class="seg-item {{conv === 'grp_experts' ? 'on' : ''}}"
+            data-conv="grp_experts" bindtap="switchConv">专家群</text>
+      <text class="seg-item {{conv === 'dm_yifei' ? 'on' : ''}}"
+            data-conv="dm_yifei" bindtap="switchConv">亦菲</text>
+    </view>
+    <view class="dot dot-{{wsStatus}}" title="连接状态"></view>
+    <text class="top-btn {{atMeOnly ? 'on' : ''}}" bindtap="toggleAtMe">@我</text>
+    <text class="top-btn" bindtap="onSummaryTap">✦速览</text>
+  </view>
+
+  <view wx:if="{{!networkOk}}" class="banner-err">网络不可用，请检查网络</view>
+  <view wx:elif="{{wsStatus === 'down'}}" class="banner-warn">实时连接已断开，10s 轮询中</view>
+
+  <!-- 消息流 -->
+  <scroll-view scroll-y class="msgs" scroll-into-view="{{scrollTo}}" scroll-with-animation
+               bindscroll="onScroll" enhanced show-scrollbar="{{false}}">
+    <view id="summaryAnchor"></view>
+    <ai-card wx:if="{{summary}}" title="未读速览"
+             points="{{summary.points || []}}" mentions="{{summary.mentions || []}}"
+             collapsed="{{summary.collapsed || false}}"
+             loading="{{summary.loading || false}}" error="{{summary.error || ''}}"
+             bindpointtap="onSummaryPointTap" bindfold="onSummaryFold" bindregen="onSummaryRegen" />
+
+    <view wx:for="{{displayItems}}" wx:key="id" id="{{item.id}}">
+      <view wx:if="{{item.type === 'date'}}" class="date-sep">{{item.label}}</view>
+
+      <!-- system 消息：灰底居中胶囊 -->
+      <view wx:elif="{{item.m.type === 'system'}}" class="sys-row">
+        <text class="sys-cap">{{item.m.body === 'STOP' ? 'STOP 已发送 · 会话终止' : item.m.body}}</text>
+      </view>
+
+      <!-- 普通消息：信息流式（发送者名在上、正文在下） -->
+      <view wx:else class="msg {{item.m.atMe ? 'msg-atme' : ''}} {{item.m._pending ? 'msg-pending' : ''}} {{flashSeq === item.m.seq ? 'msg-flash' : ''}}"
+            data-seq="{{item.m.seq}}" bindlongpress="onMsgLongPress">
+        <view class="msg-head">
+          <text wx:if="{{item.m._failed}}" class="msg-fail" data-local="{{item.m.msg_id}}"
+                bindtap="onFailedTap">!</text>
+          <text class="msg-from {{item.m.nameCls}}">{{item.m.from}}</text>
+          <text class="msg-badge">{{item.m.badge}}</text>
+          <text class="msg-time">{{item.m.timeStr}}</text>
+        </view>
+        <view wx:if="{{item.m.replyBar}}" class="msg-reply" data-seq="{{item.m.replyBar.seq}}"
+              bindtap="onReplyTap">回复 {{item.m.replyBar.from}}：{{item.m.replyBar.snippet}}</view>
+        <md-block blocks="{{item.m._blocks}}" />
+        <view wx:if="{{item.m._long && !item.m._expanded}}" class="msg-expand"
+              data-seq="{{item.m.seq}}" bindtap="onExpandLong">展开全文</view>
+      </view>
+    </view>
+
+    <view wx:if="{{!displayItems.length}}" class="empty">
+      {{atMeOnly ? '暂无 @ 你的消息' : '还没有消息'}}
+    </view>
+  </scroll-view>
+
+  <!-- 翻历史时的新消息浮动提示 -->
+  <view wx:if="{{newMsgCount}}" class="new-msg" bindtap="jumpBottom">↓ {{newMsgCount}} 条新消息</view>
+
+  <!-- 群态 @ 补全 -->
+  <view wx:if="{{mentionPopup.length}}" class="mention-pop">
+    <text wx:for="{{mentionPopup}}" wx:key="name" class="mention-item"
+          data-name="{{item.name}}" data-prefix="{{item.prefix}}" bindtap="onMentionPick">@{{item.name}}</text>
+  </view>
+
+  <!-- C5 快捷指令条（私聊态） -->
+  <scroll-view wx:if="{{conv === 'dm_yifei'}}" scroll-x class="quickbar" enhanced show-scrollbar="{{false}}">
+    <view class="quickbar-inner">
+      <text wx:for="{{quickPhrases}}" wx:key="index" class="quick-chip"
+            data-text="{{item}}" bindtap="onQuickPhrase">{{item}}</text>
+    </view>
+  </scroll-view>
+
+  <!-- Q1 拍板：STOP 快捷条（长按 1s 防误触），挪输入栏上方（Q2 拍板） -->
+  <view wx:if="{{conv === 'grp_experts'}}" class="stopbar">
+    <text class="stop-tip" bindlongpress="onStopSend">STOP · 长按 1s 发送，终止当前话题链</text>
+  </view>
+
+  <!-- 输入栏：🎤按住说话 + 多行自增输入 + 显式发送钮 -->
+  <view class="inputbar">
+    <view class="mic" bindtouchstart="onMicStart" bindtouchmove="onMicMove"
+          bindtouchend="onMicEnd" bindtouchcancel="onMicCancel">🎤</view>
+    <textarea class="input" value="{{inputText}}" bindinput="onInput" auto-height
+              maxlength="-1" confirm-type="send" bindconfirm="onSend"
+              placeholder="输入消息…" placeholder-class="ph" />
+    <view class="send {{canSend ? '' : 'disabled'}}" bindtap="onSend">发送</view>
+  </view>
+
+  <!-- C4 录音浮层 -->
+  <view wx:if="{{recording}}" class="rec-mask">
+    <view class="rec-inner">
+      <view class="rec-wave">～∿～∿～∿～</view>
+      <view class="rec-time">{{recordTime}}</view>
+      <view class="rec-tip {{recordCancel ? 'cancel' : ''}}">{{recordCancel ? '松开取消' : '松开发送 · 上滑取消'}}</view>
+    </view>
+  </view>
+
+  <mini-player above-tab="{{true}}" />
+</view>

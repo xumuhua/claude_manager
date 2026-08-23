@@ -1,0 +1,46 @@
+.blk { margin: 6px 0; }
+.md-h { font-weight: 700; margin: 14px 0 6px; }
+.md-h1 { font-size: 18px; }
+.md-h2 { font-size: 16px; }
+.md-h3 { font-size: 15px; font-weight: 600; }
+.md-h4, .md-h5, .md-h6 { font-size: 15px; font-weight: 600; }
+.md-p { font-size: 15px; white-space: pre-wrap; word-break: break-word; }
+.md-quote {
+  border-left: 3px solid var(--primary); opacity: 0.85;
+  padding: 4px 10px; margin: 6px 0; color: var(--fg2); font-size: 14px;
+}
+.md-code-wrap { margin: 8px 0; }
+.md-code {
+  background: #0D1117; color: #E6EDF3; border-radius: 8px;
+  padding: 12px; font-size: 12.5px;
+}
+.md-code text { font-family: monospace; white-space: pre; }
+.md-code-more {
+  font-size: 12px; color: var(--primary); text-align: center;
+  padding: 6px; background: var(--bg2); border-radius: 0 0 8px 8px;
+}
+.md-list { margin: 4px 0; }
+.md-li { display: flex; margin: 2px 0; }
+.md-li-marker { color: var(--fg2); margin-right: 8px; flex-shrink: 0; }
+.md-table-scroll { margin: 8px 0; }
+.md-table { display: inline-flex; flex-direction: column; border: 1px solid var(--divider); border-radius: 6px; }
+.md-tr { display: flex; }
+.md-thead { background: var(--bg2); font-weight: 600; }
+.md-td {
+  padding: 6px 10px; font-size: 13px; border-right: 1px solid var(--divider);
+  border-bottom: 1px solid var(--divider); min-width: 80px; flex-shrink: 0;
+}
+.md-hr { height: 1px; background: var(--divider); margin: 16px 0; }
+.md-img { max-width: 100%; border-radius: 6px; }
+.md-img-fail { color: var(--fg2); font-size: 12px; padding: 8px; background: var(--bg2); border-radius: 6px; }
+
+/* inline 段样式 */
+.seg-code {
+  font-family: monospace; font-size: 13px; background: var(--inline-code-bg);
+  border-radius: 4px; padding: 0 4px;
+}
+.seg-bold { font-weight: 700; }
+.seg-link { color: var(--primary); }
+.seg-mention { color: var(--mention-fg); background: var(--mention-bg); border-radius: 4px; padding: 0 2px; }
+.seg-hit { background: var(--hit-bg); }
+.seg-cur { background: var(--hit-cur-bg); color: var(--hit-cur-fg); }

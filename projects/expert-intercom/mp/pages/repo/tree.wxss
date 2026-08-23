@@ -1,0 +1,16 @@
+.page { min-height: 100vh; }
+.tree-list { margin: 8px 16px; background: var(--bg2); border-radius: 8px; overflow: hidden; }
+.tree-row {
+  display: flex; align-items: center; min-height: 48px; padding: 0 12px;
+  border-bottom: 1px solid var(--divider);
+}
+.tree-row:last-child { border-bottom: none; }
+.tree-icon { margin-right: 10px; }
+.tree-name { flex: 1; font-size: 15px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tree-name.binary { color: var(--fg2); }
+.tree-size { font-size: 11px; color: var(--fg2); margin-left: 8px; }
+.tree-arrow { color: var(--fg2); margin-left: 8px; }
+.empty { text-align: center; color: var(--fg2); font-size: 13px; margin-top: 60px; }
+.error-box { margin: 80px 16px 0; text-align: center; }
+.error-text { color: var(--fg2); font-size: 14px; }
+.error-retry { color: var(--primary); font-size: 14px; margin-top: 12px; }

@@ -1,0 +1,9 @@
+{
+  "navigationBarTitleText": "对话",
+  "usingComponents": {
+    "md-block": "/components/md-block/index",
+    "ai-card": "/components/ai-card/index",
+    "mini-player": "/components/mini-player/index"
+  },
+  "enablePullDownRefresh": true
+}

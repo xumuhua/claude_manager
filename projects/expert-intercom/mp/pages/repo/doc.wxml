@@ -1,0 +1,76 @@
+<view class="page">
+  <!-- 副标题：完整路径（D1 §7 P4） -->
+  <view class="subtitle">{{owner}}/{{repo}}/{{path}}</view>
+
+  <!-- 工具条（v2）：四格等宽；二期项置灰不隐藏（D1 §8.5-9） -->
+  <view wx:if="{{!searchOn}}" class="toolbar">
+    <text class="tool" bindtap="onTldrTap">✦要点</text>
+    <text class="tool" bindtap="onSearchTap">🔍搜索</text>
+    <text class="tool" bindtap="onTocTap">大纲</text>
+    <text class="tool disabled" bindtap="onListenTap">听(二期)</text>
+  </view>
+
+  <!-- G2 搜索条：吸顶替换工具条 -->
+  <view wx:else class="searchbar">
+    <text class="sb-icon">🔍</text>
+    <input class="sb-input" value="{{kw}}" bindinput="onSearchInput" focus
+           placeholder="文档内搜索" placeholder-class="ph" />
+    <text class="sb-count">{{hitTotal ? hitCur + '/' + hitTotal : (kw ? '0/0' : '')}}</text>
+    <text class="sb-btn" bindtap="onSearchPrev">↑</text>
+    <text class="sb-btn" bindtap="onSearchNext">↓</text>
+    <text class="sb-btn" bindtap="onSearchClose">✕</text>
+  </view>
+
+  <view wx:if="{{offline}}" class="banner-warn">离线缓存版本</view>
+  <view wx:if="{{renderFailed}}" class="banner-warn">渲染失败，已按原文显示</view>
+
+  <scroll-view scroll-y class="content" scroll-into-view="{{scrollTo}}" scroll-with-animation
+               enhanced show-scrollbar="{{false}}">
+    <view wx:if="{{loading}}">
+      <view class="skel"></view><view class="skel"></view><view class="skel"></view>
+      <view class="skel"></view><view class="skel"></view>
+    </view>
+
+    <view wx:elif="{{error}}" class="error-box">
+      <view class="error-text">{{error}}</view>
+      <view class="error-retry" bindtap="loadDoc">重试</view>
+      <view wx:if="{{cachedDocs.length}}" class="error-cached" bindtap="onShowCached">已缓存文档 ›</view>
+    </view>
+
+    <block wx:else>
+      <ai-card wx:if="{{tldr}}" title="本文要点"
+               points="{{tldr.points || []}}"
+               collapsed="{{tldr.collapsed || false}}"
+               loading="{{tldr.loading || false}}" error="{{tldr.error || ''}}"
+               bindpointtap="onTldrPointTap" bindfold="onTldrFold" bindregen="onTldrRegen" />
+      <view class="doc-body">
+        <md-block blocks="{{blocks}}" />
+      </view>
+    </block>
+  </scroll-view>
+
+  <!-- G3 大纲抽屉（右侧 80% 滑出） -->
+  <view wx:if="{{tocOpen}}" class="toc-mask" bindtap="onTocClose">
+    <view class="toc-drawer" catchtap="noop">
+      <view class="toc-title">大纲</view>
+      <scroll-view scroll-y class="toc-list">
+        <view wx:for="{{tocItems}}" wx:key="id" class="toc-item toc-l{{item.level}}"
+              data-id="{{item.id}}" bindtap="onTocItemTap">{{item.text}}</view>
+        <view wx:if="{{!tocItems.length}}" class="toc-empty">本文档无标题</view>
+      </scroll-view>
+    </view>
+  </view>
+
+  <!-- 断网错误页：已缓存文档列表 -->
+  <view wx:if="{{showCachedList}}" class="toc-mask" bindtap="onCachedListClose">
+    <view class="toc-drawer" catchtap="noop">
+      <view class="toc-title">已缓存文档</view>
+      <scroll-view scroll-y class="toc-list">
+        <view wx:for="{{cachedDocs}}" wx:key="key" class="toc-item"
+              data-key="{{item.key}}" bindtap="openCachedDoc">{{item.key}}</view>
+      </scroll-view>
+    </view>
+  </view>
+
+  <mini-player />
+</view>

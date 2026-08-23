@@ -1,0 +1,27 @@
+/* 全局样式：配色走 theme.json 变量（深/浅色跟随系统，D1 §8.1） */
+page {
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 15px;
+  line-height: 1.65;
+}
+.bg2 { background: var(--bg2); }
+.fg2 { color: var(--fg2); }
+.primary { color: var(--primary); }
+.err { color: var(--err); }
+
+/* 弱提示条 */
+.banner-warn {
+  background: var(--warn-bg); color: var(--warn-fg);
+  font-size: 12px; padding: 4px 16px; text-align: center;
+}
+.banner-err {
+  background: var(--err); color: #fff;
+  font-size: 12px; padding: 4px 16px; text-align: center;
+}
+
+/* 骨架屏 */
+.skel {
+  height: 18px; border-radius: 4px; margin: 10px 16px;
+  background: var(--bg2);
+}

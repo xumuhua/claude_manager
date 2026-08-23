@@ -1,0 +1,29 @@
+<view class="page">
+  <block wx:if="{{favs.length}}">
+    <view class="sec-title">★ 收藏</view>
+    <view class="repo-list">
+      <view wx:for="{{favs}}" wx:key="index" class="repo-row" data-full="{{item}}" bindtap="openRepo">
+        <text class="repo-icon">📁</text>
+        <text class="repo-name">{{item}}</text>
+        <text class="repo-fav" data-full="{{item}}" catchtap="toggleFav">★</text>
+      </view>
+    </view>
+  </block>
+
+  <view class="sec-title">常用仓库</view>
+  <view class="repo-list">
+    <view wx:for="{{repos}}" wx:key="full" class="repo-row" data-full="{{item.full}}" bindtap="openRepo">
+      <text class="repo-icon">📁</text>
+      <text class="repo-name">{{item.full}}</text>
+      <text class="repo-fav off" data-full="{{item.full}}" catchtap="toggleFav">☆</text>
+    </view>
+    <view wx:if="{{!repos.length && !favs.length}}" class="empty">空目录</view>
+  </view>
+
+  <view wx:if="{{!adding}}" class="add-link" bindtap="showAdd">＋ 添加仓库（owner/repo）</view>
+  <view wx:else class="add-form">
+    <input class="add-input" placeholder="owner/repo" value="{{addInput}}"
+           bindinput="onAddInput" confirm-type="done" bindconfirm="confirmAdd" />
+    <text class="add-ok" bindtap="confirmAdd">添加</text>
+  </view>
+</view>

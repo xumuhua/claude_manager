@@ -1,0 +1,8 @@
+{
+  "navigationBarTitleText": "文档",
+  "usingComponents": {
+    "md-block": "/components/md-block/index",
+    "ai-card": "/components/ai-card/index",
+    "mini-player": "/components/mini-player/index"
+  }
+}

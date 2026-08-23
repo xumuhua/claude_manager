@@ -1,0 +1,11 @@
+.mini-player {
+  position: fixed; left: 8px; right: 8px; bottom: 8px; z-index: 99;
+  height: 56px; border-radius: 8px;
+  background: #1C1C1E; color: #FFFFFF;
+  display: flex; align-items: center; padding: 0 12px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+.mini-player.above-tab { bottom: 64px; }  /* tabBar 56pt 上方 */
+.mp-btn { font-size: 20px; width: 36px; }
+.mp-title { flex: 1; font-size: 13px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.mp-close { font-size: 16px; color: #8E8E93; padding-left: 12px; }

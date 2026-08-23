@@ -1,0 +1,126 @@
+/* P1 对话页样式（D1 §7/§8） */
+.page { display: flex; flex-direction: column; height: 100vh; }
+
+/* 顶栏 56pt */
+.topbar {
+  display: flex; align-items: center; padding: 8px 16px;
+  border-bottom: 1px solid var(--divider); flex-shrink: 0;
+}
+.seg { display: flex; background: var(--bg2); border-radius: 8px; padding: 2px; }
+.seg-item { font-size: 14px; padding: 4px 14px; border-radius: 6px; color: var(--fg2); }
+.seg-item.on { background: var(--bg); color: var(--fg); font-weight: 600; }
+.dot { width: 6px; height: 6px; border-radius: 3px; margin: 0 10px; }
+.dot-ws { background: #22C55E; }
+.dot-down { background: #F59E0B; }
+.dot-off { background: var(--err); }
+.top-btn { font-size: 13px; color: var(--fg2); margin-left: 12px; padding: 4px 6px; }
+.top-btn.on { color: var(--primary); font-weight: 600; }
+
+/* 消息流 */
+.msgs { flex: 1; }
+.date-sep {
+  text-align: center; font-size: 11px; color: var(--fg2); margin: 14px 0 6px;
+}
+.sys-row { display: flex; justify-content: center; margin: 10px 0; }
+.sys-cap {
+  background: var(--sys-bg); color: var(--sys-fg);
+  font-size: 12px; border-radius: 12px; padding: 3px 14px;
+}
+.msg {
+  margin: 6px 16px 12px; padding: 10px 12px;
+  background: var(--bg2); border-radius: 8px;
+}
+.msg-atme { border-left: 3px solid var(--atme-bar); }
+.msg-pending { opacity: 0.55; }
+.msg-flash { background: var(--mention-bg); }
+.msg-head { display: flex; align-items: baseline; margin-bottom: 4px; }
+.msg-fail {
+  color: #fff; background: var(--err); border-radius: 8px;
+  width: 16px; height: 16px; font-size: 11px; text-align: center; line-height: 16px;
+  margin-right: 6px;
+}
+.msg-from { font-size: 12px; font-weight: 600; }
+.msg-badge {
+  font-size: 10px; color: var(--fg2); background: var(--bg);
+  border-radius: 4px; padding: 0 5px; margin-left: 6px;
+}
+.msg-time { font-size: 11px; color: var(--fg2); margin-left: auto; }
+.msg-reply {
+  font-size: 12px; color: var(--fg2); border-left: 3px solid var(--divider);
+  padding-left: 8px; margin-bottom: 4px;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.msg-expand { color: var(--primary); font-size: 13px; text-align: center; padding: 4px; }
+
+/* 发送者名配色盘（D1 §8.1） */
+.c-gege { color: var(--primary); }
+.c-yifei { color: #0D9488; }
+.c-hub { color: var(--fg2); }
+.c-quant { color: #7C3AED; }
+.c-teal { color: #0891B2; }
+.c-pink { color: #DB2777; }
+.c-olive { color: #65A30D; }
+.c-violet { color: #9333EA; }
+.c-rust { color: #C2410C; }
+
+.empty { text-align: center; color: var(--fg2); font-size: 13px; margin-top: 80px; }
+
+/* 新消息浮动提示 */
+.new-msg {
+  position: fixed; right: 16px; bottom: 130px; z-index: 50;
+  background: var(--primary); color: #fff; font-size: 12px;
+  border-radius: 14px; padding: 6px 14px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+/* @ 补全 */
+.mention-pop {
+  display: flex; flex-wrap: wrap; padding: 6px 16px;
+  border-top: 1px solid var(--divider); background: var(--bg);
+}
+.mention-item {
+  font-size: 13px; color: var(--mention-fg); background: var(--mention-bg);
+  border-radius: 12px; padding: 3px 10px; margin: 2px 6px 2px 0;
+}
+
+/* 快捷指令条 32pt */
+.quickbar { flex-shrink: 0; border-top: 1px solid var(--divider); }
+.quickbar-inner { display: flex; padding: 6px 16px; }
+.quick-chip {
+  flex-shrink: 0; font-size: 13px; color: var(--fg);
+  background: var(--bg2); border-radius: 14px; padding: 4px 12px; margin-right: 8px;
+}
+
+/* STOP 快捷条 */
+.stopbar { flex-shrink: 0; padding: 2px 16px 4px; text-align: right; }
+.stop-tip { font-size: 12px; color: var(--err); }
+
+/* 输入栏 48pt 起 */
+.inputbar {
+  display: flex; align-items: flex-end; padding: 6px 12px;
+  border-top: 1px solid var(--divider); flex-shrink: 0; background: var(--bg);
+}
+.mic { font-size: 22px; padding: 8px 8px; }
+.input {
+  flex: 1; background: var(--bg2); border-radius: 8px;
+  padding: 8px 10px; font-size: 15px; min-height: 20px; max-height: 120px;
+  margin: 0 8px; color: var(--fg);
+}
+.ph { color: var(--fg2); }
+.send {
+  font-size: 14px; color: #fff; background: var(--primary);
+  border-radius: 8px; padding: 8px 14px;
+}
+.send.disabled { opacity: 0.4; }
+
+/* 录音浮层（D1 §8.1：92% 透明黑全屏） */
+.rec-mask {
+  position: fixed; inset: 0; z-index: 100;
+  background: rgba(17, 17, 17, 0.92);
+  display: flex; align-items: center; justify-content: center;
+}
+.rec-inner { text-align: center; }
+.rec-wave { color: #fff; font-size: 30px; letter-spacing: 6px; }
+.rec-time { color: #fff; font-size: 20px; margin: 16px 0; font-variant-numeric: tabular-nums; }
+.rec-tip { color: #fff; font-size: 13px; }
+.rec-tip.cancel { color: #F87171; }

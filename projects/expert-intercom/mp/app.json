@@ -1,0 +1,30 @@
+{
+  "pages": [
+    "pages/chat/index",
+    "pages/repos/index",
+    "pages/repo/tree",
+    "pages/repo/doc"
+  ],
+  "window": {
+    "navigationBarBackgroundColor": "#FFFFFF",
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "专家互通",
+    "backgroundColor": "#FFFFFF"
+  },
+  "tabBar": {
+    "color": "#8A8A8E",
+    "selectedColor": "#2563EB",
+    "backgroundColor": "#FFFFFF",
+    "list": [
+      { "pagePath": "pages/chat/index", "text": "💬 对话" },
+      { "pagePath": "pages/repos/index", "text": "📖 阅读" }
+    ]
+  },
+  "permission": {
+    "scope.record": { "desc": "用于语音输入转文字（可编辑后再发送）" }
+  },
+  "style": "v2",
+  "darkmode": true,
+  "themeLocation": "theme.json",
+  "sitemapLocation": "sitemap.json"
+}
