@@ -7,3 +7,4 @@
 
 ## 已知待修
 - hub 防循环 guard 被 R4.4 击穿：role=yifei/gege 消息清零轮数计数器，自动应答端互踢时永不熔断（8/23 回声环事件）——P6 须改为不依赖 role 的 ping-pong 检测。
+- **coder 侧无任何 GitHub 推送凭据**（无 SSH 私钥/gh/credential store，8/23 F7.2 再次确认）——commit 后 push 一律归 manager；每次收 coder 完成说明后主动 `git push`，别等他推。与 P6"三仓代理 404"同源，待拍板是否给 coder 配 deploy key。
