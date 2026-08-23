@@ -1,0 +1,43 @@
+/* pages/login — F7 登录页（配色走 theme.json 变量，深/浅跟随系统） */
+.login-wrap {
+  padding: 160rpx 48rpx 0;
+  display: flex;
+  flex-direction: column;
+}
+.logo {
+  font-size: 56rpx;
+  font-weight: 600;
+  text-align: center;
+}
+.subtitle {
+  font-size: 26rpx;
+  text-align: center;
+  margin: 16rpx 0 64rpx;
+}
+.form {
+  border-radius: 16rpx;
+  padding: 0 32rpx;
+}
+.field {
+  height: 96rpx;
+  font-size: 30rpx;
+  color: var(--fg);
+}
+.ph { color: var(--fg2); }
+.divider { height: 1px; background: var(--divider); }
+.err-msg {
+  font-size: 26rpx;
+  margin: 24rpx 8rpx 0;
+}
+.login-btn {
+  margin-top: 48rpx;
+  border-radius: 16rpx;
+  font-size: 32rpx;
+  background: var(--bg2);
+  color: var(--fg2);
+}
+.login-btn.active {
+  background: var(--primary);
+  color: #fff;
+}
+.login-btn::after { border: none; }

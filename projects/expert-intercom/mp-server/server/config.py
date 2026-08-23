@@ -2,7 +2,13 @@
 
 token 安全约定：config.yaml 中任何 token 字段均可写 "env:VAR_NAME"，
 运行时从环境变量取值；开发态可写明文测试 token（不得推 GitHub，见 README）。
+
+登录账号（F7）：users[].password_pbkdf2 为加盐哈希串
+"pbkdf2_sha256$<iterations>$<salt_hex>$<hash_hex>"，由 hashlib.pbkdf2_hmac 生成
+（stdlib，免新依赖）；明文密码不落任何配置/代码/日志。
 """
+import hashlib
+import hmac
 import os
 import sys
 
@@ -98,7 +104,65 @@ def load_config(path):
             # 企业主体微信登录到位后：token ↔ openid 绑定关系存这里（预留接口）
             "openid": a.get("openid"),
         }
+
+    # 登录账号表（F7）：users 可整体缺省 → /login 按 503 关闭（仅 token 旁路可用）。
+    # password_pbkdf2 仅接受 "pbkdf2_sha256$<iterations>$<salt_hex>$<hash_hex>" 格式，
+    # 启动即校验格式，坏配置直接拒启动（不放行弱校验）。
+    cfg["users"] = {}
+    for u in raw.get("users") or []:
+        username = u.get("username")
+        if not username:
+            raise ConfigError("users: 存在缺 username 的账号")
+        if username in cfg["users"]:
+            raise ConfigError(f"users: username 重复登记 {username}")
+        agent_name = u.get("agent")
+        if agent_name not in cfg["agents"]:
+            raise ConfigError(f"users[{username}]: agent 未在 agents 登记：{agent_name}")
+        stored = u.get("password_pbkdf2")
+        _parse_pbkdf2(stored, f"users[{username}].password_pbkdf2")  # 仅校验格式
+        cfg["users"][username] = {
+            "username": username,
+            "password_pbkdf2": stored,
+            "agent": agent_name,
+            "display_name": u.get("display_name") or agent_name,
+        }
     return cfg
+
+
+def _parse_pbkdf2(stored, field):
+    """解析 'pbkdf2_sha256$<iterations>$<salt_hex>$<hash_hex>'，坏格式抛 ConfigError。"""
+    if not isinstance(stored, str):
+        raise ConfigError(f"{field}: 缺失或非字符串")
+    parts = stored.split("$")
+    if len(parts) != 4 or parts[0] != "pbkdf2_sha256":
+        raise ConfigError(f"{field}: 格式须为 pbkdf2_sha256$iterations$salt_hex$hash_hex")
+    try:
+        iterations = int(parts[1])
+        salt = bytes.fromhex(parts[2])
+        expected = bytes.fromhex(parts[3])
+    except ValueError:
+        raise ConfigError(f"{field}: iterations/salt/hash 非法")
+    if iterations < 10000 or not salt or len(expected) != 32:
+        raise ConfigError(f"{field}: iterations<10000 或 salt 为空或 hash 非 32 字节")
+    return iterations, salt, expected
+
+
+def verify_password(stored, password):
+    """校验明文密码 vs 存储的 pbkdf2 哈希（恒定时间比较）。"""
+    iterations, salt, expected = _parse_pbkdf2(stored, "password_pbkdf2")
+    actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+    return hmac.compare_digest(actual, expected)
+
+
+def make_password_hash(password, iterations=200000):
+    """生成 pbkdf2 哈希串（运维用：python3 -c 'import config; print(config.make_password_hash("..."))'）。"""
+    salt = os.urandom(16)
+    h = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+    return f"pbkdf2_sha256${iterations}${salt.hex()}${h.hex()}"
+
+
+# 用户名不存在时的哑校验材料：拉齐时序，防「用户是否存在」枚举（值无意义，永不匹配）
+_DUMMY_HASH = "pbkdf2_sha256$200000$" + "00" * 16 + "$" + "00" * 32
 
 
 def find_agent_by_token(cfg, token):
@@ -106,3 +170,12 @@ def find_agent_by_token(cfg, token):
         if a["token"] == token:
             return a
     return None
+
+
+def check_login(cfg, username, password):
+    """登录校验（F7）：命中用户则真校验；未命中走哑哈希拉齐时序。返回 user dict 或 None。"""
+    user = cfg["users"].get(username)
+    if user is None:
+        verify_password(_DUMMY_HASH, password)  # 恒定代价，结果丢弃
+        return None
+    return user if verify_password(user["password_pbkdf2"], password) else None

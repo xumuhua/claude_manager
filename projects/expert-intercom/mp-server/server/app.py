@@ -63,6 +63,62 @@ def check_conv_visible(request, conversation_id):
                                     conversation_id)
 
 
+# ---------- 登录（F7：用户名+密码 → 下发 token） ----------
+
+LOGIN_FAIL_LIMIT = 5        # 同一 IP 每分钟失败上限
+LOGIN_FAIL_WINDOW = 60.0    # 秒
+
+
+def _client_ip(request):
+    """nginx 反代后置 X-Forwarded-For / X-Real-IP（见 nginx/mp-backend.conf）；直连回退 remote。"""
+    fwd = request.headers.get("X-Forwarded-For")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.headers.get("X-Real-IP") or request.remote or "-"
+
+
+async def login(request):
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"code": "BAD_SCHEMA", "message": "请求体须为 JSON"}, status=400)
+    username = body.get("username")
+    password = body.get("password")
+    if not isinstance(username, str) or not username \
+            or not isinstance(password, str) or not password:
+        return web.json_response({"code": "BAD_SCHEMA", "message": "username/password 必填且非空"},
+                                 status=400)
+    cfg = request.app["cfg"]
+    if not cfg["users"]:
+        return web.json_response({"code": "LOGIN_DISABLED", "message": "登录未配置，请使用 token 旁路"},
+                                 status=503)
+
+    # 防爆破：同一 IP 滑动窗口 5 次失败/分钟 → 429（超限期间连正确账密也拒）
+    ip = _client_ip(request)
+    now = time.monotonic()
+    fails = request.app["login_fails"].setdefault(ip, [])
+    fails[:] = [t for t in fails if now - t < LOGIN_FAIL_WINDOW]
+    if len(fails) >= LOGIN_FAIL_LIMIT:
+        log.info("登录限流 ip=%s（%d 次失败/分钟）", ip, len(fails))
+        return web.json_response({"code": "LOGIN_RATE_LIMITED",
+                                  "message": "尝试过于频繁，请 1 分钟后再试"}, status=429)
+
+    user = cfg_mod.check_login(cfg, username, password)  # 统一口径：不区分用户不存在/密码错
+    if user is None:
+        fails.append(now)
+        log.info("登录失败 user=%s ip=%s", username, ip)   # 不记密码
+        return web.json_response({"code": "AUTH_FAILED", "message": "用户名或密码错误"}, status=401)
+
+    del request.app["login_fails"][ip]  # 成功清零失败计数
+    agent = cfg["agents"][user["agent"]]
+    log.info("登录成功 user=%s ip=%s agent=%s", username, ip, agent["name"])
+    return web.json_response({
+        "token": agent["token"],
+        "agent_name": agent["name"],
+        "display_name": user["display_name"],
+    })
+
+
 # ---------- 对话 API（桥接 hub F4） ----------
 
 @require_agent
@@ -263,6 +319,7 @@ def main():
     app["started_at"] = time.time()
     app["bridge"] = HubWSBridge(cfg, args.state)
     app["tts_cache"] = {}  # R-7 同文本短缓存（内存 LRU 32 条，D1 §6.2 允许）
+    app["login_fails"] = {}  # F7 防爆破：ip -> [失败时间戳]（内存态，重启清零）
     ai_cfg = cfg["ai"]
     app["ai_quota"] = ai_proxy.AIQuota(args.ai_state, {
         "summary": ai_cfg["summary_daily_limit"],
@@ -271,6 +328,7 @@ def main():
     })
 
     app.router.add_get("/healthz", healthz)
+    app.router.add_post("/login", login)  # F7：用户名+密码 → token（免鉴权，自带防爆破）
     app.router.add_get("/ws", ws_handler)
     app.router.add_get("/api/conversations", list_conversations)
     app.router.add_get("/api/messages", get_messages)

@@ -1,15 +1,29 @@
 // config.js — 全局配置常量（F6 派发纪律：域名走此处，不散落硬编码）
-// 开发态 token 放 config.local.js（packOptions.ignore + .gitignore，不入库不进 GitHub）：
-//   module.exports = { token: '<gege_dev 开发 token>' }
-// token 带外下发；正式签发属 P6 加固（openid 绑定），不在本期。
+// 登录态（F7）：token 优先级 storage > config.local.js 开发态旁路。
+// 登录页鉴权成功后 setToken() 写入 storage 并刷新本模块 TOKEN；
+// api.js / ws.js 均在调用时现读 cfg.TOKEN，登录后即刻生效，无需重启。
 let LOCAL = {};
 try { LOCAL = require('./config.local.js'); } catch (e) { /* 无本地配置：仅开发态需要 */ }
+
+function readStoredToken() {
+  try { return wx.getStorageSync('token') || ''; } catch (e) { return ''; }
+}
 
 module.exports = {
   // 后端地址（合法域名已在微信公众平台配置，默认 443）
   API_BASE: 'https://www.jianyiaiassistent.com',
   WSS_URL: 'wss://www.jianyiaiassistent.com/ws',
-  TOKEN: LOCAL.token || '',
+  TOKEN: readStoredToken() || LOCAL.token || '',
+
+  // F7 登录态：写 storage 并就地刷新 TOKEN（全部请求/WS 随即走新 token）
+  setToken(t) {
+    this.TOKEN = t || '';
+    try { wx.setStorageSync('token', this.TOKEN); } catch (e) { /* 满则忽略 */ }
+  },
+  clearToken() {
+    this.TOKEN = '';
+    try { wx.removeStorageSync('token'); } catch (e) { /* 忽略 */ }
+  },
 
   // 会话
   CONV_GROUP: 'grp_experts',

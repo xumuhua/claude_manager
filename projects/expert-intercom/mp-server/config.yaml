@@ -50,3 +50,13 @@ agents:
     token: "env:MP_TOKEN_OUTSIDER"
     scope: [group]
     openid: null
+
+# 登录账号表（F7，POST /login）。真值只放 config.local.yaml（gitignore 不变），
+# 本模板仅示意结构。password_pbkdf2 生成：
+#   python3 -c 'import sys; sys.path.insert(0,"server"); import config; print(config.make_password_hash("明文"))'
+# 明文用完即弃，不落任何文件/日志。users 整体缺省时 /login 返回 503（仅 token 旁路可用）。
+# users:
+#   - username: example
+#     password_pbkdf2: "pbkdf2_sha256$200000$<salt_hex>$<hash_hex>"
+#     agent: gege                # 须引用上方 agents 已登记的 name，登录下发其 token
+#     display_name: 哥哥          # 可选，缺省取 agent name

@@ -42,8 +42,9 @@ Page({
     this.recCancelled = false;
     this.pollTimer = null;
 
-    if (!cfg.TOKEN) {
-      wx.showModal({ title: '未配置 token', content: '开发态请在 config.local.js 填入 token（带外下发）', showCancel: false });
+    if (!cfg.TOKEN) {   // F7：无登录态（storage 无 token 且无 config.local.js 旁路）→ 回登录页
+      wx.reLaunch({ url: '/pages/login/index' });
+      return;
     }
 
     // 录音回调只注册一次（重复注册会叠加触发）
