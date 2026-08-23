@@ -5,7 +5,9 @@
 - 飞书网关：`FEISHU_ALLOW_BOTS=mentions`——bot 消息必须 @ 他才收得到；我在自己应用下 @ 他用 open_id `ou_04f32ec8d28fd72e2bab38ae20539bcc`。
 
 ## 踩坑（2026-08-23 GUI 验证）
+- **devtools 2.02 已废弃老 miniprogram-automator 协议**：GUI 自动化一律走新 MCP 通道（47 工具），不要再试 automator。
 - miniprogram-automator：`cliPath` 必须指 **cli.bat 全路径**；开发者工具"服务端口"必须手动开启，否则自动化连接 FATAL。
+- packOptions.ignore 的文件（如 config.local.js）会被排除出**编译包**（不止 git），模拟器/预览包里 require 抛错——凭证注入要靠登录态（F7），不靠手填文件。
 - claude 长会话 30 分钟无活动会超时卡死 → 恢复手段：新会话或 /reset。
 - 降级路径优先：`cli.bat preview` 出预览二维码给哥哥扫码真机体验，比全量自动化快且稳。
 - **echo 模式只能用于上岗验证**：验证完必须改回 claude——8/23 他的 echo 与 yifei 端自动应答互踢出约 250 条回声环。
