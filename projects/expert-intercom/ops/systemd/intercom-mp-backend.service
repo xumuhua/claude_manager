@@ -1,0 +1,28 @@
+# expert-intercom mp-backend systemd unit —— 本机（115.190.64.190）开发态部署用
+# 安装：sudo cp intercom-mp-backend.service /etc/systemd/system/ && sudo systemctl daemon-reload
+# 注意区分：mp-server/mp-backend.service 是「备案域名服务器」模板（/opt 路径 + 占位 token），
+# 本文件是本机（/data 路径 + config.local.yaml）实际运行版，两者不通用。
+[Unit]
+Description=expert-intercom mp-backend（8766，F5 小程序后端，本机开发态）
+After=network-online.target intercom-hub.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=coder
+WorkingDirectory=/data/workspace/expert-intercom/mp-backend
+# /ai/summary 依赖 DOUBAO_ARK_KEY（config.local.yaml 中 ark_key 为 env: 引用，缺省则降级
+# AI_UNAVAILABLE）。2026-08-24 切换时按「行为不变」原则取当时 nohup 进程的实际值生成。
+# 注意：该值与 /home/manager/keys/doubao.sh 的 ANTHROPIC_AUTH_TOKEN 现值不一致（疑似
+# key 已轮换而 nohup 进程仍持旧值），两个值哪个有效未验证，已报亦菲确认。
+# "-" 前缀：文件缺失时服务仍可启动（AI 摘要按既有逻辑降级，不影响核心功能）。
+EnvironmentFile=-/home/manager/keys/doubao-mp.env
+ExecStart=/data/workspace/expert-intercom/mp-backend/venv/bin/python server/app.py --config config.local.yaml
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=intercom-mp-backend
+
+[Install]
+WantedBy=multi-user.target

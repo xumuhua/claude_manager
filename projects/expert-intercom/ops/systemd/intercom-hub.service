@@ -1,0 +1,22 @@
+# expert-intercom hub systemd unit —— 本机（115.190.64.190）生产部署用
+# 安装：sudo cp intercom-hub.service /etc/systemd/system/ && sudo systemctl daemon-reload
+# 与 hub-server 源码同仓；部署侧 /data/workspace/expert-intercom/deploy/hub/ 同步一份。
+# 2026-08-24 coder P6：替代 nohup 裸跑（机器重启即断、进程管理靠人肉的教训见 8/24 pkill 误杀事件）。
+[Unit]
+Description=expert-intercom 消息总线 hub（8765，F2）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=coder
+WorkingDirectory=/data/workspace/expert-intercom/deploy/hub
+ExecStart=/data/workspace/expert-intercom/deploy/hub/venv/bin/python server/hub.py --config config.yaml
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=intercom-hub
+
+[Install]
+WantedBy=multi-user.target
