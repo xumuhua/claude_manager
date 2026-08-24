@@ -5,8 +5,9 @@
   未登记 grp_*/dm_* 一律 BAD_CONVERSATION；dm_yifei 为固定会话
 - §2 消息 schema 校验与错误码表（§9.3）
 - §3 @路由：订阅分发（R3.1/R3.2）、UNKNOWN_MENTION 警告（R3.7）
-- §4 防循环：共享计数器（R4.2）、上限冻结+广播（R4.1/R4.5）、
-  超时清零（R4.3）、人工/STOP 复位（R4.4）、计数口径（R4.6）
+- §4 防循环（v1.4 三件套，不依赖 role 等间接信号）：速率滑窗熔断（R4.1/R4.2，
+  计数只随时间窗口衰减，任何角色发言均不清零）、每会话单飞+Drop（R4.3）、
+  熔断告警 dm_yifei + 日志 WARNING（R4.5）、STOP 显式复位（R4.4）、计数口径（R4.6）
 - §5 鉴权与可见性（token 预签发；v1.3 会话成员制 can_access 唯一判定函数；
   dm_yifei 专家 403 红线；dm_<expert> 三方可见；gege 恒可见；R5.1-R5.6）
 - §6 心跳/离线判定（R6.1/R6.2）、last_seq 补发（R6.4/R6.7）、先落库再分发（R6.6）、
@@ -78,42 +79,136 @@ class RateLimiter:
         return True
 
 
-class RoundGuard:
-    """防循环计数器（R4.1-R4.6）：hub 单侧维护，键 = conversation_id（R4.2）。"""
+class _ConvGuard:
+    """单会话 guard 运行时状态。"""
 
-    def __init__(self, max_rounds: int):
-        self.max_rounds = max_rounds
-        self._count = collections.defaultdict(int)
-        self._frozen = set()
+    __slots__ = ("hits", "inflight", "frozen_since")
 
-    def on_message(self, msg: dict, role: str | None = None) -> bool:
-        """消息入库后调用。role = 发送端 endpoint_role（from=hub 的内部消息为 None）。
-        返回 True 表示本次入库触发达到上限（需广播 ROUND_LIMIT_REACHED）。"""
+    def __init__(self):
+        self.hits = collections.deque()   # 计数事件时间戳（单调钟），含被 Drop 的尝试
+        self.inflight = {}                # @目标 -> 最近一次被受理触发的时间戳
+        self.frozen_since = None          # 熔断起始时间戳（None = 未熔断）
+
+
+class LoopGuard:
+    """防循环三件套（F1 v1.4 §4，替代旧 RoundGuard）。设计原则：判定只认硬信号
+    （速率/触发计数/时间窗口），不依赖 endpoint_role 等间接信号——任何角色发言
+    都不清零计数器，计数只随时间窗口衰减（8/23 回声环根因即 role 清零击穿）。
+
+    1. 速率滑窗熔断（R4.1/R4.2）：每会话 window_seconds 滑窗内计数消息
+       （type∈{text,markdown} 且 from≠hub，含被 Drop 的触发尝试）≥ max_in_window
+       → 熔断：该会话带 @ 的触发消息一律 Drop（429 LOOP_GUARD_DROP，不入库不投递），
+       无 @ 的正常消息不受影响。熔断只随窗口衰减恢复（最短 frozen_min_seconds 防抖动）。
+    2. 每会话单飞 + Drop（R4.3）：同一会话同一 @目标 在 inflight_seconds 内已有
+       被受理的触发，后续同类触发 Drop（记日志、不入库、不投递）——hub 无应答完成
+       回执，单飞窗口取时间代理；从结构上消灭 ping-pong。
+    3. 熔断告警（R4.5）：熔断瞬间向 alert_conv（dm_yifei）写系统告警（含会话/窗口
+       计数/时间）+ 日志 WARNING；恢复 = 窗口衰减自动解除，SIGHUP 热载清零全部
+       guard 状态 = 人工立即解除通道。
+    R4.4：type=system, body=STOP 仍是显式人工复位指令（硬信号，非 role 判定）。
+    """
+
+    def __init__(self, window_seconds: int, max_in_window: int,
+                 inflight_seconds: int, frozen_min_seconds: int,
+                 alert_conv: str):
+        self.window_seconds = window_seconds
+        self.max_in_window = max_in_window
+        self.inflight_seconds = inflight_seconds
+        self.frozen_min_seconds = frozen_min_seconds
+        self.alert_conv = alert_conv
+        self._state = collections.defaultdict(_ConvGuard)
+
+    # ---------- 内部 ----------
+
+    def _evict(self, st: _ConvGuard, now: float):
+        while st.hits and now - st.hits[0] > self.window_seconds:
+            st.hits.popleft()
+
+    def _frozen(self, st: _ConvGuard, now: float) -> bool:
+        if len(st.hits) >= self.max_in_window:
+            return True
+        return (st.frozen_since is not None
+                and now - st.frozen_since < self.frozen_min_seconds)
+
+    # ---------- 对外 ----------
+
+    def admit(self, msg: dict) -> bool:
+        """入库前判定（R6.6 之前）。返回 True = 本消息触发熔断（需广播+告警）。
+        需 Drop 时抛 HubError(429 LOOP_GUARD_DROP)：不落库、不分发、已记账。"""
+        now = time.monotonic()
         conv = msg["conversation_id"]
         if msg["type"] == "system" and msg["body"] == STOP_BODY:
-            self.reset(conv)  # R4.4 STOP 立即清零
-            return False
-        if role in ("gege", "yifei"):
-            self.reset(conv)  # R4.4 人工介入视为新话题（R8.3：人工语义按 role 判定）
+            self.reset(conv)             # R4.4 STOP 显式复位（硬信号）
             return False
         if msg["type"] == "system" or msg["from"] == "hub":
-            return False       # R4.6 不计入
-        self._count[conv] += 1
-        if self._count[conv] >= self.max_rounds and conv not in self._frozen:
-            self._frozen.add(conv)
-            return True        # R4.1/R4.5
-        return False
+            return False                 # R4.6：system/hub 消息不计入
+        st = self._state[conv]
+        self._evict(st, now)
+        st.hits.append(now)              # 一律先记账：被 Drop 的尝试同样计入滑窗
+        tripped = False
+        if len(st.hits) >= self.max_in_window and st.frozen_since is None:
+            st.frozen_since = now        # R4.1 熔断（未熔断→熔断的跳变只此一处）
+            tripped = True
+        mentions = msg.get("mentions") or []
+        if mentions:
+            if self._frozen(st, now) and not tripped:
+                log.warning("LOOP_GUARD 会话 %s 熔断中，Drop 带@消息 from=%s "
+                            "（窗口计数 %d/%d）", conv, msg["from"],
+                            len(st.hits), self.max_in_window)
+                raise HubError(429, "LOOP_GUARD_DROP",
+                               f"会话 {conv} 熔断中，@触发消息已丢弃；"
+                               "窗口衰减后自动恢复")
+            hot = [m for m in mentions
+                   if now - st.inflight.get(m, -1e18) < self.inflight_seconds]
+            if hot:
+                log.info("LOOP_GUARD 会话 %s 单飞窗口内重复触发 %s（from=%s），Drop",
+                         conv, hot, msg["from"])
+                raise HubError(429, "LOOP_GUARD_DROP",
+                               f"会话 {conv} 单飞窗口内对 {hot} 的重复触发已丢弃；"
+                               f"{self.inflight_seconds}s 后可重发")
+            for m in mentions:
+                st.inflight[m] = now     # 受理：登记在飞触发
+        return tripped
 
     def reset(self, conv: str):
-        self._count[conv] = 0
-        self._frozen.discard(conv)
+        """R4.4 STOP / SIGHUP 人工复位。"""
+        self._state.pop(conv, None)
 
-    def count(self, conv: str) -> int:
-        return self._count[conv]
+    def reset_all(self):
+        """SIGHUP：人工立即解除全部熔断（热载同时清零 guard 运行时状态）。"""
+        self._state.clear()
 
     def frozen_list(self) -> list:
-        """R6.8：当前处于防循环冻结状态的会话列表（catchup_done 携带）。"""
-        return sorted(self._frozen)
+        """R6.8：当前处于熔断状态的会话列表（catchup_done 携带）。"""
+        now = time.monotonic()
+        out = []
+        for conv, st in self._state.items():
+            self._evict(st, now)
+            if self._frozen(st, now):
+                out.append(conv)
+        return sorted(out)
+
+    def sweep(self) -> list:
+        """housekeeper 周期调用：滑窗 eviction + 返回本次自动解除熔断的会话列表。"""
+        now = time.monotonic()
+        recovered = []
+        for conv, st in list(self._state.items()):
+            self._evict(st, now)
+            if st.frozen_since is not None and not self._frozen(st, now):
+                st.frozen_since = None
+                recovered.append(conv)
+            if not st.hits and st.frozen_since is None:
+                # inflight 项随窗口自然过期，整槽位清空防内存缓慢增长
+                self._state.pop(conv, None)
+        return recovered
+
+    def window_count(self, conv: str) -> int:
+        st = self._state.get(conv)
+        if st is None:
+            return 0
+        now = time.monotonic()
+        self._evict(st, now)
+        return len(st.hits)
 
 
 class ConnState:
@@ -131,27 +226,40 @@ class Hub:
         self.cfg = cfg
         self.config_path = config_path
         self.store = Store(cfg.db_path)
-        self.guard = RoundGuard(cfg.max_rounds)
+        self.guard = LoopGuard(
+            cfg.guard_window_seconds, cfg.guard_max_in_window,
+            cfg.guard_inflight_seconds, cfg.guard_frozen_min_seconds,
+            cfg.guard_alert_conv)
         self.ratelimit = RateLimiter(cfg.rate_limit_per_minute)
         self.conns = set()          # ConnState
         self.started = time.monotonic()
-        self._last_msg_ts = {}      # conversation_id -> epoch（R4.3 用）
-        # R4.3 计数器/最后消息时间从库中恢复，保证重启后口径一致
+        # 重启后从库中回放滑窗内近期消息，保证熔断口径跨重启一致
         self._restore_guard_state()
 
     # ---------- 启动恢复 ----------
 
     def _restore_guard_state(self):
-        """重启后从存档重建各会话计数器与最后消息时间（近似：按全库尾部回放）。"""
+        """重启后从存档回放仍处于滑窗内的近期计数消息，重建 hits/inflight 近似态。
+        （窗口外旧消息天然衰减掉，无需恢复；单飞窗口短，缺失影响秒级。）"""
+        now_epoch = time.time()
+        now_mono = time.monotonic()
         for conv in self.store.list_conversations():
             msgs = self.store.fetch_after_seq(conv, 0, 500)
-            # 只需要尾部状态；从头回放成本高，取最近 max_rounds+1 条已够判定
-            tail = msgs[-(self.cfg.max_rounds + 1):]
-            if tail:
-                self._last_msg_ts[conv] = _ts_to_epoch(tail[-1]["ts"])
-            for m in tail:
-                card = self.cfg.agent_by_name(m["from"])
-                self.guard.on_message(m, card.endpoint_role if card else None)
+            for m in msgs[-(self.cfg.guard_max_in_window + 1):]:
+                age = now_epoch - _ts_to_epoch(m["ts"])
+                if age > self.cfg.guard_window_seconds:
+                    continue
+                if m["type"] == "system" or m["from"] == "hub":
+                    continue
+                st = self.guard._state[conv]
+                ts_mono = now_mono - age
+                st.hits.append(ts_mono)
+                if age <= self.cfg.guard_inflight_seconds:
+                    for target in (m.get("mentions") or []):
+                        st.inflight[target] = ts_mono
+                if len(st.hits) >= self.cfg.guard_max_in_window \
+                        and st.frozen_since is None:
+                    st.frozen_since = now_mono
 
     # ---------- 鉴权与可见性（§5） ----------
 
@@ -237,7 +345,6 @@ class Hub:
         except sqlite3.IntegrityError:
             raise HubError(409, "DUP_MSG_ID", f"msg_id 重复: {msg['msg_id']}")
         msg["seq"] = seq
-        self._last_msg_ts[msg["conversation_id"]] = time.time()
         return msg
 
     def accept_message(self, agent: config_mod.AgentCard, raw) -> tuple[dict, list]:
@@ -246,12 +353,44 @@ class Hub:
             raise HubError(429, "RATE_LIMITED", "单端发送超 60 条/分钟")
         msg, warnings = self._validate_inbound(agent, raw)
         msg["ts"] = utcnow()  # hub 时钟（F1 §2.2）
+        # R4：guard 入库前判定——Drop 抛 429 LOOP_GUARD_DROP（不落库不分发）
+        tripped = self.guard.admit(msg)
         msg = self._commit(msg)          # 先落库
-        hit_limit = self.guard.on_message(msg, agent.endpoint_role)
         self._dispatch(msg)              # 再分发
-        if hit_limit:
-            self._broadcast_round_limit(msg["conversation_id"])  # R4.5
+        if tripped:
+            self._on_guard_tripped(msg["conversation_id"])  # R4.5
         return msg, warnings
+
+    def _on_guard_tripped(self, conv: str):
+        """R4.5 熔断瞬间：会话内广播 ROUND_LIMIT_REACHED（v1.3 兼容）+
+        向 alert_conv（dm_yifei）写熔断告警（死信出口）+ 日志 WARNING。"""
+        count = self.guard.window_count(conv)
+        self._broadcast_round_limit(conv)
+        alert = {
+            "msg_id": str(uuid.uuid4()),
+            "conversation_id": self.guard.alert_conv,
+            "from": "hub",
+            "mentions": [],
+            "type": "system",
+            "body": (f"LOOP_GUARD_TRIPPED 会话={conv} 窗口计数={count} "
+                     f"上限={self.guard.max_in_window} "
+                     f"窗口={self.guard.window_seconds}s 时间={utcnow()} "
+                     f"影响=该会话带@触发消息暂停投递（无@正常消息不受影响） "
+                     f"恢复=窗口衰减自动解除（最短{self.guard.frozen_min_seconds}s）"
+                     "或 SIGHUP 人工解除"),
+            "reply_to": None,
+            "ts": utcnow(),
+        }
+        try:
+            alert = self._commit(alert)
+            self._dispatch(alert)
+        except Exception:
+            log.exception("熔断告警写入 %s 失败（会话 %s）",
+                          self.guard.alert_conv, conv)
+        log.warning("LOOP_GUARD 会话 %s 熔断：窗口 %ds 内计数 %d ≥ 上限 %d，"
+                    "带@触发消息暂停投递；已告警 %s",
+                    conv, self.guard.window_seconds, count,
+                    self.guard.max_in_window, self.guard.alert_conv)
 
     def _broadcast_round_limit(self, conv: str):
         sysmsg = {
@@ -266,8 +405,6 @@ class Hub:
         }
         sysmsg = self._commit(sysmsg)
         self._dispatch(sysmsg)
-        log.warning("会话 %s 达到轮数上限 %d，已冻结并广播 ROUND_LIMIT_REACHED",
-                    conv, self.cfg.max_rounds)
 
     def _deliver_frame(self, msg: dict) -> str:
         """F1 v1.2 §9.2：deliver 帧 payload = 完整 schema + 发送者 endpoint_role
@@ -296,20 +433,14 @@ class Hub:
         except Exception as e:
             log.info("分发失败（%s）: %s", conn.agent.name, e)
 
-    # ---------- 后台任务：R4.3 超时清零 / R6.2 离线判定 ----------
+    # ---------- 后台任务：guard 滑窗维护 / R6.2 离线判定 ----------
 
     async def _housekeeper(self):
-        idle = self.cfg.session_idle_timeout
         offline_after = 3 * self.cfg.heartbeat_interval  # R6.2：默认 90 秒
         while True:
-            await asyncio.sleep(min(30, max(2, idle // 4)))
-            now = time.time()
-            for conv, ts in list(self._last_msg_ts.items()):
-                if now - ts >= idle and (
-                    self.guard.count(conv) > 0 or conv in self.guard._frozen
-                ):
-                    self.guard.reset(conv)
-                    log.info("R4.3 会话 %s 空闲超时，计数器清零", conv)
+            await asyncio.sleep(min(30, max(2, self.cfg.guard_window_seconds // 4)))
+            for conv in self.guard.sweep():
+                log.info("LOOP_GUARD 会话 %s 滑窗衰减，熔断自动解除", conv)
             mono = time.monotonic()
             for conn in list(self.conns):
                 if mono - conn.last_seen > offline_after:
@@ -490,8 +621,11 @@ class Hub:
 
     def reload_config(self):
         """SIGHUP 触发：重载 config.yaml。可热改：agents 登记区、conversations
-        登记表（成员制）、max_rounds / session_idle_timeout / heartbeat_interval /
-        rate_limit_per_minute。port 与 db_path 不可热改（改这两项必须重启）。
+        登记表（成员制）、guard_* 防循环参数 / session_idle_timeout /
+        heartbeat_interval / rate_limit_per_minute。port 与 db_path 不可热改
+        （改这两项必须重启）。
+        R4.4：热载同时清零全部 guard 运行时状态——即"人工立即解除熔断"通道
+        （自动恢复走滑窗衰减，无需人工；SIGHUP 用于提前解除）。
         R5.5：热加载后新成员表立即生效——已建立连接的订阅逐条重校验，
         已越权/已删除的订阅立即剔除（被剔除端重连再订阅时被 403）。"""
         try:
@@ -502,7 +636,12 @@ class Hub:
         if new_cfg.port != self.cfg.port or new_cfg.db_path != self.cfg.db_path:
             log.warning("SIGHUP 热加载：port/db_path 不支持热改（需重启），其余项已生效")
         self.cfg = new_cfg
-        self.guard.max_rounds = new_cfg.max_rounds
+        self.guard.window_seconds = new_cfg.guard_window_seconds
+        self.guard.max_in_window = new_cfg.guard_max_in_window
+        self.guard.inflight_seconds = new_cfg.guard_inflight_seconds
+        self.guard.frozen_min_seconds = new_cfg.guard_frozen_min_seconds
+        self.guard.alert_conv = new_cfg.guard_alert_conv
+        self.guard.reset_all()           # R4.4：SIGHUP = 人工立即解除全部熔断
         self.ratelimit.per_minute = new_cfg.rate_limit_per_minute
         # R5.5：重校验在线连接的既有订阅
         for conn in list(self.conns):
@@ -514,9 +653,11 @@ class Hub:
                 log.warning("R5.5 热加载后 %s 的订阅已越权/失效，剔除: %s",
                             conn.agent.name, sorted(dropped))
                 conn.subscriptions = kept
-        log.info("SIGHUP 热加载完成：agents=%d，conversations=%s，max_rounds=%d",
+        log.info("SIGHUP 热加载完成：agents=%d，conversations=%s，"
+                 "guard 窗口=%ds 上限=%d 单飞=%ds 最短熔断=%ds（guard 状态已清零）",
                  len(new_cfg.agents), sorted(new_cfg.conversations),
-                 new_cfg.max_rounds)
+                 new_cfg.guard_window_seconds, new_cfg.guard_max_in_window,
+                 new_cfg.guard_inflight_seconds, new_cfg.guard_frozen_min_seconds)
 
     # ---------- 运行 ----------
 

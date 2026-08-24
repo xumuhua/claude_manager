@@ -48,8 +48,14 @@ class Conversation:
 class Config:
     port: int = 8765
     db_path: str = "/data/workspace/expert-intercom/archive/db/intercom.db"
-    max_rounds: int = 20                 # F1 §0 max_rounds 默认 20
-    session_idle_timeout: int = 600      # 默认 600 秒
+    # F1 v1.4 §4 防循环三件套参数（guard_*）
+    guard_window_seconds: int = 600      # 速率滑窗宽度（秒）：慢环（30s/轮）也在窗内打满
+    guard_max_in_window: int = 15        # 滑窗内计数消息上限（≥ 即熔断，buzz 10 量级）
+    guard_inflight_seconds: int = 5      # 单飞窗口：同会话同@目标最小触发间隔（秒）
+    guard_frozen_min_seconds: int = 300  # 最短熔断时长（防抖动）
+    guard_alert_conv: str = "dm_yifei"   # 熔断告警投递会话（死信出口）
+    max_rounds: int = 20                 # v1.4 起废弃：仅作 guard_max_in_window 缺省回退
+    session_idle_timeout: int = 600      # v1.4 起 guard 不再使用（滑窗衰减取代），保留兼容
     heartbeat_interval: int = 30         # 默认 30 秒；离线判定 = 3 个周期
     rate_limit_per_minute: int = 60      # F1 §9.3 RATE_LIMITED
     conversations: dict = field(default_factory=dict)  # id -> Conversation（R0.1）
@@ -150,11 +156,25 @@ def load(path: str) -> Config:
     cfg = Config(
         port=int(raw.get("port", 8765)),
         db_path=str(raw.get("db_path", Config.db_path)),
+        guard_window_seconds=int(raw.get("guard_window_seconds", 600)),
+        # v1.4：guard_max_in_window 优先；缺省回退老 max_rounds（平滑迁移）
+        guard_max_in_window=int(raw.get("guard_max_in_window",
+                                        raw.get("max_rounds", 15))),
+        guard_inflight_seconds=int(raw.get("guard_inflight_seconds", 5)),
+        guard_frozen_min_seconds=int(raw.get("guard_frozen_min_seconds", 300)),
+        guard_alert_conv=str(raw.get("guard_alert_conv", "dm_yifei")),
         max_rounds=int(raw.get("max_rounds", 20)),
         session_idle_timeout=int(raw.get("session_idle_timeout", 600)),
         heartbeat_interval=int(raw.get("heartbeat_interval", 30)),
         rate_limit_per_minute=int(raw.get("rate_limit_per_minute", 60)),
     )
+    for name in ("guard_window_seconds", "guard_max_in_window",
+                 "guard_inflight_seconds", "guard_frozen_min_seconds"):
+        if getattr(cfg, name) <= 0:
+            _fail(f"{name} 必须为正整数")
+    if not (cfg.guard_alert_conv.startswith("dm_")
+            or cfg.guard_alert_conv.startswith("grp_")):
+        _fail(f"guard_alert_conv 必须是 grp_*/dm_* 会话: {cfg.guard_alert_conv!r}")
 
     agents = raw.get("agents")
     if not isinstance(agents, list) or not agents:
@@ -189,5 +209,8 @@ def load(path: str) -> Config:
     # yifei/gege 角色卡不强制全局登记；凡登记 dm_<expert> 会话时，
     # R0.3 已逐条强制 yifei 卡存在且 role=yifei（见 _load_conversations）
     _load_conversations(raw, cfg)  # 依赖 agents 先加载（members 校验）
+    if not cfg.is_registered_conv(cfg.guard_alert_conv):
+        _fail(f"guard_alert_conv 未在登记表登记（且非固定会话 dm_yifei）: "
+              f"{cfg.guard_alert_conv}")
 
     return cfg
