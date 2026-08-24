@@ -144,6 +144,11 @@ class LoopGuard:
             return False                 # R4.6：system/hub 消息不计入
         st = self._state[conv]
         self._evict(st, now)
+        # D2 修复：惰性清零过期冻结——衰减后若 _frozen() 已为 False 即清零，
+        # 不必等 housekeeper sweep；否则 sweep 前的窗口内二次打满时下方跳变
+        # 条件（frozen_since is None）不满足，第二次熔断无广播无告警（静默）。
+        if st.frozen_since is not None and not self._frozen(st, now):
+            st.frozen_since = None
         st.hits.append(now)              # 一律先记账：被 Drop 的尝试同样计入滑窗
         tripped = False
         if len(st.hits) >= self.max_in_window and st.frozen_since is None:
@@ -160,7 +165,10 @@ class LoopGuard:
                                "窗口衰减后自动恢复")
             hot = [m for m in mentions
                    if now - st.inflight.get(m, -1e18) < self.inflight_seconds]
-            if hot:
+            # D1 修复：熔断跳变消息豁免单飞 Drop（快环节奏下跳变消息几乎必然
+            # 同时命中单飞）——否则 HubError 抛出后 tripped 标志随异常丢失，
+            # ROUND_LIMIT 广播与 dm_yifei 告警双双缺失。
+            if hot and not tripped:
                 log.info("LOOP_GUARD 会话 %s 单飞窗口内重复触发 %s（from=%s），Drop",
                          conv, hot, msg["from"])
                 raise HubError(429, "LOOP_GUARD_DROP",

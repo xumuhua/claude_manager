@@ -15,6 +15,8 @@
  T6 STOP 显式复位：熔断中 STOP 后立即恢复
  T7 R6.8：熔断会话出现在 catchup_done.frozen_conversations
  T8 SIGHUP 人工解除：熔断中 SIGHUP 热载后立即恢复
+ T9 二次熔断不静默（D2 回归）：衰减后 sweep 清零前再次打满，第二轮熔断
+    同样必须出 ROUND_LIMIT 广播 + dm_yifei 告警
 
 用法：venv/bin/python tests/guardfix_test.py
 退出码 0 = 全部通过。
@@ -31,7 +33,7 @@ VENV_PY = sys.executable
 # 测试 token 运行时随机生成（自包含测试，零硬编码凭证，可安全入库）
 TOK = {n: secrets.token_hex(32) for n in ("ta", "tb", "tg", "yifei")}
 H = {k: {"Authorization": f"Bearer {v}"} for k, v in TOK.items()}
-CONVS = ["grp_experts"] + [f"grp_t{i}" for i in (1, 2, 3, 4, 5, 6, 7, 8, 9)]
+CONVS = ["grp_experts"] + [f"grp_t{i}" for i in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)]
 ok_all = True
 
 def report(name, ok, detail=""):
@@ -98,6 +100,23 @@ async def main():
     msgs = await get_msgs("grp_t1")
     report("T1a 快环被单飞结构杀死：入库 ≤20 条（旧代码同期 98 条/15s）",
            len(msgs) <= 20, f"入库 {len(msgs)} 条")
+    # D1 回归：确定性快环打满——预排程 8 发带@（0.15s < 单飞窗 2s，不等回复，
+    # 即 qa Q1a 场景）。跳变消息（第 5 发）必同时命中单飞；旧代码单飞 Drop
+    # 吞掉 tripped → 无广播无告警（8/23 同类节奏，原断言只查入库条数构成盲区）
+    for i in range(8):
+        await post("ta", "grp_t11", f"@tb 快环 {i+1}", mentions=["tb"])
+        await asyncio.sleep(0.15)
+    await asyncio.sleep(0.3)
+    msgs11 = await get_msgs("grp_t11")
+    dm = await get_msgs("dm_yifei")
+    alerts_t1 = [m for m in dm if "LOOP_GUARD_TRIPPED" in m.get("body", "")
+                 and "会话=grp_t11" in m["body"]]
+    report("T1e 快环熔断必须出 ROUND_LIMIT_REACHED 广播（D1 回归）",
+           len(round_limits(msgs11)) == 1,
+           f"ROUND_LIMIT {len(round_limits(msgs11))} 条")
+    report("T1f 快环熔断告警必须到达 dm_yifei（D1 回归）",
+           len(alerts_t1) == 1,
+           alerts_t1[-1]["body"][:80] if alerts_t1 else "无告警")
     # T1-slow：慢环（应答 2.2s > 单飞窗 2s）——单飞不适用，速率熔断必须 ≤20 条生效
     proc = run_repro(25, "grp_t2", 2.2)
     print("  T1-slow repro 输出:\n   " + proc.stdout.replace("\n", "\n   ").strip())
@@ -215,6 +234,28 @@ async def main():
     await asyncio.sleep(0.8)
     st, _ = await post("tb", "grp_t9", "@ta SIGHUP 后", mentions=["ta"])
     report("T8 SIGHUP 热载人工解除熔断", st == 200, f"HTTP {st}")
+
+    # ---- T9：二次熔断不静默（D2 回归）----
+    # 衰减后 _frozen() 已为 False，但 frozen_since 要等 housekeeper sweep
+    # （周期 3s）才清零；sweep 前再次打满时旧代码跳变条件不满足 → 无广播无告警
+    for i in range(5):
+        await post("ta", "grp_t10", f"fuse1 {i+1}")   # 首轮熔断
+    await asyncio.sleep(0.3)
+    rl1 = len(round_limits(await get_msgs("grp_t10")))
+    report("T9a 首轮熔断广播基线 =1", rl1 == 1, f"ROUND_LIMIT {rl1}")
+    await asyncio.sleep(12.5)                         # 窗口 12s 衰减 + frozen_min 3s 已过
+    for i in range(5):
+        await post("ta", "grp_t10", f"fuse2 {i+1}")   # 二轮打满（sweep 未必已清零）
+    await asyncio.sleep(0.3)
+    msgs = await get_msgs("grp_t10")
+    dm = await get_msgs("dm_yifei")
+    alerts10 = [m for m in dm if "LOOP_GUARD_TRIPPED" in m.get("body", "")
+                and "会话=grp_t10" in m["body"]]
+    report("T9b 二次熔断必须出第二次 ROUND_LIMIT 广播（D2 回归）",
+           len(round_limits(msgs)) == 2,
+           f"ROUND_LIMIT {len(round_limits(msgs))} 条")
+    report("T9c 二次熔断必须出第二次 dm_yifei 告警（D2 回归）",
+           len(alerts10) == 2, f"告警 {len(alerts10)} 条")
 
     print("\n===== guard 三件套专项：", "全部通过" if ok_all else "存在失败", "=====")
     return 0 if ok_all else 1
