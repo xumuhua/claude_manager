@@ -14,6 +14,9 @@ github:
   timeout_s: 15
   api_base: https://api.github.com
   raw_base: https://raw.githubusercontent.com
+  # 可选：只读 PAT（方案 B，2026-08-24 哥哥拍板）——解除私有仓匿名 404（三仓代理 404 根因）。
+  # 红线口径：仅服务端 env 注入，端侧/小程序不接触；缺省或 env 未设置 = 匿名，行为完全不变。
+  # token: "env:GITHUB_RO_TOKEN"
 
 # AI 中转（D1 v2 §9 R-5/R-6/R-7）。红线：doubao key 只走 env 注入，不落本文件/GitHub。
 # DOUBAO_ARK_KEY：source /home/manager/keys/doubao.sh 后取 "$ANTHROPIC_AUTH_TOKEN"。

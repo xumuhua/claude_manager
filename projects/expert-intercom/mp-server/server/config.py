@@ -58,6 +58,9 @@ def load_config(path):
     cfg["gh_timeout_s"] = int(gh.get("timeout_s", 15))
     cfg["gh_api_base"] = gh.get("api_base", "https://api.github.com")
     cfg["gh_raw_base"] = gh.get("raw_base", "https://raw.githubusercontent.com")
+    # 可选只读 PAT（方案 B，2026-08-24 哥哥拍板）：值写 "env:GITHUB_RO_TOKEN"；
+    # env 未设置时返回 None = 匿名降级，不阻塞启动，行为与旧版完全一致
+    cfg["gh_token"] = _resolve_optional(gh.get("token"))
 
     # AI 中转（D1 v2 §9 R-5/R-6/R-7；哥哥 2026-08-23 拍板 Q5 限额）
     # 红线：doubao key 只经 env 注入，不落代码/配置/GitHub；语音凭证为 openspeech

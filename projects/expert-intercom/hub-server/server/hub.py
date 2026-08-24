@@ -96,9 +96,13 @@ class LoopGuard:
     都不清零计数器，计数只随时间窗口衰减（8/23 回声环根因即 role 清零击穿）。
 
     1. 速率滑窗熔断（R4.1/R4.2）：每会话 window_seconds 滑窗内计数消息
-       （type∈{text,markdown} 且 from≠hub，含被 Drop 的触发尝试）≥ max_in_window
+       （type∈{text,markdown,system} 且 from≠hub，含被 Drop 的触发尝试）
+       ≥ max_in_window
        → 熔断：该会话带 @ 的触发消息一律 Drop（429 LOOP_GUARD_DROP，不入库不投递），
        无 @ 的正常消息不受影响。熔断只随窗口衰减恢复（最短 frozen_min_seconds 防抖动）。
+       P6（2026-08-24 哥哥拍板）：system 消息不再整体豁免——agent 所发 system
+       消息同样计窗（原豁免可被刷量击穿，qa guard-O1 点名补防御纵深）；
+       仅两类豁免：body=STOP（R4.4 复位通道必须保留）与 from=hub（系统源）。
     2. 每会话单飞 + Drop（R4.3）：同一会话同一 @目标 在 inflight_seconds 内已有
        被受理的触发，后续同类触发 Drop（记日志、不入库、不投递）——hub 无应答完成
        回执，单飞窗口取时间代理；从结构上消灭 ping-pong。
@@ -137,11 +141,12 @@ class LoopGuard:
         需 Drop 时抛 HubError(429 LOOP_GUARD_DROP)：不落库、不分发、已记账。"""
         now = time.monotonic()
         conv = msg["conversation_id"]
-        if msg["type"] == "system" and msg["body"] == STOP_BODY:
+        if msg["type"] == "system" and msg["body"].strip() == STOP_BODY:
             self.reset(conv)             # R4.4 STOP 显式复位（硬信号）
             return False
-        if msg["type"] == "system" or msg["from"] == "hub":
-            return False                 # R4.6：system/hub 消息不计入
+        if msg["from"] == "hub":
+            return False                 # R4.6：hub 系统源消息不计入；
+                                         # agent 所发 system（非 STOP）照常计窗（P6）
         st = self._state[conv]
         self._evict(st, now)
         # D2 修复：惰性清零过期冻结——衰减后若 _frozen() 已为 False 即清零，
@@ -257,8 +262,11 @@ class Hub:
                 age = now_epoch - _ts_to_epoch(m["ts"])
                 if age > self.cfg.guard_window_seconds:
                     continue
-                if m["type"] == "system" or m["from"] == "hub":
+                if m["from"] == "hub":
                     continue
+                if m["type"] == "system" \
+                        and (m.get("body") or "").strip() == STOP_BODY:
+                    continue               # STOP 为复位指令，不计窗（与 admit 同口径）
                 st = self.guard._state[conv]
                 ts_mono = now_mono - age
                 st.hits.append(ts_mono)
@@ -458,6 +466,12 @@ class Hub:
     # ---------- HTTP 端点（§9.1） ----------
 
     async def http_healthz(self, request: web.Request):
+        # P6（2026-08-24 哥哥拍板）：/healthz 限 localhost。hub 绑定 0.0.0.0 仅为
+        # 端侧 WS/消息端点服务，健康检查属内部运维面——本机监控（cron/systemd）
+        # 全走 127.0.0.1。外部探测一律 404（与未知路由同形，不暴露端点存在性，
+        # 与 R0.1 登记表"未登记=不存在"同口径），不用 403（403 反而证实端点存在）。
+        if request.remote not in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
+            raise web.HTTPNotFound()
         return web.json_response({
             "status": "ok",
             "hub_seq": self.store.max_seq(),

@@ -1,6 +1,9 @@
-"""GitHub 代理：仅 public 仓、仅文本/markdown、限 1MB（F5 规范）。
+"""GitHub 代理：仅文本/markdown、限 1MB（F5 规范）。
 
-红线：不代理私有仓，不带任何 GitHub 凭证（匿名访问，404/403 原样上报）。
+凭证口径（2026-08-24 哥哥拍板方案 B，替代原"绝不带任何凭证"红线）：
+默认匿名访问，404/403 原样上报；可选配置 github.token（值写 "env:GITHUB_RO_TOKEN"，
+只读 PAT，仅服务端 env 注入、端侧与小程序不接触）以解除私有仓匿名 404。
+未配置 / env 未设置 = 匿名，行为与旧版完全一致。
 """
 import re
 
@@ -23,6 +26,16 @@ TEXT_EXTS = {
 TEXT_NAMES = {"license", "readme", "changelog", "authors", "contributing", "makefile", "dockerfile"}
 
 _UA = {"User-Agent": "expert-intercom-mp-backend/1.0", "Accept": "application/vnd.github+json"}
+
+
+def _session_headers(cfg):
+    """出站请求头：配置 github.token（只读 PAT，方案 B）时附带 Authorization；
+    未配置 = 匿名（与旧版逐字节一致）。"""
+    h = dict(_UA)
+    tok = cfg.get("gh_token")
+    if tok:
+        h["Authorization"] = f"Bearer {tok}"
+    return h
 
 
 def _bad_request(code, msg):
@@ -54,7 +67,8 @@ async def gh_tree(cfg, request):
 
     timeout = aiohttp.ClientTimeout(total=cfg["gh_timeout_s"])
     try:
-        async with aiohttp.ClientSession(timeout=timeout, headers=_UA) as s:
+        async with aiohttp.ClientSession(timeout=timeout,
+                                         headers=_session_headers(cfg)) as s:
             base = cfg["gh_api_base"]
             if not branch:
                 async with s.get(f"{base}/repos/{owner}/{repo}") as r:
@@ -107,7 +121,8 @@ async def gh_blob(cfg, request):
     max_bytes = cfg["gh_max_bytes"]
     timeout = aiohttp.ClientTimeout(total=cfg["gh_timeout_s"])
     try:
-        async with aiohttp.ClientSession(timeout=timeout, headers=_UA) as s:
+        async with aiohttp.ClientSession(timeout=timeout,
+                                         headers=_session_headers(cfg)) as s:
             # 主路径：contents API（raw Accept）。raw.githubusercontent.com 在部分网络
             # 不可达（开发环境实测超时），contents API 走 api.github.com 同一域名更稳。
             api_url = (f'{cfg["gh_api_base"]}/repos/{owner}/{repo}/contents/{path}'
