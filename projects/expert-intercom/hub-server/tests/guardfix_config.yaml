@@ -1,0 +1,62 @@
+port: 8778
+db_path: /tmp/guardfix_test.db
+# guard 三件套小参数（测试加速）：窗口 12s / 上限 5 / 单飞 2s / 最短熔断 3s
+guard_window_seconds: 12
+guard_max_in_window: 5
+guard_inflight_seconds: 2
+guard_frozen_min_seconds: 3
+guard_alert_conv: dm_yifei
+heartbeat_interval: 30
+rate_limit_per_minute: 600
+conversations:
+  - id: grp_experts
+    members: "*"
+  - id: grp_t1
+    members: "*"
+  - id: grp_t2
+    members: "*"
+  - id: grp_t3
+    members: "*"
+  - id: grp_t4
+    members: "*"
+  - id: grp_t5
+    members: "*"
+  - id: grp_t6
+    members: "*"
+  - id: grp_t7
+    members: "*"
+  - id: grp_t8
+    members: "*"
+  - id: grp_t9
+    members: "*"
+  - id: grp_t10
+    members: "*"
+  - id: grp_t11
+    members: "*"
+  - id: grp_t12
+    members: "*"
+  - id: grp_t13
+    members: "*"
+  - id: grp_t14
+    members: "*"
+agents:
+  - name: ta
+    platform: linux
+    capabilities: [test]
+    token: "bfb99be8a9b47982c8b92ec64ee308042f7621a666020d13b8fa8d8b203b164e"
+    endpoint_role: expert
+  - name: tb
+    platform: linux
+    capabilities: [test]
+    token: "fb7e27da5c9217904f33a83a898464820de7dc03c4b0828f26c3cf2c5f78f3ba"
+    endpoint_role: expert
+  - name: tg
+    platform: linux
+    capabilities: [test]
+    token: "f477afa96a0f320b8e94719b9763dd8994f14addb3801b685693298b8fe3d063"
+    endpoint_role: gege
+  - name: yifei
+    platform: linux
+    capabilities: [test]
+    token: "35660e1ae052c83641ee2626c9a9931777212c93c81a954d996f87dc40fc9191"
+    endpoint_role: yifei

@@ -1,10 +1,10 @@
 # 新专家账号上岗手册（expert_onboarding）
 
-> 当任务需要的能力在现有专家名册中没有对应专家时，在 manager 本机（115.190.64.190）新建专家账号并配置 claude 环境。先例：`coder`（2026-08-16，uid 1003）、`aichip`。
+> 当任务需要的能力在现有专家名册中没有对应专家时，在专家机（115.191.75.203，2026-08-28 起）新建专家账号并配置 claude 环境（8/28 前建于 manager 机 115.190.64.190，已全部迁走）。先例：`coder`（uid 1003）、`aichip`。
 
 ## 前提
 
-- manager 持有本机 root:`sshpass -p '<root密码>' ssh root@115.190.64.190`（密码与专家账号同一份，见 manager 记忆体 expert-team）。
+- manager 持有专家机 root:`sshpass -p '<root密码>' ssh root@115.191.75.203`（密码与专家账号同一份，见 manager 记忆体 expert-team）。
 - claude CLI 为系统级安装：`/usr/local/bin/claude`，新账号直接可用，无需重装。
 - 认证 token 母本：manager 机 `~/keys/expert_claude_settings.json`（kimi k3 第三方 API 配置）。
 
@@ -35,7 +35,7 @@ chmod 600 /home/<专家账号名>/.claude/settings.json
 ### 3. 验证上岗（必做，不验证不上岗）
 
 ```bash
-ssh <专家账号名>@115.190.64.190 \
+ssh <专家账号名>@115.191.75.203 \
   'claude -p "回复两个字：正常" --dangerously-skip-permissions'
 ```
 

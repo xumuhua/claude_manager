@@ -215,7 +215,7 @@ description: 接到大型综合任务时，按"调研→交付件→流程→分
 
 发现任务需要的能力在现有名册中**没有对应专家**时，就地新建：
 
-1. **建号**：manager 持有本机 root（`root@115.190.64.190`，sshpass 直连），在本机新建与专家角色对应的账号（如 `coder`、`aichip` 的先例），账号名即专家角色映射。
+1. **建号**：manager 持有专家机 root（`root@115.191.75.203`，sshpass 直连；2026-08-28 起专家统一迁出 manager 机），在专家机新建与专家角色对应的账号（如 `coder`、`aichip` 的先例），账号名即专家角色映射。
 2. **配环境**：参考 manager 自己的 claude 配置为新账号配置 claude 环境——token 母本在 manager 机 `~/keys/expert_claude_settings.json`，写入新账号 `~/.claude/settings.json` 的 env（非交互可用的认证方式）；CLI 复用系统级 `/usr/local/bin/claude`。详细步骤见 `references/expert_onboarding.md`。
 3. **验证上岗**：实测一次无头 claude 调用通过后才算上岗。
 4. **登记**：新专家写入任务 `专家名册.md`，并更新 manager 记忆体中的专家名册。

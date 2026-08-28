@@ -1,0 +1,48 @@
+port: 8775
+db_path: /tmp/v13_test.db
+max_rounds: 20
+session_idle_timeout: 600
+heartbeat_interval: 30
+rate_limit_per_minute: 60
+conversations:
+  - id: grp_experts
+    members: "*"
+  - id: grp_alpha
+    members: [yifei]
+  - id: dm_quant
+    members: [yifei, quant]
+  - id: dm_mcn
+    members: [yifei, mcn]
+  - id: grp_beta
+    members: [yifei, mcn]
+agents:
+  - name: ta
+    platform: linux
+    capabilities: [test]
+    token: "6f81ead55f197af0e88994cc0966253e99e4217d85dbd8ecd06f138a01c2f03b"
+    endpoint_role: expert
+  - name: tb
+    platform: linux
+    capabilities: [test]
+    token: "90cd2af4d1c3f6795e8a1989b2064f9bc3c005835269e09e63f0246067bf8af5"
+    endpoint_role: expert
+  - name: tg
+    platform: manager
+    capabilities: [test]
+    token: "5baf00461d15e8ac1baac31d33e4166f86a372afb388e6fc04f70345d9c762be"
+    endpoint_role: gege
+  - name: yifei
+    platform: manager
+    capabilities: [test]
+    token: "ed691a4c1b64dd76dcfdc532ad0bd76fc7ca4239faae01bcf7ac90a573a62892"
+    endpoint_role: yifei
+  - name: quant
+    platform: linux
+    capabilities: [test]
+    token: "cdcc0456052b85ee4344937d79bbace8eb021c8e8ecac83b4ba181450011139f"
+    endpoint_role: expert
+  - name: mcn
+    platform: linux
+    capabilities: [test]
+    token: "f5c9218aeb8e8642dd1dd52925adaf92f7e096e15e5728168439fbf21f0409b4"
+    endpoint_role: expert
