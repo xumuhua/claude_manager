@@ -2,6 +2,7 @@
 
 - **调研人**：coder（专家节点）
 - **下单日期**：2026-09-02（manager 核实目标：microsoft/ArgusAgent，非 Azure-Samples/ARGUS）
+- **追加令**：2026-09-02 16:09 哥哥微信补充"所以我们要调研借鉴部署"→ 新增第六章（部署可行性评估与方案）
 - **报告日期**：2026-09-02
 - **仓库**：https://github.com/microsoft/ArgusAgent · MIT · Python 3.11+ · v0.1.2 · star 32 · fork 3
 - **调研物料**：API 取仓库树（2363 条目）、原子 tarball 流式解包核心源码（`argus_skill/` 925 文件 / 613 个 .py）、README（英中）、docs/FEATURES.md、docs/WHAT_ARGUS_GREW.md、technical_report 全部 LaTeX 章节与实测宏（arXiv:2608.05144）、commit atom feed
@@ -250,7 +251,107 @@
 
 ---
 
-## 6. 风险与注意事项
+## 6. 部署可行性评估与落地方案（追加令，2026-09-02 16:09）
+
+> 本章为追加令补做。结论先行：**技术上可部署，接我们中转站零源码改动；但推荐方案 B（吸收机制不搬代码），部署优先级低于机制吸收。** 本章所有评估基于源码核查（`~/argus_work/deploy_probe/` 留存拉取原件），未实际部署、未启动任何服务（纪律要求）。
+
+### 6.1 环境适配清单
+
+**它的部署形态**（依据：pyproject.toml、README Linux 段、`agent_cli/` 源码）：
+- Python 3.11+ 包 `argus-skill`，pip 安装，4 个 entry point：`argus`（TUI 启动器）、`argus-doctor`（环境诊断）、`argus-skill`（CLI 主入口 `apps.cli:main`）、`argus-plugin-server`（MCP server）
+- 运行时 = **一个 Python daemon + 子进程 spawn 各家 agent CLI**；状态全在 `~/.argus-skill/`（events.jsonl / backlog.jsonl / HEAD.json / CHECKPOINT.md 等，纯文件，**无数据库**）
+- Web UI 默认 127.0.0.1:8799（README Web 段；可选，非必需）
+- 模型层**不直接调 API**：`agent_cli/agent_cli_runner.py` spawn PATH 上的 CLI 二进制，经 argv + stdin 交互。claude 后端命令为 `claude -p --verbose --output-format stream-json [--model M] [--effort E] [--resume ID]`（`_sandbox_commands.py:_build_claude_command`，390-455 行）
+
+**关键证据：接中转站是配置层面，零源码改动。**
+- `_prompt_delivery.py:_child_env`（230 行起）：非沙箱场景 `return None` → 子进程**原样继承父进程全部环境变量**，`ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` 自然透传给它 spawn 的 `claude`
+- 沙箱场景 `sandboxed_child_env`（`core/sandbox.py:183-197`）只剥离 VCS 凭据（`GH_*`/`GITHUB_*` 等），**不动 ANTHROPIC_***；`isolate_workdir` 分支的 secret 打标列表明确包含 `ANTHROPIC_` 前缀（`_prompt_delivery.py` 约 285 行），说明作者预期 ANTHROPIC_* 是合法配置通道
+- 角色级配置全是环境变量：`ARGUS_SKILL_{MANAGER,PLANNER,ENGINEER,REVIEWER}_{BACKEND,MODEL,REASONING_EFFORT}`（`manager/config_intent.py:16-32`）；backend 设 `claude`、model 设 `kimi-han` 即可
+- 注意默认值：`DEFAULT_RUNNER_BACKEND = "codex"`（`runner_backend.py:25`）——不显式设四个角色的 BACKEND env 会 fallback 到 codex
+
+逐项对照（三档判定）：
+
+| 依赖项 | 它要什么 | 专家机 115.191.75.203 现状 | 判定 |
+|---|---|---|---|
+| Python | ≥3.11 | 3.12.3 ✓ | **直接可用** |
+| Node.js | ≥22.12 | v22.23.1 ✓ | **直接可用** |
+| claude CLI | PATH 上有 `claude`，已认证 | /usr/local/bin/claude 2.1.226，中转站已配 ✓ | **直接可用** |
+| Python 包依赖 | rich/PyYAML/portalocker/jsonschema/pypdf/fastapi/uvicorn/websockets/mcp≥1.20/pydantic-settings | 全为纯 Python 轮，venv 内 pip 可装 | **需安装**（`pip install -e .`，约 2-5 min） |
+| 状态存储 | `~/.argus-skill/` 纯文件，无数据库 | /data 余 69G ✓ | **直接可用** |
+| 服务进程 | 单 daemon + 每角色 claude 子进程；单 mission 串行 | 资源占用与现有专家体系同量级 | **直接可用** |
+| 海外网络 | 运行时**无**任何必须直连的海外服务（代码内 openai/anthropic 字样仅为 CLI 命名与安装提示；feishu/telegram bot 为可选 extras；playwright 仅在 research vertical 的可选绘图脚本里） | 国内机全程不需要出墙 | **直接可用** |
+| GitHub 访问 | 仅首次 clone/安装需要 | 本机 40-60 KB/s 慢网（首轮实测），完整 clone 多次超时 | **有冲突（一次性，可绕）**：浅 clone 或 manager 代拉 scp |
+| Node 前端构建 | 仅 Web/TUI 前端 bundle 需要；wheel 已 force-include 预构建产物 | 不装前端则完全不需要 | **直接可用**（跳过） |
+
+**manager 机 115.190.64.190**：依赖项同理全部满足，但**不建议**装在 manager 机——它会起自己的 daemon 和长驻子进程，与 intercom hub 8765 抢管理面心智；manager 机是控制中枢，不宜混入实验性 runtime。
+
+**海外网络结论**：**没有任何组件必须直连 OpenAI/Anthropic 官方端点**。`--setup --api-url` 是给 OpenAI 兼容端点配 Pi 后端的便利路径（README Backend notes），我们用不到；AWS 机 16.176.157.153 在本方案中不需要出场。唯一要出墙的场景是"从 GitHub 拉安装包"，一次性。
+
+### 6.2 最小可用部署（MVP）方案
+
+**场景**：Argus 在专家机上独立跑一个 1-2h 调研 mission（vertical=research，它的主场），交付物落在它自己的 workspace，人工验收。
+
+**步骤清单**（装/配/起/验）：
+
+| # | 步骤 | 命令/动作 | 预计耗时 |
+|---|---|---|---|
+| 1 | 装 | `git clone --depth 1`（慢网约 20-40 min；或 manager 代拉后 scp）→ `python3 -m venv .venv && .venv/bin/pip install -e .` | 30-50 min |
+| 2 | 配（模型层） | Argus 启动环境设：`ANTHROPIC_BASE_URL=http://127.0.0.1:9536`、`ANTHROPIC_AUTH_TOKEN=<中转站 token>`；`ARGUS_SKILL_{MANAGER,PLANNER,ENGINEER,REVIEWER}_BACKEND=claude`、`ARGUS_SKILL_{MANAGER,PLANNER,ENGINEER,REVIEWER}_MODEL=kimi-han` | 10 min |
+| 3 | 配（安全/隔离） | 确认不设 `ARGUS_SKILL_SAFE_MODE=1`（默认关，子进程继承环境）；`HOME=/data/argus_home` 隔离 root 家目录 | 5 min |
+| 4 | 起 | `.venv/bin/argus --version` → `argus doctor --advisor none --verify`（无模型纯检查，避开 `--advisor auto` 的主动修复）→ 建 project 起 mission | 10 min |
+| 5 | 验 | 跑 1-2h 调研 mission；验收点：①四角色各自 spawn claude 成功（events.jsonl 有四角 turn）②中转站日志有对应流量 ③events.jsonl/CHECKPOINT.md 按双 ledger 生长 ④`--stop` 后 `--status` 能从 checkpoint 恢复 | 1-2h（mission 本身） |
+
+**预计总工时**：部署侧 **2-3h**（含慢网等待），加 mission 实跑 1-2h，合计半天内。
+
+**风险点**（按概率排序）：
+1. **kimi-han 经中转站的输出守约性**：Argus 的 Manager/Reviewer 提示词为 Claude/GPT 级模型编写（stage_decider 要严格 JSON、reviewer 要结构化 verdict）。kimi-han 若在长提示词下输出不守约，`parse_stage_decision` fail-closed 到 HOLD——表现为 mission 卡住不动。这是**最大不确定性**，MVP 第一个小 mission 的核心目的即是验证四角守约率。
+2. **慢网 clone**：对策 = `--depth 1` 浅 clone，或 manager 机代拉后 scp（manager→专家机链路首轮已验证）。
+3. **角色级 env 漏设**：只设 MANAGER_BACKEND 漏 ENGINEER → fallback 到默认 codex，未装则 Engineer 起不来。对策 = 四角 env 一次设齐。
+4. **HOME 污染**：它写 `~/.argus-skill/`；若直接 root 跑会与现有体系家目录混杂，对策 = `HOME=/data/argus_home`（同时隔离 claude CLI 的 ~/.claude，注意要把中转站 settings 复制进隔离 HOME，否则模型层断粮）。
+
+### 6.3 与现有体系共存设计（三案）
+
+| 案 | 改造量 | 收益 | 风险 |
+|---|---|---|---|
+| **A. 独立旁路**：专家机 /data 下独立 HOME 跑，当"外聘专家团队"，交付经 GitHub/文件交换 | **最小**：只装+配 env，不碰现有体系任何件；交付接口 = 它 workspace 的 artifact + 我们已有的 push/scp 链路 | 快速实测"它的四角色 runtime 在我们模型层上能不能转"；零侵入，随时可弃 | 双体系并行 = 双份维护心智；产出需人工搬进我们交付链路；若 kimi-han 不守约（6.2 风险 1）则白跑 |
+| **B. 吸收机制不搬代码**：只借评审环/持久化/自进化机制，在我们 claude CLI 专家体系手搓对应件 | **中**：每项 0.5h-2 天（见 6.4），全在提示词模板+纪律+小脚本层面 | 拿到它最值钱的架构决策，且与我们交付纪律（md5/scp/记忆体）原生兼容；无第二 runtime 维护负担 | 手搓件靠纪律约束，不如它代码强制严密；需哥哥/manager 持续盯执行 |
+| **C. 深度整合**：它的 runtime 接中转站当模型层，替代/增强部分专家流程 | **最大**：要写它与 intercom 总线的桥接（它不认识我们的协议）；它的 Manager 与亦菲的控制权要重划；模型层守约问题必须先解决 | 理论上拿到自动化持久化+崩溃恢复+自进化 | **高**：双控制面权威冲突；桥接件是新故障源；守约性未验证前是空中楼阁；且会丢掉"人下任务书"的兜底（5.3（1）） |
+
+**我的推荐：B 为主，A 为可选验证，C 不做。**
+- **B 稳赚**：无论 Argus 能否在我们环境跑起来，6.4 清单都成立，直接强化在跑的 rtl-ir-forge 长程体系，与我们的痛点（长程作业防循环/防假完成，guard v1.4 同源）精确对口。
+- **A 值得花 2-3h 做一次**：不为用它，为实测"kimi-han+中转站能否驱动重型多角色 runtime"——这个数据对我们自己体系的容量规划也有价值。跑通可留作一次性调研单的"外聘团队"；跑不通则证实 B 唯一正解，同时排除 C。
+- **C 不推荐**：守约性未验证 + 双控制面冲突无解 + 我们已有成熟交付纪律，C 是用高改造成本换我们已有的东西。
+
+### 6.4 借鉴清单（无论部署与否都成立，按投入产出比排序）
+
+**（1）Reviewer 只读强制的实现方式** —— `reviewer/_core.py:199` `sandbox_mode="read-only"` → `_sandbox_commands.py:_build_claude_command:413` 翻译为 `--tools Read,Glob,Grep`
+- 搬到我们哪：QA 评审专家的 claude CLI 启动命令加 `--tools Read,Glob,Grep`，从机制上杜绝"评审顺手改了交付物"（我们现在只靠提示词自律，它用 argv 强制）
+- 工时：**0.5h**——全清单性价比最高
+
+**（2）plan challenge 通道的结构化解析** —— `reviewer/_parsing.py`：`plan_signal` 闭集 `{"continue","reconsider"}`（22 行）、`_finalize`（约 185-215 行）"regression envelope 不完整 → 自动升级 replan_requested + planner_report 附 challenge/alternative/authority_impact"
+- 搬到我们哪：QA 评审结论模板加 `plan_challenge` 可选字段（质疑假设/替代方案/影响面），manager 必须响应（接受/拒绝/升级哥哥）；解析侧照抄闭集校验——**不在集合内的值一律视为未发信号**
+- 工时：**1 天**（模板 + manager 处理分支 + 两个真实任务试跑）
+
+**（3）fail-closed 决策解析** —— `manager/stage_decider.py:154` `parse_stage_decision`：任何解析歧义/未知 action/乱序 target 一律归 HOLD，diagnostic 字段记录**为什么** hold（`unknown_action` 等枚举）；`:312` `fallback_empty_stage_decision` 处理 Manager 空输出
+- 搬到我们哪：所有"解析模型输出做决策"的脚本（sim.log 判定、交付检查、guard 硬信号）统一 fail-closed + 诊断码；与 guard v1.4 硬信号思路同源，可互相印证
+- 工时：**1-2 天**（梳理现有判定脚本逐个加分支）
+
+**（4）双 ledger 的最小形态** —— `life/memory.py:332` `_atomic_rewrite_jsonl`（tmp+`os.replace`）+ `manager/control_state.py:133` `_atomic_write_json` + HEAD.json"最后替换、唯一提交点"（模块 docstring）
+- 搬到我们哪：每个任务交付目录加 `decisions.jsonl`（只增不改：决策+依据+拍板人），恢复/复盘从它读而非聊天记录；两个原子写函数纯 stdlib 可**原样抄**
+- 工时：**0.5 天**
+
+**（5）PROTECTED_ITEM_IDS 完整性地板** —— `verticals/quant/stages.py:360`：frozenset 声明不可降级检查项，注释明言 "self-evolution may strengthen these but never weaken them"；`verticals/math/stages.py:52` 同模式
+- 搬到我们哪：rtl-ir-forge 每个 D 阶段交付附 `STAGE_CHECKS.md`（机检命令：pytest 退出码/md5/协议核对数），QA 逐项跑、不得以判断替代——5.2（2）的落地形态
+- 工时：**每个任务 +0.5h** 写清单，无开发量
+
+**🔴 侵入项（涉及改现有体系，需哥哥拍板）**：
+- 🔴 **（2）plan challenge**：改 QA 提示词模板 + manager（亦菲）评审响应分支——动的是协作协议本身
+- 🔴 **（5）STAGE_CHECKS.md**：改 D 系列任务书模板与 QA 验收流程
+- （1）（3）（4）为新增件或专家侧本地改动，不动总线/中转站/既有配置，**非侵入**
+
+---
+
+## 7. 风险与注意事项
 
 1. **学术 demo 不是工业产品**：star 32、4 个月窗口、作者自述"runtime changed underneath its own evaluation"；它的实测数据（78% SWE-Bench Pro、95-98% duty cycle）应视为**方向性证据**而非可复现承诺
 2. **不要 fork/复刻代码**：它的价值在架构决策（角色分离、双 ledger、plan challenge、verification-gated 晋升），不在具体实现；我们的栈（claude CLI + 人工 manager）与它的栈（Python daemon + 8 后端子进程）差异太大
@@ -259,7 +360,7 @@
 
 ---
 
-## 7. 附录：关键源码索引
+## 8. 附录：关键源码索引
 
 | 主题 | 文件 | 关键行/内容 |
 |---|---|---|
@@ -277,3 +378,10 @@
 | 8 后端 | argus_skill/agent_cli/runner_backend.py | `RunnerBackend = Literal["codex","claude","copilot","opencode","pi","grok","qoder","dsh"]` |
 | MCP server | argus_skill/plugin/mcp_server.py | 7 个工具，stdio transport |
 | 依赖 | pyproject.toml | fastapi/uvicorn/mcp>=1.20/pydantic-settings 等 |
+| 子进程环境透传 | argus_skill/agent_cli/_prompt_delivery.py:230 `_child_env` | 非沙箱 return None（全继承）；隔离分支 ANTHROPIC_ 列入合法 secret 前缀 |
+| 沙箱只剥 VCS 凭据 | argus_skill/core/sandbox.py:183 `sandboxed_child_env` | 只弹 GH_/GITHUB_，不动 ANTHROPIC_* |
+| 角色级配置 env | argus_skill/manager/config_intent.py:16-32 | ARGUS_SKILL_{角色}_{BACKEND,MODEL,REASONING_EFFORT} |
+| claude 命令构建 | argus_skill/agent_cli/_sandbox_commands.py:390 `_build_claude_command` | `claude -p --verbose --output-format stream-json`；read-only → `--tools Read,Glob,Grep` |
+| 默认后端是 codex | argus_skill/agent_cli/runner_backend.py:25 | DEFAULT_RUNNER_BACKEND="codex"，必须显式设 env |
+| plan_signal 闭集 | argus_skill/reviewer/_parsing.py:21-22,185-215 | {"continue","reconsider"}；regression envelope 不完整自动升级 replan |
+| PROTECTED_ITEM_IDS 实例 | argus_skill/verticals/quant/stages.py:360、math/stages.py:52 | frozenset 完整性地板，"never weaken" |
