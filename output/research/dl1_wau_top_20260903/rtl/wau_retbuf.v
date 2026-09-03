@@ -11,6 +11,14 @@
 //   总窗 POOL×9 恰够包裹（不同 line_seq 同余冲突 ⇒ 间距须 < 144；32 槽模窗内
 //   槽间距上界 = 9·16 = 144 = 窗宽，端点相接不重叠：t 与 t+144 同槽位但不可能同时在途——
 //   间距恰 144 需 17 个在途 beat > POOL，排除）。
+// DL1.1 trans 槽对平面化：槽对 (2r,2r+1)（主列+尾列）展平存相对槽 r∈[0..7]——
+//   t = t_lo + r 与 linear 同式；t_lo = p0/16（bm_win_base 馈当前拍 cell 基址
+//   (br+8k)·512+p0，t_lo 拍间恒定、区基随 k 平移防跨拍槽撞）。rot>0 时 16 笔
+//   （8 主+8 尾）推 8 个平面槽——主/尾列同槽各置一位，occ 位图语义不变
+//   （同拍同槽双 pop 聚合写天然合并）；nchunks=16 越 9bit 位图，完成掩码特判
+//   nch≥9 → 全 1（见 g_nmask）。asm 侧 woff=rot+i 旋转抽取恰还原槽对合并
+//   （wau_asm.v 注记）——这是任务书『occ 位图 9..15 槽对启用』的等价替代裁定：
+//   stride 9 不动、linear 回归零风险、省 7 槽存储。
 // 完成判定：beat 的已落槽 chunk 计数 = nchunks ⇒ 完成事件 {uop_mid} 恰一次（完成沿脉冲）。
 // L3: 事件存续钉（G123：事件脱离槽位生命周期存续至发射）与 G110 同拍多完成串行化——
 //   L1 完成事件为"完成沿脉冲"（随槽生命周期、同拍多完成时取首 bank 序一条），
@@ -39,14 +47,16 @@ module wau_retbuf #(
     input  wire         bm_push,         // beat 开户拍脉冲
     input  wire [7:0]   bm_line_seq,
     input  wire [4:0]   bm_nchunks,
-    input  wire [19:0]  bm_win_base,     // 窗基址 B
+    input  wire [19:0]  bm_win_base,     // 窗基址 B（trans = 当前拍 cell 基址）
     input  wire [7:0]   bm_mid,
     input  wire         bm_is_single,
+    input  wire         bm_is_trans,
     input  wire [19:0]  bm_vbytes,
 
     // beat 元数据读口（asm 出线用）
     input  wire [7:0]   asm_line_seq,
     output wire         asm_is_single,
+    output wire         asm_is_trans,
     output wire [3:0]   asm_rot,
     output wire [19:0]  asm_vbytes,
     output wire [19:0]  asm_base,
@@ -72,6 +82,7 @@ module wau_retbuf #(
     reg [8:0]  bm_tlo_q    [0:31];   // t_lo = (B−rot)>>4 = {B[19:4]} − (B[3:0]!=0)
     reg [7:0]  bm_mid_q    [0:31];
     reg        bm_single_q [0:31];
+    reg        bm_trans_q  [0:31];   // DL1.1：trans 型（槽对平面化——槽 r=rail r 合并列）
     reg [3:0]  bm_rot_q    [0:31];
     reg [19:0] bm_vbytes_q [0:31];
     reg [19:0] bm_base_q   [0:31];
@@ -92,9 +103,7 @@ module wau_retbuf #(
     // 免计数同拍欠账问题；complete = 低 nch 位全 1，与 nch 等宽掩码比对）
     reg [8:0] occ_q [0:31];
 
-    // head beat 全槽并出（asm 拼线用；槽 r = 相对槽 r 的 16B，r=0..15——L1 linear
-    // 用 0..8，9..15 恒 0 留 L2 trans 槽对扩展位）
-    // 槽 r 地址 = (head_line×9 + t_lo + r) mod 144
+    // head beat 状态（槽 0..7 承载 linear 窗/trans 合并列，8..15 留位）
     wire [4:0]  head_idx_c  = head_line_seq[4:0];
     wire       head_v_c    = bm_valid_q[head_idx_c];
     wire [4:0] head_nch_c  = bm_nch_q[head_idx_c];
@@ -104,8 +113,8 @@ module wau_retbuf #(
                           & (head_occ_c == bm_nmask[head_idx_c]);
     assign beat_retired = head_ready & asm_consume;
 
-    // head beat 全槽并出（asm 拼线用；槽 r = 相对槽 r 的 16B，r=0..15——L1 linear
-    // 用 0..8，9..15 恒 0 留 L2 trans 槽对扩展位）
+    // head beat 全槽并出（asm 拼线用；槽 r = 相对槽 r 的 16B，r=0..15——DL1.1
+    // trans 槽对平面化后槽 0..7 = rail 合并列，8..15 恒 0 留位）
     // 槽 r 地址 = (head_line×9 + t_lo + r) mod 144
     wire [2047:0] head_flat_c;
     genvar gr;
@@ -121,17 +130,22 @@ module wau_retbuf #(
     // asm 元数据读口
     wire [4:0] asm_idx_c = asm_line_seq[4:0];
     assign asm_is_single = bm_single_q[asm_idx_c];
+    assign asm_is_trans  = bm_trans_q[asm_idx_c];
     assign asm_rot       = bm_rot_q[asm_idx_c];
     assign asm_vbytes    = bm_vbytes_q[asm_idx_c];
     assign asm_base      = bm_base_q[asm_idx_c];
     assign head_flat     = head_flat_c;
 
     // 每 line 的完成掩码（低 nch 位全 1）——位图比对的共同基准
+    // DL1.1：trans rot>0 时 nch=16（16 笔推 8 个平面槽——主/尾列同槽各置一位），
+    //   nch ≥ 9 即越 9bit 位图，特判全 1（occ 位图满 = 8 槽齐——popcount(cmask)=16
+    //   逐 bank 各 8 笔 pop 后每槽恰 2 置位，位图语义不变）
     wire [8:0] bm_nmask [0:31];
     genvar gm;
     generate
         for (gm = 0; gm < 32; gm = gm + 1) begin : g_nmask
-            assign bm_nmask[gm] = (9'd1 << {4'd0, bm_nch_q[gm]}) - 9'd1;
+            assign bm_nmask[gm] = (bm_nch_q[gm] >= 5'd9) ? 9'h1ff
+                                                         : (9'd1 << {4'd0, bm_nch_q[gm]}) - 9'd1;
         end
     endgenerate
 
@@ -241,6 +255,7 @@ module wau_retbuf #(
                 bm_tlo_q[i]    <= 9'd0;
                 bm_mid_q[i]    <= 8'd0;
                 bm_single_q[i] <= 1'b0;
+                bm_trans_q[i]  <= 1'b0;
                 bm_rot_q[i]    <= 4'd0;
                 bm_vbytes_q[i] <= 20'd0;
                 bm_base_q[i]   <= 20'd0;
@@ -268,6 +283,7 @@ module wau_retbuf #(
                                                  - {8'd0, bm_win_base[3:0] != 4'd0};
                 bm_mid_q[bm_line_seq[4:0]]    <= bm_mid;
                 bm_single_q[bm_line_seq[4:0]] <= bm_is_single;
+                bm_trans_q[bm_line_seq[4:0]]  <= bm_is_trans;
                 bm_rot_q[bm_line_seq[4:0]]    <= bm_win_base[3:0];
                 bm_vbytes_q[bm_line_seq[4:0]] <= bm_vbytes;
                 bm_base_q[bm_line_seq[4:0]]   <= bm_win_base;
@@ -313,9 +329,15 @@ module wau_retbuf #(
             //   的 wptr 冲突被 head-直登路径旁路（mem 次位永不写当拍弹位））----
             for (i = 0; i < 32; i = i + 1)
                 map_cnt_q[i] <= map_cnt_q[i] + {4'd0, push_c[i]} - {4'd0, pop_c[i]};
-            // ---- head 腾空：销元数据（槽位由基址偏移不重叠自然复用，无需清数据）----
-            if (beat_retired)
+            // ---- head 腾空：销元数据 + 清 occ 位图（槽位由基址偏移不重叠自然复用，
+            //   无需清数据；occ 必须清——DL1.1 trans 病史：retire 时仅销 bm_valid，
+            //   line1 以 occ=0xff 满图开户，pop 聚合写被 occ_next_v=0 跳过、满图
+            //   永续，beat1 的 occ_next 恒满而 occ_q 也恒满 → 完成沿差分
+            //   (old≠mask) 恒假 → beat_done 永不二发，出线/rack 双卡）----
+            if (beat_retired) begin
                 bm_valid_q[head_idx_c] <= 1'b0;
+                occ_q[head_idx_c]      <= 9'd0;
+            end
         end
     end
 endmodule

@@ -49,6 +49,10 @@ module tb_sva;
     reg [41:0] info_q = 0; reg [7:0] mid_q = 0; reg stall_q = 0;
 
     // ---- INV3: data 出线拍线序单调（head_q 推进=单调计数器，代理保序）----
+    // D-J1 修复（glmdev 判卷缺陷：声明 5 实检 4——INV3 原有声明与寄存器无实检逻辑）：
+    //   拍后采样 dut.u_asm.head_q；连续两个 data_valid 拍间 head_q 须严格 +1
+    //   （出线序=line_seq 序，FL_WAU_0203；同拍连续出线时本拍采到的 head_q 相对
+    //   上一数据拍已 +1——隔拍同样成立，单调性判据 = 差值恰 1）
     reg [7:0] head_prev = 0; reg dv_prev = 0;
 
     // ---- INV4: rack mid 序 = 接受序（记录接受 mid 流，rack 弹出按序核对）----
@@ -75,6 +79,14 @@ module tb_sva;
             info_q = uop_info; mid_q = uop_mid;
             if (uop_valid && uop_ready) begin
                 acc_mid[acc_n] = uop_mid; acc_n = acc_n + 1; accepted_once = 1;
+            end
+            // INV3（当拍 data 事务：head_q 相对上一数据拍严格 +1——层级探针，TB 豁免）
+            if (data_valid) begin
+                if (dv_prev && (dut.u_asm.head_q !== (head_prev + 8'd1))) begin
+                    $display("SVA-FAIL INV3 出线乱序 head=%0d prev=%0d cyc=%0d",
+                        dut.u_asm.head_q, head_prev, cyc); viol = viol + 1;
+                end
+                head_prev = dut.u_asm.head_q; dv_prev = 1;
             end
             // INV4（当拍 rack）
             if (rack_valid) begin
@@ -127,6 +139,17 @@ module tb_sva;
         end
     endtask
 
+    // 排空等待（同 tb_l1 注：beat0 出线腾空后再发下一 beat 回数）
+    task wait_drain(input integer target);
+        integer t;
+        begin
+            for (t = 0; t < 200; t = t + 1) begin
+                @(posedge clk); #1;
+                if (dut.u_asm.head_q == target[7:0]) t = 200;
+            end
+        end
+    endtask
+
     initial begin
         rst_n = 0; repeat(4) @(posedge clk); rst_n = 1; repeat(2) @(posedge clk);
         // 同 b2b 激励（SVA 挂真实流量上跑）
@@ -154,9 +177,31 @@ module tb_sva;
                    15, 128'hfffefdfcfbfaf9f8f7f6f5f4f3f2000f,
                    15, 128'hfffefdfcfbfaf9f8f7f6f5f4f3f2000f);
         repeat(30) @(posedge clk);
-        if (viol == 0) $display("SVA ALL PASS (5 invariants, b2b traffic)");
+        // DL1.1：trans 流量续跑（c_trans_e2e_diagonal 同激励——不变式须跨型别成立；
+        // 回数序同 tb_l1 调序版：beat1 独有 bank8 提前、共享 bank 保序，见 tb_l1 注）
+        drive_uop(42'd8392706, 8'd192);
+        repeat(4) @(posedge clk);   // DL1.1：同 tb_l1 注（全量请求发出后首回数）
+        drive_ret(0, 128'h11100f0e0d0c0b0a0908070605040200);
+        drive_ret(1, 128'h2221201f1e1d1c1b1a19181716150301);
+        drive_ret(2, 128'h333231302f2e2d2c2b2a292827260402);
+        drive_ret(3, 128'h44434241403f3e3d3c3b3a3938370503);
+        drive_ret4(4, 128'h5554535251504f4e4d4c4b4a49480604,
+                   5, 128'h666564636261605f5e5d5c5b5a590705,
+                   6, 128'h77767574737271706f6e6d6c6b6a0806,
+                   7, 128'h8887868584838281807f7e7d7c7b0907);
+        wait_drain(1);
+        drive_ret(1, 128'h21201f1e1d1c1b1a1918171615140201);
+        drive_ret(2, 128'h3231302f2e2d2c2b2a29282726250302);
+        drive_ret(3, 128'h434241403f3e3d3c3b3a393837360403);
+        drive_ret4(4, 128'h54535251504f4e4d4c4b4a4948470504,
+                   5, 128'h6564636261605f5e5d5c5b5a59580605,
+                   6, 128'h767574737271706f6e6d6c6b6a690706,
+                   7, 128'h87868584838281807f7e7d7c7b7a0807);
+        drive_ret(8, 128'h9897969594939291908f8e8d8c8b0908);
+        repeat(30) @(posedge clk);
+        if (viol == 0) $display("SVA ALL PASS (5 invariants, b2b+trans traffic)");
         else           $display("SVA %0d VIOLATIONS", viol);
         $finish;
     end
-    initial begin #40000; $display("SVA TIMEOUT"); $finish; end
+    initial begin #60000; $display("SVA TIMEOUT"); $finish; end
 endmodule

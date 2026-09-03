@@ -1,8 +1,9 @@
 `timescale 1ns/1ps
 // wau_split.v —— WAU L1 核心层 · beat 展开与 per-bank 请求分发
 // 规格权威：chip_design_ir ir-refactor examples_vnext/wau_top/（behavior.ir#df_beat_geom /
-// df_bank_issue / df_credit_loop / df_uop_accept；几何公式 hlc/chunk_map.hlc【linear 段】）。
-// L1 层覆盖：df_uop_accept / df_beat_geom（linear 型）/ df_bank_issue / df_credit_loop。
+// df_bank_issue / df_credit_loop / df_uop_accept；几何公式 hlc/chunk_map.hlc【linear+trans 段】）。
+// L1 层覆盖（DL1.1 trans 升 L1 后）：df_uop_accept / df_beat_geom（linear+trans 型）/
+// df_bank_issue / df_credit_loop。
 // 【流水模式：逐级握手】uop_in 口（top 级 ready 寄存集中于 wau_top，握手区 :top）。
 // 【流水模式：逐级握手】bank_req 32 路分发口：bank_req_ready 输入 → 本模块 pop 判定集中于 :分发握手区。
 // 【流水模式：无反压】展开→分发内部推进：节拍指针逐拍前进，无 ready 反压路径（门控 = 停发，非反压）。
@@ -10,10 +11,17 @@
 //   (1) 信用：在途 beat（已开户未出线）≤ POOL（perf.ir#g_beat_credit / inv_credit_loop）；
 //   (2) 映射容量：per-bank 在飞 chunk（接受起算，含未发段——D-WAU.18/G125 口径）≤ MAP_DEPTH；
 //   (3) 请求缓冲：per-bank 请求 FIFO 深度 ≤ RQ_DEPTH。
-// L2: trans 对角读几何（chunk_map.hlc【trans】段，df_beat_geom 节点内 L2 语义域）——
-//     扩展点见 :L2-TRANS 注记，加 trans 分支不改动 linear 主路径结构。
-// L2: G120 同 beat 同 bank 2 chunk（trans 非对齐形态）两笔均发/entry 升序/允许两拍——
-//     L1 linear 型单拍至多 9 chunk 且每 bank 至多 1 笔，无此形态；挂接点 = 节拍推进器。
+// trans 几何（DL1.1 实现，chunk_map.hlc【trans】段逐式落地）：
+//   beat c 的 rail r（chunk_ptr=r，发射序=slot 序=entry 升序）：
+//     g0 = p0 + 16c；o0 = g0 mod 512；k = g0 div 512；情形一 = (o0 > 496)；
+//     主列 o = o0 + 16r（10bit 截位天然 mod 512 回环），bank = o[8:4]，
+//     row = br+8k+r（情形一且 r≥1 时 br+8(k+1)+r；情形一 r=0 时 br+8k）；
+//     尾列存在 = (o > 496)（等价 rot>0 且跨界），尾列 bank = base[8:4]+r（= o−496+16r 低 5bit
+//     简式）、列 0、row = 主列行（情形一 r=0 尾列行 br+8(k+1)）。
+//   slot 推**展平槽号 r**（DL1.1 平面化裁定：槽对 (2r,2r+1) 主列[rot..15]续尾列[0..rot−1]
+//   在 asm 侧由 woff=rot+i 旋转抽取天然合并——见 wau_asm.v 注记；retbuf 槽位区 stride 9 不动）。
+//   G120（同 beat 同 bank 2 chunk，rot>0 时 rail r 主列与 rail r−1 尾列同 bank）：
+//   逐拍 1 chunk 发射器天然满足『两笔均发、entry 升序、可分两拍』，无额外结构。
 module wau_split #(
     parameter POOL      = 16,
     parameter RQ_DEPTH  = 16,
@@ -62,6 +70,7 @@ module wau_split #(
     output wire [19:0]  bm_win_base,
     output wire [7:0]   bm_mid,
     output wire         bm_is_single,
+    output wire         bm_is_trans,
     output wire [19:0]  bm_vbytes,
 
     // rack 发口（读齐即 rack，Q-G；L1 无 sync 屏障——L2: 集合制屏障挂接点）
@@ -72,7 +81,7 @@ module wau_split #(
     // ---- utype 编码（module.ir#enum_tables.uop_type，权威出处）----
     localparam UT_SINGLE = 2'd0;
     localparam UT_MULTI  = 2'd1;
-    // L2-TRANS: localparam UT_TRANS = 2'd2;（trans 几何段入 L2）
+    localparam UT_TRANS  = 2'd2;   // DL1.1：trans 升 L1
     localparam UT_SYNC   = 2'd3;
 
     // ---------------- UOP 接收入口（df_uop_accept）----------------
@@ -80,13 +89,13 @@ module wau_split #(
     wire [1:0]  f_utype = uop_info[1:0];
     wire [19:0] f_base  = uop_info[21:2];
     wire [19:0] f_size  = uop_info[41:22];
-    // L1 只收 single/multi；sync(L2) 由 wau_top 顶口拦停，trans(L2) 本棒不进激励
-    wire f_data_ok = (f_utype == UT_SINGLE) | (f_utype == UT_MULTI);
+    // DL1.1：single/multi/trans 收进正确流；sync(L2) 由 wau_top 顶口拦停
+    wire f_data_ok = (f_utype != UT_SYNC);
 
-    // beats_total 生成式（hlc/common.hlc#beats_total）：single=(size>0)?1:0 / multi=⌈size/128⌉
+    // beats_total 生成式（hlc/common.hlc#beats_total）：single=(size>0)?1:0 / multi=⌈size/128⌉ / trans=size
     wire [20:0] beats_total_c = (f_utype == UT_SINGLE) ? ((f_size > 20'd0) ? 21'd1 : 21'd0)
                                 : (f_utype == UT_MULTI) ? ({1'b0, f_size} + 21'd127) >> 7
-                                : {1'b0, f_size};   // trans：beats=size（L2 语义，公式段先就位）
+                                : {1'b0, f_size};   // trans：beats=size
 
     // 【流水模式：逐级握手】uop_in 握手集中区——ready 寄存输出在 wau_top；
     // 本模块只出空闲判定（空 = 无在展 UOP）。fire 判定 = uop_valid & uop_ready（top 侧同式）。
@@ -95,6 +104,7 @@ module wau_split #(
     reg [19:0] base_q;
     reg [19:0] size_q;
     reg [0:0]  is_single_q;
+    reg [0:0]  is_trans_q;  // DL1.1：trans 型标记（几何分支+bm 直通）
     reg [20:0] beats_q;     // 本 UOP 总 beat 数
     reg [20:0] beat_idx_q;  // 当前待展开 beat 序号
 
@@ -112,7 +122,47 @@ module wau_split #(
     wire [3:0]  rot_c      = win_base_c[3:0];
     // lin_nchunks = ⌈(rot+len)/16⌉（hlc/chunk_map.hlc#lin_nchunks）
     wire [24:0] nch_sum_c  = {21'd0, rot_c} + {5'd0, win_len_c} + 25'd15;
-    wire [4:0]  nchunks_c  = nch_sum_c[24:4];   // ÷16（恒 ≥1：data UOP size>0）
+    wire [4:0]  nchunks_c  = is_trans_q[0]
+                             ? ((base_q[3:0] != 4'd0) ? 5'd16 : 5'd8)   // trans：cmask 0xffff/0x5555
+                             : nch_sum_c[24:4];   // linear ÷16（恒 ≥1：data UOP size>0）
+
+    // ---------------- trans 对角读几何（DL1.1；chunk_map.hlc【trans】段）----------------
+    // 发射序：主列段 chunk_ptr=0..7（rail r=chunk_ptr）→ 尾列段 chunk_ptr=8..15（rail
+    // r=chunk_ptr−8）——主列先、尾列后 = entry 升序（df_bank_issue③ G120 序）。
+    // 当前拍 cell 基址：g0 = p0 + 16·c（c=beat_idx）；o0 = g0 mod 512；k = g0 div 512
+    wire        tr_is_tail_ph_c = (chunk_ptr_q >= 5'd8);
+    wire [3:0]  tr_rail_c       = chunk_ptr_q[3:0] & 4'h7;   // rail 号 r（尾列段 = ptr−8）
+    wire [20:0] tr_g0_c    = {12'd0, base_q[8:0]} + {16'd0, beat_idx_q[4:0], 4'b0};
+    wire [8:0]  tr_o0_c    = tr_g0_c[8:0];                // mod 512（截位天然）
+    wire [4:0]  tr_k_c     = tr_g0_c[13:9];               // div 512（size≤1M ⇒ k<32 5bit 足）
+    wire        tr_case1_c = (tr_o0_c > 9'd496);          // 情形一：rail0 本拍跨界
+    // 主列流位置 o = o0 + 16r（10bit 截位 = mod 512 回环；情形一 r≥1 时 o ≤ 496+16
+    // 不越 512 截位不生效；情形二 rot>0 跨界时回环即几何本义——尾列存在 = o > 496）
+    wire [9:0]  tr_o_c     = {1'b0, tr_o0_c} + {tr_rail_c, 4'b0} + {6'd0, tr_rail_c >> 4};
+    // 尾列 bank：流位置 = o − 496 + 16r（列 0 = o_tail/16），mod 32 化简 = base[8:4]+r
+    // （(p0−496)+16r ≡ (p0 mod 16)+(16r mod 32) (mod 32)，p0 mod 16 = base[8:4]）
+    wire [4:0]  tr_tail_bank_c = base_q[8:4] + tr_rail_c;      // 5bit 截位 = mod 32
+    // 行号（两型跨界；10bit 截位 = mod 1024）：
+    //   主列：情形一 r=0 → br+8k；情形一 r≥1 → br+8(k+1)+r；情形二 → br+8k+r
+    //   尾列：情形一 r=0 → br+8(k+1)；其余 = 主列行
+    wire [9:0]  tr_brow_c    = base_q[18:9];
+    wire [9:0]  tr_row_k_c   = tr_brow_c + {1'b0, tr_k_c, 3'b0};   // br+8k（位拼接 = ×8）
+    wire [9:0]  tr_row_k1_c  = tr_row_k_c + 10'd8;                 // br+8(k+1)
+    wire [9:0]  tr_row_main_c = tr_case1_c
+                                ? ((tr_rail_c == 4'd0) ? tr_row_k_c
+                                                       : tr_row_k1_c + {5'd0, tr_rail_c})
+                                : tr_row_k_c + {5'd0, tr_rail_c};
+    wire [9:0]  tr_row_tail_c = (tr_case1_c & (tr_rail_c == 4'd0)) ? tr_row_k1_c
+                                                                   : tr_row_main_c;
+    // 本拍 chunk 的 bank/row（主列段用主列几何、尾列段用尾列几何）
+    wire [4:0]  tr_bank_c  = tr_is_tail_ph_c ? tr_tail_bank_c : tr_o_c[8:4];
+    // 尾列段合法性约束：尾列存在 ⟺ o > 496（tr_tail_c）；发射器由 nchunks 限定段长
+    // （rot=0 → nchunks=8 永不进尾列段），无需另行屏蔽
+    wire [9:0]  tr_row_c   = tr_is_tail_ph_c ? tr_row_tail_c : tr_row_main_c;
+    // trans 当前拍 cell 基址（bm_win_base 馈值）= (br + 8k)·512 + p0：
+    //   槽位区 t_lo = p0>>4 拍间恒定、区基随 k 平移（跨拍槽位不撞；8k 上界 248 +
+    //   p0/16 ≤ 31 ⇒ t+r ≤ 279 < 144×2，模窗回卷与 linear 同法安全）
+    wire [19:0] tr_cell_base_c = {tr_row_k_c, 9'd0} + {11'd0, base_q[8:0]};
 
     // 节拍内 chunk 指针（逐拍分发节拍几何，发射序 = slot 序 = entry 升序）
     reg [4:0] chunk_ptr_q;
@@ -121,8 +171,10 @@ module wau_split #(
     wire [19:0] chunk_addr_c = {win_base_c[19:4], 4'b0} + {chunk_ptr_q[3:0], 4'b0};
     // 地址分解（common.hlc#addr_bank/addr_row，裁定 Q-E 自然进位）：
     // bank = addr[8:4]（(addr/16)%32）；row = addr[18:9]（(addr/512)%1024）
-    wire [4:0] chunk_bank_c = chunk_addr_c[8:4];
-    wire [9:0] chunk_row_c  = chunk_addr_c[18:9];
+    wire [4:0] chunk_bank_c = is_trans_q[0] ? tr_bank_c : chunk_addr_c[8:4];
+    wire [9:0] chunk_row_c  = is_trans_q[0] ? tr_row_c  : chunk_addr_c[18:9];
+    // FIFO 推入 slot：linear = chunk_ptr（= 槽号 j）；trans = 展平槽号 rail（tr_rail_c）
+    wire [3:0] push_slot_c  = is_trans_q[0] ? tr_rail_c : chunk_ptr_q[3:0];
 
     // ---------------- 信用与容量门控（df_credit_loop / df_bank_issue ④）----------------
     // 在途 beat 计数（已开户未出线）；开户 = 节拍首拍发射（emit_fire 且 chunk_ptr==0），
@@ -201,13 +253,15 @@ module wau_split #(
     assign emit_fire = emit_go_c;
 
     // beat 元数据登记直通（开户拍 = 节拍首拍发射拍；retbuf 同拍登记）
+    // DL1.1 trans：win_base 馈当前拍 cell 基址（槽位区随 k 平移），vbytes 恒 128（满线）
     assign bm_push      = beat_open_c;
     assign bm_line_seq  = cur_line_c;
     assign bm_nchunks   = nchunks_c;
-    assign bm_win_base  = win_base_c;
+    assign bm_win_base  = is_trans_q[0] ? tr_cell_base_c : win_base_c;
     assign bm_mid       = mid_q;
     assign bm_is_single = is_single_q[0];
-    assign bm_vbytes    = win_len_c;
+    assign bm_is_trans  = is_trans_q[0];
+    assign bm_vbytes    = is_trans_q[0] ? 20'd128 : win_len_c;
 
     // bank_req 口输出（生成循环复制 32 路 = §13.4 参数展开）
     wire [4:0] fifo_line_c = disp_head_c[11:4];
@@ -225,6 +279,7 @@ module wau_split #(
             base_q      <= 20'd0;
             size_q      <= 20'd0;
             is_single_q <= 1'b0;
+            is_trans_q  <= 1'b0;
             beats_q     <= 21'd0;
             beat_idx_q  <= 21'd0;
             chunk_ptr_q <= 5'd0;
@@ -246,6 +301,7 @@ module wau_split #(
                 base_q      <= f_base;
                 size_q      <= f_size;
                 is_single_q <= (f_utype == UT_SINGLE);
+                is_trans_q  <= (f_utype == UT_TRANS);
                 beats_q     <= beats_total_c;
                 beat_idx_q  <= 21'd0;
                 chunk_ptr_q <= 5'd0;
@@ -278,7 +334,7 @@ module wau_split #(
             //   rptr 冻结一拍由计数式中和——下拍再弹，免双推同址）
             for (i = 0; i < 32; i = i + 1) begin
                 if (rq_push_c & (rq_push_bank_c == i[4:0])) begin
-                    rq_mem[{i[4:0], rq_wptr_q[i]}] <= {chunk_row_c, push_line_c, chunk_ptr_q[3:0]};
+                    rq_mem[{i[4:0], rq_wptr_q[i]}] <= {chunk_row_c, push_line_c, push_slot_c};
                     rq_wptr_q[i] <= rq_wptr_q[i] + 4'd1;
                 end
                 if (disp_fire_c & (disp_sel_q == i[4:0])
