@@ -1,0 +1,62 @@
+# flow.ir — inst_ucode_splitter（D-R4 生成物反提件）
+
+- 反提基准：DR4-FIX 返工后 RTL `rtl/inst_ucode_splitter.v`（commit 见 git log，DR4-FIX 前缀）
+- 反提人：coder / kimi-han 经中转站 · 2026-09-03
+- 形态：散文 Markdown（G-vNext-17 形态待哥哥裁定，先以可读散文落地）
+- 内容口径（约束令）：数据通路流向 / 流水级划分 / 握手点清单
+
+## 1. 数据通路流向
+
+```
+P1 instr_in (210b 指令 + 4b inst_id)
+  │ 译码入口组合：形态判定 e_mv2d / merge_hit 四条件（48bit 积域）/ iter_eff 映射
+  ▼
+stage0 寄存器级（位域按形态重映射：MV2D zext64(src32) / REP12 src64；
+  │            merge 锁存 s0_merge + s0_part=div_floor(dim*iter,4)）
+  ▼
+stage1 寄存器级（d_iter_eff / d_beats 组合求值后打拍）
+  │ 发射机：beat 计数逐拍推进，take∈{1..4} 掩码选端口
+  │ 微码拼装（纯组合）：每端口 u_src/u_dst/u_dsz 级联
+  │   merge  : src/dst = base + part*(i mod 4)，dsz = part
+  │   rep12  : src = base；dst = base + dstr*i，dsz = dim
+  │   mv2d   : src = base + sstr*i；dst = base + dstr*i，dsz = dim
+  ▼
+P2 ucode_out_0..3（164b {src,dst,dsz,uid}，uid=槽号）
+
+P3 ucode_done_0..3（5b {uid,err} 完成返回）
+  ▼ 按槽聚合（组合：fin_cnt 0..4 / fin_err 或归约）
+完成跟踪表 tbl[16]（valid/inst_id/total/done/err）
+  ▼ 末拍收满判定 rpt_cand（done+fin_cnt >= total）
+P4 inst_done（5b {inst_id,err} 上报）
+
+iter=0 指令旁路：入口分流（zero_fire）→ 占槽 + zpend 置位 → 下一拍直报释放，
+不进 stage0/stage1 发射机。
+```
+
+## 2. 流水级划分
+
+| 级 | 寄存器内容 | 模式 | 说明 |
+|---|---|---|---|
+| 入口→stage0 | s0_valid/name/src_base/dst_base/dim/iter/strides/uid/merge/part | [无反压] | 有空槽且 s0 空即收（`instr_in_ready = free_any & ~s0_valid`）；下游 stage1 由 s0_fire 条件保证必收，无 ready 回传 |
+| stage0→stage1 | s1_valid/is_rep/merge/bases/dim/strides/part/uid/iter_eff/beats/beat | [无反压] | s1 空即装填（`s0_fire = s0_valid & ~s1_valid`）；iter=0 在入口已分流不进此级 |
+| stage1→P2 | 发射 beat 状态 | [逐级握手] | 整拍锁步 all-or-nothing 反压，见 §3 握手点 H2 |
+
+完成返回（P3）与上报（P4）为组合级，不入译码流水。
+
+## 3. 握手点清单
+
+| # | 接口 | 模式 | valid 产生 | ready 产生 | 处理代码位置 |
+|---|---|---|---|---|---|
+| H1 | P1 instr_in | [逐级握手]（对上游） | 外部 | `free_any & ~s0_valid` | "入口握手"段（组合，一处） |
+| H2 | P2 ucode_out_0..3 | [逐级握手] 整拍锁步 | `s1_valid ? s1_take_mask : 0`，不依赖 ready | 外部；`s1_all_ready = (ready_vec & mask)==mask` 全到才成拍 | "发射握手区"（uout_ready_vec/s1_all_ready/s1_fire/uout_valid_vec，集中一处） |
+| H3 | P3 ucode_done_0..3 | [逐级握手] | 外部 | 常 1（永远受理） | 模块顶部"完成返回受理"段 |
+| H4 | P4 inst_done | [逐级握手] | `any_fresh \| pend_valid`，不依赖 ready | 外部；顶住时 fresh 压入 pending 兜底 | "上报握手区"（inst_done_*/release_* 信号集中一处 + 时序块"pending 兜底缓冲"段） |
+
+仲裁优先级（H4 上报源）：末拍收满（rpt）> iter=0 待报（zpend）> pending 排空。
+槽位仲裁：同拍先还后借（`alloc_free = ~valid_vec | release_mask`），最低空闲槽优先。
+
+## 4. 时序边界备忘（反提时如实记录）
+
+- g_first_latency=[2,2]：入口→stage0 一拍、stage0→stage1 一拍，第三拍首条微码上端口。
+- g_done_latency=[1,1]：末条完成当拍组合拉起 inst_done_valid；被 !ready 顶住由深度 1 pending 兜底（契约保证同拍至多一新完成事件，pending 不会溢出）。
+- 同槽"释放与再分配"可同拍（先还后借）；同槽"末拍收满与新指令完成"不可同拍（收满语义终结旧上下文）。

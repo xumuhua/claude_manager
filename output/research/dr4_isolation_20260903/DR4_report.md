@@ -53,3 +53,43 @@ iverilog 12.0（-g2005 -Wall）编译：**初稿即 0 错 0 告警**，全程编
 - 本实录
 
 L1/L2/L2.5 判卷待 manager 另行派单。
+# DR4-FIX · D-R4 生成物合规返工实录（coder / kimi-han 经中转站）
+
+日期：2026-09-03 · 返工对象：bd6f3b2 交付的 `rtl/inst_ucode_splitter.v`
+依据：哥哥 09:50 约束令热更新（~/dr4_constraint_addon.md，五条硬约束即时生效）+ 09:56 机检两处不合规 + 缺 flow IR 反提件
+
+## 一、返工动作（如实）
+
+1. **function 展开 ×2**（约束三）：
+   - `f_pe16`（16 输入优先编码器，3 处调用）→ 展开为三组 assign+条件运算符 15 级级联 `pe16s_rpt / pe16s_z / pe16s_alloc`，hit 位改 `|cand` 归约或。cand[0] 优先与原逐位扫描首中即锁语义逐 bit 等价。
+   - `f_ucode`（微码拼装，4 处调用）→ 展开为四组 assign 级联（`u_src0..3/u_dst0..3/u_dsz0..3`），分支序 merge→rep→mv2d 与原 if/else-if/else 逐 bit 等价；公共索引项 u_i0..3 提取只算一次。
+2. **顺手修正**：`zero_fire` 原定义在 `in_fire` 声明之前（前引，iverilog 容忍但不干净），本次将入口握手四信号（instr_in_ready/in_fire/zero_fire/s0_fire）归置到一段。
+3. **流水模式标注**（约束五）：模块头加总注，每级标明 [逐级握手]/[无反压]；发射握手代码集中在"发射握手区"（uout_ready_vec/s1_all_ready/s1_fire/uout_valid_vec），上报握手信号集中在"上报握手区"（inst_done_*/release_* 一段 + pending 时序段），valid/ready 严格匹配、valid 均不依赖 ready。
+4. **flow IR 反提件**：基于返工后 RTL 反提 `flow.ir`（散文 Markdown，G-vNext-17 形态待哥哥定），含数据通路流向图、流水级划分表、握手点清单 H1~H4、时序边界备忘。
+
+## 二、回归结果（全绿）
+
+| 项 | 结果 | log |
+|---|---|---|
+| iverilog -g2005 -Wall 编译 | 0 错 0 告警 | log/fix_*_build.log（warning 计数 0） |
+| tb_smoke（契约 6 案） | SMOKE PASS，errors=0 checks=35 done_cnt=6 | log/fix_smoke.log |
+| tb_perf | PERF SMOKE PASS（g_first=2 拍/整拍锁步/g_done=1 拍语义） | log/fix_perf.log |
+| tb_pend | PEND PASS（顶住 3 拍→放行握手，恰 1 次上报） | log/fix_pend.log |
+| L0 hlc_check（IR 侧未动） | PASS (0 error)，exit=0 | log/fix_l0_check.log |
+
+行为等价性由契约 6 案逐拍端口+payload 比对 + 性能/顶住定向案共同背书：展开前后 TB 未动一字，全绿即逐 bit 等价的经验证据。
+
+## 三、五条约束逐条自检（机检口径）
+
+1. **纯 Verilog 禁 SV**：命中数 0（无 logic/always_ff/always_comb/interface/typedef/enum；iverilog -g2005 通过即旁证）。
+2. **组合禁 always@(*) 与 case**：`grep -nE 'always\s*@\s*\(\s*\*\s*\)' rtl/*.v` 零命中；`grep -nE '\bcase\b|\bcasex\b|\bcasez\b' rtl/*.v` 零命中（连时序块 case 也无，G-vNext-15 灰色项不触发，无需裁定）。
+3. **禁 function**：`grep -nE '^\s*function\b' rtl/*.v` 零命中（原 120/278 两处已展开）。
+4. **generate 只用于参数展开/分支**：三处（原行号 77/105/135，现 88/116/139）全为 `for (genvar=0..15)` 槽位/端口参数展开，无条件生成之外用途——符合。
+5. **流水模式标注**：模块头总注 + 各级 [逐级握手]/[无反压] 标注齐备；握手处理代码集中两处（发射握手区/上报握手区），已在注释中指明位置。
+
+## 四、交付物
+
+- `rtl/inst_ucode_splitter.v` — 返工后 RTL（约 440 行，Verilog-2005）
+- `flow.ir` — flow IR 反提件（新）
+- `log/fix_*` — 返工后回归五件 log
+- 本实录（DR4-FIX 段）；原 bd6f3b2 保留不 amend，留痕

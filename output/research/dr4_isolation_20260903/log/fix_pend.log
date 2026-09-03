@@ -1,0 +1,2 @@
+PEND PASS
+smoke/tb_pend.v:54: $finish called at 145000 (1ps)

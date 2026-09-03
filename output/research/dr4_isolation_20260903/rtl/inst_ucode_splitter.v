@@ -64,6 +64,17 @@ module inst_ucode_splitter (
   output wire [4:0]   inst_done_payload      // {inst_id[3:0], err}
 );
 
+// ============================================================================
+// 流水模式总注（约束五）：
+//  - P1 入口→stage0、stage0→stage1：[无反压]——入口空槽+级空组合保证下游必收，
+//    无 ready 回传；in_fire/s0_fire 为装填使能，非握手
+//  - stage1→P2 微码发射：[逐级握手]——整拍锁步 valid/ready，处理代码集中于
+//    "发射握手区"（uout_ready_vec/s1_all_ready/s1_fire/uout_valid_vec 一处）
+//  - P3 完成返回受理：[逐级握手]——ready 常 1，valid 不依赖 ready
+//  - 完成聚合→P4 上报：[逐级握手]——valid/ready 严格匹配，处理代码集中于
+//    "上报握手区"（inst_done_* / release_* / pend 装载排空一处）
+// ============================================================================
+
 // ============================ 完成跟踪表（16 槽） ============================
 reg        tbl_valid   [0:15];
 reg [3:0]  tbl_inst_id [0:15];
@@ -116,18 +127,11 @@ generate
   end
 endgenerate
 
-// ---- 优先编码器（工具函数） ----
-function automatic [4:0] f_pe16(input [15:0] cand);
-  integer b;
-  reg hit;
-  reg [3:0] s;
-  begin
-    hit = 1'b0; s = 4'd0;
-    for (b = 0; b < 16; b = b + 1)
-      if (cand[b] && !hit) begin hit = 1'b1; s = b[3:0]; end
-    f_pe16 = { hit, s };
-  end
-endfunction
+// ---- 16 输入优先编码器（约束三：function 展开为 assign+条件运算符级联） ----
+// pe16(cand) = {hit, slot}：hit=|cand；slot=最低置位位（cand[0] 优先），与原
+// function 逐位扫描 b=0..15 首中即锁的语义逐 bit 等价。三处调用（rpt/z/alloc）
+// 各自实例化一组级联，位段名 pe16s_<用途>。
+// [无反压] 纯组合网表
 
 // ---- 上报源 1：普通槽末拍收满（组合一拍，g_done_latency=[1,1]） ----
 // 源 2/3 同理遍历槽，与源 1 并列仲裁
@@ -138,14 +142,28 @@ generate
                         && (tbl_done[gv] + {14'd0, fin_cnt[gv]} >= tbl_total[gv]);
   end
 endgenerate
-wire [4:0] rpt_pe    = f_pe16(rpt_cand);
-wire       rpt_found = rpt_pe[4];
-wire [3:0] rpt_slot  = rpt_pe[3:0];
+wire [3:0] pe16s_rpt = rpt_cand[ 0] ? 4'd 0 : rpt_cand[ 1] ? 4'd 1
+                     : rpt_cand[ 2] ? 4'd 2 : rpt_cand[ 3] ? 4'd 3
+                     : rpt_cand[ 4] ? 4'd 4 : rpt_cand[ 5] ? 4'd 5
+                     : rpt_cand[ 6] ? 4'd 6 : rpt_cand[ 7] ? 4'd 7
+                     : rpt_cand[ 8] ? 4'd 8 : rpt_cand[ 9] ? 4'd 9
+                     : rpt_cand[10] ? 4'd10 : rpt_cand[11] ? 4'd11
+                     : rpt_cand[12] ? 4'd12 : rpt_cand[13] ? 4'd13
+                     : rpt_cand[14] ? 4'd14 : 4'd15;
+wire       rpt_found = |rpt_cand;
+wire [3:0] rpt_slot  = pe16s_rpt;
 
 // ---- 上报源 2：iter=0 待报（无普通上报时拉高） ----
-wire [4:0] z_pe    = f_pe16(zpend);
-wire       z_found = z_pe[4] && !rpt_found;
-wire [3:0] z_slot  = z_pe[3:0];
+wire [3:0] pe16s_z   = zpend[ 0] ? 4'd 0 : zpend[ 1] ? 4'd 1
+                     : zpend[ 2] ? 4'd 2 : zpend[ 3] ? 4'd 3
+                     : zpend[ 4] ? 4'd 4 : zpend[ 5] ? 4'd 5
+                     : zpend[ 6] ? 4'd 6 : zpend[ 7] ? 4'd 7
+                     : zpend[ 8] ? 4'd 8 : zpend[ 9] ? 4'd 9
+                     : zpend[10] ? 4'd10 : zpend[11] ? 4'd11
+                     : zpend[12] ? 4'd12 : zpend[13] ? 4'd13
+                     : zpend[14] ? 4'd14 : 4'd15;
+wire       z_found = (|zpend) && !rpt_found;
+wire [3:0] z_slot  = pe16s_z;
 
 // ---- 上报源 3：pending 缓冲（前二者全闲时排空） ----
 reg        pend_valid;
@@ -159,6 +177,10 @@ reg        pend_err;
 // 发射 1 拍），而本槽释放当拍已收满。同槽重叠仅可能发生在"末拍收满当拍恰好
 // 有新指令分配同槽"，此时槽内旧上下文已被收满语义终结，release 与 alloc 同拍
 // 共存即 g_arb_table 的"同拍先还后借"。
+// ---- 上报握手区（[逐级握手]，约束五：处理代码集中于此一处） ----
+// inst_done valid/ready 严格匹配：valid=any_fresh|pend_valid 不依赖 ready；
+// 握手达成当拍即释放槽位（release_*），fresh 被 !ready 顶住时压入 pending
+// 兜底（压入/排空逻辑见时序块"pending 兜底缓冲"段，信号定义全部集中此处）
 wire       any_fresh  = rpt_found | z_found;
 wire [3:0] fresh_slot = rpt_found ? rpt_slot : z_slot;
 
@@ -174,9 +196,16 @@ wire [15:0] release_mask  = release_valid ? (16'h0001 << release_slot) : 16'h000
 
 // ============================ 槽位分配（入口） ============================
 wire [15:0] alloc_free = ~valid_vec | release_mask;   // 同拍先还后借（g_arb_table）
-wire [4:0]  alloc_pe   = f_pe16(alloc_free);          // 最低空闲槽优先
-wire        free_any   = alloc_pe[4];
-wire [3:0]  alloc_slot = alloc_pe[3:0];
+wire [3:0]  pe16s_alloc = alloc_free[ 0] ? 4'd 0 : alloc_free[ 1] ? 4'd 1
+                        : alloc_free[ 2] ? 4'd 2 : alloc_free[ 3] ? 4'd 3
+                        : alloc_free[ 4] ? 4'd 4 : alloc_free[ 5] ? 4'd 5
+                        : alloc_free[ 6] ? 4'd 6 : alloc_free[ 7] ? 4'd 7
+                        : alloc_free[ 8] ? 4'd 8 : alloc_free[ 9] ? 4'd 9
+                        : alloc_free[10] ? 4'd10 : alloc_free[11] ? 4'd11
+                        : alloc_free[12] ? 4'd12 : alloc_free[13] ? 4'd13
+                        : alloc_free[14] ? 4'd14 : 4'd15;
+wire        free_any   = |alloc_free;
+wire [3:0]  alloc_slot = pe16s_alloc;                 // 最低空闲槽优先
 
 // ============================ 译码流水线（两级） ============================
 reg        s0_valid;
@@ -203,12 +232,13 @@ wire        e_merge_hit = e_mv2d
                         && ({16'd0, e_prod[47:2]} <= 48'h0000_FFFF_FFFF);
 wire [15:0] e_iter_map  = e_mv2d ? e_iter : instr_in_instruction[47:32]; // 按形态取 iter
 wire [16:0] e_iter_eff  = e_merge_hit ? 17'd4 : {1'b0, e_iter_map};
-wire        zero_fire   = in_fire && (e_iter_eff == 17'd0);
 
+// ---- 入口握手（[无反压]：s0 空且有槽即收，下游 stage1 必收，无 ready 回传） ----
 // s0 空且有槽才收新指令；iter=0 指令仍占槽（下一拍直报释放，不进发射机）
 assign instr_in_ready = free_any & ~s0_valid;
-wire   in_fire = instr_in_valid && instr_in_ready;
-wire   s0_fire = s0_valid && ~s1_valid;
+wire   in_fire   = instr_in_valid && instr_in_ready;
+wire   zero_fire = in_fire && (e_iter_eff == 17'd0);
+wire   s0_fire   = s0_valid && ~s1_valid;   // stage0→stage1 [无反压]：级空即收
 
 always @(posedge clk) begin
   if (!rst_n) begin
@@ -262,7 +292,9 @@ wire [2:0]  s1_take = ((s1_base_i + 17'd4) <= s1_iter_eff) ? 3'd4
                       : {1'b0, s1_iter_eff[1:0]};
 wire [3:0]  s1_take_mask = (4'b0001 << s1_take) - 4'b0001;
 
-// 整拍锁步反压（all-or-nothing，perf.g_issue_rate）
+// ---- 发射握手区（[逐级握手]，约束五：处理代码集中于此一处） ----
+// 整拍锁步反压（all-or-nothing，perf.g_issue_rate）：本拍涉及端口 ready 全到
+// 才成拍（s1_fire），valid 只由 s1_valid/take_mask 决定、不依赖 ready
 wire [3:0]  uout_ready_vec = { ucode_out_3_ready, ucode_out_2_ready,
                                ucode_out_1_ready, ucode_out_0_ready };
 wire        s1_all_ready = ((uout_ready_vec & s1_take_mask) == s1_take_mask);
@@ -275,42 +307,46 @@ assign ucode_out_2_valid = uout_valid_vec[2];
 assign ucode_out_3_valid = uout_valid_vec[3];
 
 // 第 i 条微码地址递推（hlc/mv2d_uop.hlc、rep12_uop.hlc 逐式落地）
-function automatic [163:0] f_ucode(
-  input        merge, input is_rep, input [63:0] src_base, input [63:0] dst_base,
-  input [31:0] dim, input [31:0] sstr, input [31:0] dstr, input [31:0] part,
-  input [16:0] i, input [3:0] uid);
-  reg [63:0] src, dst;
-  reg [31:0] dsz;
-  begin
-    if (merge) begin
-      src = src_base + {32'd0, part} * {62'd0, i[1:0]};
-      dst = dst_base + {32'd0, part} * {62'd0, i[1:0]};
-      dsz = part;
-    end else if (is_rep) begin
-      src = src_base;
-      dst = dst_base + {32'd0, dstr} * {47'd0, i[16:0]};
-      dsz = dim;
-    end else begin
-      src = src_base + {32'd0, sstr} * {47'd0, i[16:0]};
-      dst = dst_base + {32'd0, dstr} * {47'd0, i[16:0]};
-      dsz = dim;
-    end
-    f_ucode = { src, dst, dsz, uid };
-  end
-endfunction
+// 约束三：f_ucode 展开为每端口一组 assign+条件运算符级联，分支序
+// merge→rep→mv2d 与原 function if/else-if/else 逐 bit 等价。
+// 公共索引项 u_i0..u_i3 只算一次。
+// [无反压] 纯组合网表（payload 内容计算，不属于握手）
+wire [16:0] u_i0 = s1_base_i + 17'd0;
+wire [16:0] u_i1 = s1_base_i + 17'd1;
+wire [16:0] u_i2 = s1_base_i + 17'd2;
+wire [16:0] u_i3 = s1_base_i + 17'd3;
 
-assign ucode_out_0_payload = f_ucode(s1_merge, s1_is_rep, s1_src_base, s1_dst_base,
-                                     s1_dim, s1_src_stride, s1_dst_stride, s1_part,
-                                     s1_base_i + 17'd0, s1_uid);
-assign ucode_out_1_payload = f_ucode(s1_merge, s1_is_rep, s1_src_base, s1_dst_base,
-                                     s1_dim, s1_src_stride, s1_dst_stride, s1_part,
-                                     s1_base_i + 17'd1, s1_uid);
-assign ucode_out_2_payload = f_ucode(s1_merge, s1_is_rep, s1_src_base, s1_dst_base,
-                                     s1_dim, s1_src_stride, s1_dst_stride, s1_part,
-                                     s1_base_i + 17'd2, s1_uid);
-assign ucode_out_3_payload = f_ucode(s1_merge, s1_is_rep, s1_src_base, s1_dst_base,
-                                     s1_dim, s1_src_stride, s1_dst_stride, s1_part,
-                                     s1_base_i + 17'd3, s1_uid);
+wire [63:0] u_src0 = s1_merge  ? s1_src_base + {32'd0, s1_part}       * {62'd0, u_i0[1:0]}
+                   : s1_is_rep ? s1_src_base
+                   :             s1_src_base + {32'd0, s1_src_stride} * {47'd0, u_i0};
+wire [63:0] u_dst0 = s1_merge  ? s1_dst_base + {32'd0, s1_part}       * {62'd0, u_i0[1:0]}
+                   :             s1_dst_base + {32'd0, s1_dst_stride} * {47'd0, u_i0};
+wire [31:0] u_dsz0 = s1_merge ? s1_part : s1_dim;
+assign ucode_out_0_payload = { u_src0, u_dst0, u_dsz0, s1_uid };
+
+wire [63:0] u_src1 = s1_merge  ? s1_src_base + {32'd0, s1_part}       * {62'd0, u_i1[1:0]}
+                   : s1_is_rep ? s1_src_base
+                   :             s1_src_base + {32'd0, s1_src_stride} * {47'd0, u_i1};
+wire [63:0] u_dst1 = s1_merge  ? s1_dst_base + {32'd0, s1_part}       * {62'd0, u_i1[1:0]}
+                   :             s1_dst_base + {32'd0, s1_dst_stride} * {47'd0, u_i1};
+wire [31:0] u_dsz1 = s1_merge ? s1_part : s1_dim;
+assign ucode_out_1_payload = { u_src1, u_dst1, u_dsz1, s1_uid };
+
+wire [63:0] u_src2 = s1_merge  ? s1_src_base + {32'd0, s1_part}       * {62'd0, u_i2[1:0]}
+                   : s1_is_rep ? s1_src_base
+                   :             s1_src_base + {32'd0, s1_src_stride} * {47'd0, u_i2};
+wire [63:0] u_dst2 = s1_merge  ? s1_dst_base + {32'd0, s1_part}       * {62'd0, u_i2[1:0]}
+                   :             s1_dst_base + {32'd0, s1_dst_stride} * {47'd0, u_i2};
+wire [31:0] u_dsz2 = s1_merge ? s1_part : s1_dim;
+assign ucode_out_2_payload = { u_src2, u_dst2, u_dsz2, s1_uid };
+
+wire [63:0] u_src3 = s1_merge  ? s1_src_base + {32'd0, s1_part}       * {62'd0, u_i3[1:0]}
+                   : s1_is_rep ? s1_src_base
+                   :             s1_src_base + {32'd0, s1_src_stride} * {47'd0, u_i3};
+wire [63:0] u_dst3 = s1_merge  ? s1_dst_base + {32'd0, s1_part}       * {62'd0, u_i3[1:0]}
+                   :             s1_dst_base + {32'd0, s1_dst_stride} * {47'd0, u_i3};
+wire [31:0] u_dsz3 = s1_merge ? s1_part : s1_dim;
+assign ucode_out_3_payload = { u_src3, u_dst3, u_dsz3, s1_uid };
 
 // ---- 时序：stage1 / 跟踪表 / zpend / pending ----
 integer t;
