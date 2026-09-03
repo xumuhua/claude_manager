@@ -1,6 +1,6 @@
 # flow.ir — inst_ucode_splitter（D-R4 生成物反提件）
 
-- 反提基准：DR4-FIX 返工后 RTL `rtl/inst_ucode_splitter.v`（commit 见 git log，DR4-FIX 前缀）
+- 反提基准：DR4-A9FIX 修复后 RTL `rtl/inst_ucode_splitter.v`（commit 见 git log，DR4-A9FIX 前缀；前序基准为 DR4-FIX）
 - 反提人：coder / kimi-han 经中转站 · 2026-09-03
 - 形态：散文 Markdown（G-vNext-17 形态待哥哥裁定，先以可读散文落地）
 - 内容口径（约束令）：数据通路流向 / 流水级划分 / 握手点清单
@@ -54,9 +54,12 @@ iter=0 指令旁路：入口分流（zero_fire）→ 占槽 + zpend 置位 → �
 
 仲裁优先级（H4 上报源）：末拍收满（rpt）> iter=0 待报（zpend）> pending 排空。
 槽位仲裁：同拍先还后借（`alloc_free = ~valid_vec | release_mask`），最低空闲槽优先。
+跟踪表登记：同拍同槽 release+alloc 时 alloc 登记生效（时序块 release 分支排除
+本拍 alloc 槽；借方登记不被还方清零吞掉，DR4-A9FIX / L2-A9 修复）。注意
+"release 优先"仅指 alloc_free 位图同拍先还后借，非表登记覆写顺序。
 
 ## 4. 时序边界备忘（反提时如实记录）
 
 - g_first_latency=[2,2]：入口→stage0 一拍、stage0→stage1 一拍，第三拍首条微码上端口。
 - g_done_latency=[1,1]：末条完成当拍组合拉起 inst_done_valid；被 !ready 顶住由深度 1 pending 兜底（契约保证同拍至多一新完成事件，pending 不会溢出）。
-- 同槽"释放与再分配"可同拍（先还后借）；同槽"末拍收满与新指令完成"不可同拍（收满语义终结旧上下文）。
+- 同槽"释放与再分配"可同拍（先还后借，表登记 alloc 生效）；同槽"末拍收满与新指令完成"不可同拍（收满语义终结旧上下文）。

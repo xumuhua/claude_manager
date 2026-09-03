@@ -1,0 +1,6 @@
+[ok] g_first_latency=2拍
+[ok] 整拍锁步自查完（v 保持、锁步成立）
+  [dbg] done_latency: lastdone=24 dv_rise=同拍(组合1拍) rpt=26
+[ok] g_done_latency=1拍（末条完成当拍 dv 拉起，顶住由 pending 兜住后放行握手）
+PERF SMOKE PASS
+smoke/tb_perf.v:112: $finish called at 305000 (1ps)

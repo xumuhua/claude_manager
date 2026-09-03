@@ -10,8 +10,10 @@
 //    已知可行解），达成 g_first_latency=[2,2]
 //  - 完成聚合纯组合上报，达成 g_done_latency=[1,1]；iter=0 指令占槽一拍后直报
 //    （无微码可等，接受起 1 拍上报，与单点区间 [1,1] 同形）
-//  - 槽位分配：最低空闲槽优先（hints.table_structure）；同拍释放优先于分配
-//    （g_arb_table=release_before_alloc：release 掩入 alloc_free 位图）
+//  - 槽位分配：最低空闲槽优先（hints.table_structure）；位图同拍先还后借
+//    （g_arb_table=release_before_alloc：release 掩入 alloc_free 位图），
+//    表登记侧同拍同槽 release+alloc 时 alloc 生效（release 分支排除本拍
+//    alloc 槽）——借方登记不被还方清零吞掉（L2-A9 修复）
 //  - 完成返回：每拍按槽聚合计数（满拍 4 端口可同 uid 各返一条，聚合 0..4 条）
 //  - 上报源互斥：pending / 组合末拍收满 / iter=0 待报 三者同拍至多一新事件
 //    （不同槽的完成事件间隔≥1拍；iter=0 待报在入口寄存器更新后才拉高），由
@@ -390,9 +392,13 @@ always @(posedge clk) begin
 
     // ---------- 完成跟踪表 ----------
     for (t = 0; t < 16; t = t + 1) begin
-      if (release_valid && release_slot == t[3:0]) begin
-        // 释放优先（含同拍 alloc 与完成到达）：上报握手当拍槽位出清，
-        // 保证 alloc_free 语义与 NBA 一致、末条当拍不被 alloc/计数覆写
+      if (release_valid && release_slot == t[3:0] &&
+          !(in_fire && alloc_slot == t[3:0])) begin
+        // 释放优先（含同拍完成到达）：上报握手当拍槽位出清，
+        // 保证 alloc_free 语义与 NBA 一致、末条当拍不被计数覆写；
+        // 但同拍 alloc 选中本槽（g_arb_table 同拍先还后借落同槽）时除外——
+        // 让下方 alloc 登记生效，否则新登记被释放清零吞掉、inst_done 永不上报
+        // （L2-A9 修复：满 16 表第 17 条"释放拍同槽再分配"活性违例）
         tbl_valid[t]   <= 1'b0;
         tbl_done[t]    <= 17'd0;
         tbl_err[t]     <= 1'b0;
@@ -416,6 +422,10 @@ always @(posedge clk) begin
         zpend[t] <= 1'b1;                       // 分配当拍置位，下一拍上报
       else if (z_found && release_valid && release_slot == t[3:0])
         zpend[t] <= 1'b0;                       // 上报握手 → 清
+      // zero_fire 置位与 z_found 清零互斥（z_found 要求 zpend[t] 旧值为 1，
+      // 而 alloc 选中本槽要求本槽空闲或正被 rpt/pending 释放，见 alloc_free），
+      // 置位优先即覆盖；iter=0 释放场景 (z_found && release_valid) 恒含
+      // !any_fresh→!rpt_found，故其清零不会被 alloc 覆写
     end
 
     // ---------- pending 兜底缓冲（压入后下一拍必排空） ----------
