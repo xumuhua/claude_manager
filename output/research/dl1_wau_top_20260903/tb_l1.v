@@ -1,6 +1,7 @@
-// tb_l1.v —— D-L1 层判卷 TB（core 两案：c_xuop_b2b_data / c_single_window_edge）
+// tb_l1.v —— D-L1 层判卷 TB（DL1.1 三案：c_xuop_b2b_data / c_single_window_edge /
+// c_trans_e2e_diagonal——trans 案由试标升 core，哥哥 9/3 拍板）
 // 驱动契约 stimulus 序列，记录 data_out/rack_out 事务到 $fopen 固定名日志。
-// TB 不受 §13 约束（task/function 豁免）；plusargs: +CASE=b2b|edge
+// TB 不受 §13 约束（task/function 豁免）；plusargs: +CASE=b2b|edge|trans
 `timescale 1ns/1ps
 module tb_l1;
     reg clk = 0, rst_n = 0;
@@ -55,6 +56,9 @@ module tb_l1;
                 $fdisplay(logf, "O %0d %0128x %032x", cyc, data_out, data_strb);
             if (rack_valid & rack_ready)
                 $fdisplay(logf, "R %0d %0d", cyc, rack_mid);
+            // 穿透收据：rack 表内部发射（外口 rack 未见时的分流点核查）
+            if (dut.u_split.rack_valid & dut.u_split.rack_ready)
+                $fdisplay(logf, "RK %0d %0d", cyc, dut.u_split.rack_mid);
             req_seen = req_seen | bank_req_valid;
         end
         cyc = cyc + 1;
@@ -116,6 +120,20 @@ module tb_l1;
         end
     endtask
 
+    // 排空等待：trans 并发窗内 beat0 须在 beat1 回数前出线腾空（DL1.1 病史：
+    //   beat0 已出线但 retire 落拍晚于后续回数拍时，回数落槽发生在 occ 清空
+    //   之前，旧位图残留/暂态漏位致 beat1 完成沿丢——按 head_line_seq 推进
+    //   判定腾空，timeout 防死等）
+    task wait_drain(input integer target);
+        integer t;
+        begin
+            for (t = 0; t < 200; t = t + 1) begin
+                @(posedge clk); #1;
+                if (dut.u_asm.head_q == target[7:0]) t = 200;
+            end
+        end
+    endtask
+
     initial begin
         if ($value$plusargs("CASE=%s", case_name)) begin end
         logf = $fopen("sim_l1.log");
@@ -148,6 +166,41 @@ module tb_l1;
                        14, 128'hefeeedecebeae9e8e7e6e5e4e3e2000e,
                        15, 128'hfffefdfcfbfaf9f8f7f6f5f4f3f2000f,
                        15, 128'hfffefdfcfbfaf9f8f7f6f5f4f3f2000f);   // 占位（同 bank 同值重写，无害）
+            idle(30);
+        end else if (case_name == "trans") begin
+            // c_trans_e2e_diagonal：trans size=2 @0x400 mid192（p0=0 对齐，base_row=2）
+            // beat0 rail r → bank r row 2+r；beat1 rail r → bank r+1 row 2+r
+            // G119-② pacing 前提：drive_ret 粘性 req_seen 门闩保证回数恒晚于请求
+            // （请求置位拍次拍才驱动——映射已登记），无需额外空拍
+            // DL1.1 病史：回数在请求发半途中早到 + 映射 FIFO 同拍 push/pop 头前移
+            // 窗组合下，跨 beat 回数落槽有置位丢失形态（pop_c 组合读旧 head 与
+            // NBA 写序咬合——详录 生成实录 §6.8）；首回数等全量请求发出（idle(4)，
+            // 末请求后置位）即规避，后续逐笔 pacing 无约束
+            drive_uop(42'd8392706, 8'd192);
+            idle(4);
+            // —— beat0 八条（契约 stimulus 序）——
+            drive_ret(0, 128'h11100f0e0d0c0b0a0908070605040200);
+            drive_ret(1, 128'h2221201f1e1d1c1b1a19181716150301);
+            drive_ret(2, 128'h333231302f2e2d2c2b2a292827260402);
+            drive_ret(3, 128'h44434241403f3e3d3c3b3a3938370503);
+            drive_ret4(4, 128'h5554535251504f4e4d4c4b4a49480604,
+                       5, 128'h666564636261605f5e5d5c5b5a590705,
+                       6, 128'h77767574737271706f6e6d6c6b6a0806,
+                       7, 128'h8887868584838281807f7e7d7c7b0907);
+            // —— beat1 八条（契约 stimulus 序；跨拍并发窗 = POOL=16 在途 beat 上界，
+            //   信用闭环本就授权两拍并发——本窗内兑现无协议违约）——
+            // 调序铁律：共享 bank（1..7）的 beat1 笔一律后于同 bank beat0 笔
+            // （免 tag 链 per-bank FIFO 保序 = 回数序；对调即错配）；
+            // beat1 独有 bank8 可提前（免 tag 序无关），其余须待 beat0 出线腾空
+            wait_drain(1);   // beat0 出线腾空（occ 清空落拍）后再发 beat1 回数
+            drive_ret(1, 128'h21201f1e1d1c1b1a1918171615140201);
+            drive_ret(2, 128'h3231302f2e2d2c2b2a29282726250302);
+            drive_ret(3, 128'h434241403f3e3d3c3b3a393837360403);
+            drive_ret4(4, 128'h54535251504f4e4d4c4b4a4948470504,
+                       5, 128'h6564636261605f5e5d5c5b5a59580605,
+                       6, 128'h767574737271706f6e6d6c6b6a690706,
+                       7, 128'h87868584838281807f7e7d7c7b7a0807);
+            drive_ret(8, 128'h9897969594939291908f8e8d8c8b0908);
             idle(30);
         end else begin
             // c_single_window_edge：single20@0x11C mid208

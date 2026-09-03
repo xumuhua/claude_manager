@@ -15,6 +15,7 @@
 //     L3 落点 = 本层加边界寄存器，子单元接口不变。
 //   :L2-SYNC  sync UOP（utype==3）入口拦停 + 屏障判定——L1 拦停 sync 于口（不进
 //     正确流），sync 开户/屏障/rack 路径随 df_rack_emit sync 段入 L2。
+//   （DL1.1：trans 拦停已拆——trans 几何/槽对/合并段全量升 L1）
 module wau_top #(
     parameter QD        = 32,
     parameter INFLIGHT  = 32,
@@ -53,10 +54,10 @@ module wau_top #(
     output wire [31:0]  wau_bank_data_ready,
     input  wire [4095:0] bank_wau_data
 );
-    // L2-SYNC 拦停：sync/trans UOP 不进 L1 正确流（ready 按 utype 门控——
-    // 入口 ready = split 空闲 且 非 sync/trans；trans 同拦（L2 几何未建））
+    // L2-SYNC 拦停：sync UOP 不进 L1 正确流（ready 按 utype 门控——
+    // 入口 ready = split 空闲 且 非 sync；DL1.1：trans(utype==2) 升 L1 放行）
     wire [1:0] utype_c = ucb_wau_uop_info[1:0];
-    wire       l1_ok_c = (utype_c == 2'd0) | (utype_c == 2'd1);
+    wire       l1_ok_c = (utype_c != 2'd3);
 
     // ---------------- 子单元互连 ----------------
     wire        sp_uop_ready;
@@ -69,7 +70,7 @@ module wau_top #(
     wire [31:0] sp_bank_req_valid, rb_ret_pop, rb_bank_data_ready;
     wire [319:0] sp_bank_req_row;
     // beat 元数据直通
-    wire        sp_bm_push, sp_bm_is_single;
+    wire        sp_bm_push, sp_bm_is_single, sp_bm_is_trans;
     wire [7:0]  sp_bm_line_seq, sp_bm_mid;
     wire [4:0]  sp_bm_nchunks;
     wire [19:0] sp_bm_win_base, sp_bm_vbytes;
@@ -77,7 +78,7 @@ module wau_top #(
     wire        rb_head_ready, rb_beat_retired, rb_beat_done;
     wire [7:0]  rb_beat_done_mid, am_head_line_seq, am_asm_line_seq;
     wire        am_asm_consume;
-    wire        rb_asm_is_single;
+    wire        rb_asm_is_single, rb_asm_is_trans;
     wire [3:0]  rb_asm_rot;
     wire [19:0] rb_asm_vbytes, rb_asm_base;
     wire [2047:0] rb_head_flat;
@@ -109,6 +110,7 @@ module wau_top #(
         .bm_win_base(sp_bm_win_base),
         .bm_mid(sp_bm_mid),
         .bm_is_single(sp_bm_is_single),
+        .bm_is_trans(sp_bm_is_trans),
         .bm_vbytes(sp_bm_vbytes),
         .rack_valid(sp_rack_valid),
         .rack_ready(rcb_wau_rack_ready),
@@ -131,9 +133,11 @@ module wau_top #(
         .bm_win_base(sp_bm_win_base),
         .bm_mid(sp_bm_mid),
         .bm_is_single(sp_bm_is_single),
+        .bm_is_trans(sp_bm_is_trans),
         .bm_vbytes(sp_bm_vbytes),
         .asm_line_seq(am_asm_line_seq),
         .asm_is_single(rb_asm_is_single),
+        .asm_is_trans(rb_asm_is_trans),
         .asm_rot(rb_asm_rot),
         .asm_vbytes(rb_asm_vbytes),
         .asm_base(rb_asm_base),
@@ -155,6 +159,7 @@ module wau_top #(
         .head_line_seq(am_head_line_seq),
         .asm_line_seq(am_asm_line_seq),
         .asm_is_single(rb_asm_is_single),
+        .asm_is_trans(rb_asm_is_trans),
         .asm_rot(rb_asm_rot),
         .asm_vbytes(rb_asm_vbytes),
         .asm_base(rb_asm_base),

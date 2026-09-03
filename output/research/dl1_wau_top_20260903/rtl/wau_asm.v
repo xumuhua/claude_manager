@@ -1,6 +1,13 @@
 `timescale 1ns/1ps
 // wau_asm.v —— WAU L1 核心层 · 拼线出线（保序 128B/拍）
-// 规格权威：behavior.ir#df_asm / hlc/asm_line.hlc（linear 型段）。
+// 规格权威：behavior.ir#df_asm / hlc/asm_line.hlc（linear 段 + DL1.1 trans 段）。
+// trans 槽对合并（DL1.1 实现，asm_line.hlc【trans】段 + Q-C strb 恒全 1）：
+//   槽对 (2r,2r+1)『主列 [rot..15] 续尾列 [0..rot−1]』经 split/retbuf 平面化后
+//   恰 = 槽 r 的 16B 按 woff=rot+i 旋转抽取——out[i] = 槽 (i+rot)>>4 的字节
+//   (i+rot)&15：rot=0 时退化为槽 0..7 顺次拼接；rot>0 时 woff=16r+((i+rot) mod 16)
+//   即「主列 [rot..15] 续尾列 [0..rot−1]」合并工作线的线性移位结果。
+//   故 trans 复用 multi 反查路径（woff=rot+i），增量仅：vbytes=128 由 bm 馈入（全域
+//   有效）+ strb 恒全 1（Q-C）。
 // single 致密化口径 = 契约钉值反推（G-vNext-13 登记歧义；判卷棒 densify_abs 同式）：
 //   组流 = 自绝对组 g0=(A>>2)−(rot>0) 起 ⌈(vbytes+4)/4⌉（rot>0）/ ⌈vbytes/4⌉（rot=0）组，
 //   偶组顺次致密低半区（byte0 起）、奇组顺次致密高半区（byte64 起），组内 4B 顺次；
@@ -11,8 +18,6 @@
 //   out[i] = 地址 A+i 字节，i < vbytes，否则 0）；strb = 低 vbytes 位 1。
 // 【流水模式：逐级握手】data_out 口——握手集中区 = :出线握手区（fire 判定/valid 更新/
 //   指针推进一处）。L3: c_ready_cut_data_out（ready 寄存采样）归 L3，L1 当拍直通。
-// L2: trans 槽对合并段（asm_line.hlc【trans】）——扩展点 :L2-TRANS-ASM，head_flat
-//   16 槽并口已留足（L1 用低 9 槽），加 trans 分支不动 linear 数据通路。
 module wau_asm (
     input  wire         clk,
     input  wire         rst_n,
@@ -25,6 +30,7 @@ module wau_asm (
     // 元数据（retbuf 读口）
     output wire [7:0]   asm_line_seq,
     input  wire         asm_is_single,
+    input  wire         asm_is_trans,
     input  wire [3:0]   asm_rot,
     input  wire [19:0]  asm_vbytes,
     input  wire [19:0]  asm_base,        // head beat 窗基址 B（= A）
@@ -165,7 +171,10 @@ module wau_asm (
     wire [63:0] m_mhi = (asm_vbytes >= 20'd128) ? 64'hffffffffffffffff
                         : ((64'd1 << {1'b0, v_hi7[5:0]}) - 64'd1);
     wire [127:0] strb_multi = {m_mhi, m_mlo};
-    wire [127:0] strb_c = asm_is_single ? strb_single : strb_multi;
+    // DL1.1：trans strb 恒全 1（裁定 Q-C）；data 走 multi 反查路径（woff=rot+i，
+    // vbytes=128 全域有效——槽对平面化合并语义见模块头注记）
+    wire [127:0] strb_c = asm_is_trans  ? 128'hffffffffffffffffffffffffffffffff
+                        : asm_is_single ? strb_single : strb_multi;
 
     // data 打包（128 字节并置）
     wire [1023:0] data_c;

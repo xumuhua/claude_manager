@@ -1,12 +1,13 @@
 wau_top L1 数据通路 topo（flow.ir 伴生文本视图，权威以 flow.ir JSON 为准）
 
   uop_in ──握手──> split(S1 接受+几何) ──派发──> bank_req[31:0] ──> (外部 bank)
+                        ├─ trans 对角几何（DL1.1：g=p0+16r+16c，两型跨界，槽对平面化 slot=rail）
                         │ map_push{line_seq,slot}            │
                         v                                    │ bank_data_valid/data
                    retbuf(S1 映射 FIFO + occ 位图 + 信用闭环) <─┘
                         │ head_ready / head_flat / 元数据     │ beat_done{mid}
                         v                                     v
-                   asm(S2 致密/移位+出线握手区)          rack(S2 收集, 读齐即发)
+                   asm(S2 致密/移位/trans 合并+出线握手区)          rack(S2 收集, 读齐即发)
                         │                                     │
                         v                                     v
                    data_out(寄存, AXI)                 rack_out(mid 保序)
