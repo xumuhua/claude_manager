@@ -1,0 +1,17 @@
+wau_top L1 数据通路 topo（flow.ir 伴生文本视图，权威以 flow.ir JSON 为准）
+
+  uop_in ──握手──> split(S1 接受+几何) ──派发──> bank_req[31:0] ──> (外部 bank)
+                        │ map_push{line_seq,slot}            │
+                        v                                    │ bank_data_valid/data
+                   retbuf(S1 映射 FIFO + occ 位图 + 信用闭环) <─┘
+                        │ head_ready / head_flat / 元数据     │ beat_done{mid}
+                        v                                     v
+                   asm(S2 致密/移位+出线握手区)          rack(S2 收集, 读齐即发)
+                        │                                     │
+                        v                                     v
+                   data_out(寄存, AXI)                 rack_out(mid 保序)
+
+流水级：
+  S1 = uop 接受 + chunk 几何 + 请求派发 + 映射登记 + 回数落槽 + 信用（逐级握手 + 信用无反压混合）
+  S2 = 拼线出线（逐级握手，握手集中 asm 出线握手区） + rack 收集发射（逐级握手）
+握手点 5 处：uop_in / bank_req(常通) / bank_ret(恒吞) / rack_out / data_out
