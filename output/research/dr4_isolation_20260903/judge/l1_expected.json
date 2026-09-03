@@ -1,0 +1,304 @@
+[
+ {
+  "id": "c_mv2d_iter8",
+  "variant": "MV2D",
+  "fields": {
+   "src_addr": 4096,
+   "dst_addr": 131072,
+   "dim_size": 64,
+   "iter": 8,
+   "src_stride": 256,
+   "dst_stride": 512
+  },
+  "inst_id": 3,
+  "bg_count": 0,
+  "main_uid": 0,
+  "expect": [
+   {
+    "port": 0,
+    "src_addr": 4096,
+    "dst_addr": 131072,
+    "dim_size": 64,
+    "uid": 0
+   },
+   {
+    "port": 1,
+    "src_addr": 4352,
+    "dst_addr": 131584,
+    "dim_size": 64,
+    "uid": 0
+   },
+   {
+    "port": 2,
+    "src_addr": 4608,
+    "dst_addr": 132096,
+    "dim_size": 64,
+    "uid": 0
+   },
+   {
+    "port": 3,
+    "src_addr": 4864,
+    "dst_addr": 132608,
+    "dim_size": 64,
+    "uid": 0
+   },
+   {
+    "port": 0,
+    "src_addr": 5120,
+    "dst_addr": 133120,
+    "dim_size": 64,
+    "uid": 0
+   },
+   {
+    "port": 1,
+    "src_addr": 5376,
+    "dst_addr": 133632,
+    "dim_size": 64,
+    "uid": 0
+   },
+   {
+    "port": 2,
+    "src_addr": 5632,
+    "dst_addr": 134144,
+    "dim_size": 64,
+    "uid": 0
+   },
+   {
+    "port": 3,
+    "src_addr": 5888,
+    "dst_addr": 134656,
+    "dim_size": 64,
+    "uid": 0
+   }
+  ]
+ },
+ {
+  "id": "c_rep12_src_fixed",
+  "variant": "REP12",
+  "fields": {
+   "src_addr": 21990232555520,
+   "dst_addr": 32768,
+   "dim_size": 128,
+   "iter": 3,
+   "dst_stride": 64
+  },
+  "inst_id": 5,
+  "bg_count": 0,
+  "main_uid": 0,
+  "expect": [
+   {
+    "port": 0,
+    "src_addr": 21990232555520,
+    "dst_addr": 32768,
+    "dim_size": 128,
+    "uid": 0
+   },
+   {
+    "port": 1,
+    "src_addr": 21990232555520,
+    "dst_addr": 32832,
+    "dim_size": 128,
+    "uid": 0
+   },
+   {
+    "port": 2,
+    "src_addr": 21990232555520,
+    "dst_addr": 32896,
+    "dim_size": 128,
+    "uid": 0
+   }
+  ]
+ },
+ {
+  "id": "c_mv2d_iter6_partial_beat",
+  "variant": "MV2D",
+  "fields": {
+   "src_addr": 8192,
+   "dst_addr": 262144,
+   "dim_size": 32,
+   "iter": 6,
+   "src_stride": 128,
+   "dst_stride": 256
+  },
+  "inst_id": 9,
+  "bg_count": 1,
+  "main_uid": 1,
+  "expect": [
+   {
+    "port": 0,
+    "src_addr": 8192,
+    "dst_addr": 262144,
+    "dim_size": 32,
+    "uid": 1
+   },
+   {
+    "port": 1,
+    "src_addr": 8320,
+    "dst_addr": 262400,
+    "dim_size": 32,
+    "uid": 1
+   },
+   {
+    "port": 2,
+    "src_addr": 8448,
+    "dst_addr": 262656,
+    "dim_size": 32,
+    "uid": 1
+   },
+   {
+    "port": 3,
+    "src_addr": 8576,
+    "dst_addr": 262912,
+    "dim_size": 32,
+    "uid": 1
+   },
+   {
+    "port": 0,
+    "src_addr": 8704,
+    "dst_addr": 263168,
+    "dim_size": 32,
+    "uid": 1
+   },
+   {
+    "port": 1,
+    "src_addr": 8832,
+    "dst_addr": 263424,
+    "dim_size": 32,
+    "uid": 1
+   }
+  ]
+ },
+ {
+  "id": "c_mv2d_merge16",
+  "variant": "MV2D",
+  "fields": {
+   "src_addr": 4096,
+   "dst_addr": 131072,
+   "dim_size": 64,
+   "iter": 16,
+   "src_stride": 64,
+   "dst_stride": 64
+  },
+  "inst_id": 4,
+  "bg_count": 0,
+  "main_uid": 0,
+  "expect": [
+   {
+    "port": 0,
+    "src_addr": 4096,
+    "dst_addr": 131072,
+    "dim_size": 256,
+    "uid": 0
+   },
+   {
+    "port": 1,
+    "src_addr": 4352,
+    "dst_addr": 131328,
+    "dim_size": 256,
+    "uid": 0
+   },
+   {
+    "port": 2,
+    "src_addr": 4608,
+    "dst_addr": 131584,
+    "dim_size": 256,
+    "uid": 0
+   },
+   {
+    "port": 3,
+    "src_addr": 4864,
+    "dst_addr": 131840,
+    "dim_size": 256,
+    "uid": 0
+   }
+  ]
+ },
+ {
+  "id": "c_merge_fallback_mod4",
+  "variant": "MV2D",
+  "fields": {
+   "src_addr": 1024,
+   "dst_addr": 65536,
+   "dim_size": 6,
+   "iter": 3,
+   "src_stride": 6,
+   "dst_stride": 6
+  },
+  "inst_id": 6,
+  "bg_count": 2,
+  "main_uid": 2,
+  "expect": [
+   {
+    "port": 0,
+    "src_addr": 1024,
+    "dst_addr": 65536,
+    "dim_size": 6,
+    "uid": 2
+   },
+   {
+    "port": 1,
+    "src_addr": 1030,
+    "dst_addr": 65542,
+    "dim_size": 6,
+    "uid": 2
+   },
+   {
+    "port": 2,
+    "src_addr": 1036,
+    "dst_addr": 65548,
+    "dim_size": 6,
+    "uid": 2
+   }
+  ]
+ },
+ {
+  "id": "c_ooo_completion_err",
+  "variant": "MV2D",
+  "fields": {
+   "src_addr": 4096,
+   "dst_addr": 131072,
+   "dim_size": 64,
+   "iter": 4,
+   "src_stride": 256,
+   "dst_stride": 512
+  },
+  "inst_id": 7,
+  "bg_count": 2,
+  "main_uid": 2,
+  "expect": [
+   {
+    "port": 0,
+    "src_addr": 4096,
+    "dst_addr": 131072,
+    "dim_size": 64,
+    "uid": 2
+   },
+   {
+    "port": 1,
+    "src_addr": 4352,
+    "dst_addr": 131584,
+    "dim_size": 64,
+    "uid": 2
+   },
+   {
+    "port": 2,
+    "src_addr": 4608,
+    "dst_addr": 132096,
+    "dim_size": 64,
+    "uid": 2
+   },
+   {
+    "port": 3,
+    "src_addr": 4864,
+    "dst_addr": 132608,
+    "dim_size": 64,
+    "uid": 2
+   }
+  ],
+  "err_reduce": 1,
+  "final": {
+   "inst_id": 7,
+   "err": 1
+  }
+ }
+]

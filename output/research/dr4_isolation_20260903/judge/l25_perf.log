@@ -1,0 +1,6 @@
+PERF M1 first_latency 2 (in=7 1st_u=9)
+PERF M2 done_latency 0 (last_d=33 idv=33)
+PERF M3 burst16 beats 16: 0 0 0 4 4 4 4 0 0 0 0 0 0 0 0 0
+PERF M4 merge beats 10: 0 0 0 4 0 0 0 0 0 0
+PERF M5 b2b beats 16: 0 0 0 4 0 4 0 0 0 0 0 0 0 0 0 0
+END

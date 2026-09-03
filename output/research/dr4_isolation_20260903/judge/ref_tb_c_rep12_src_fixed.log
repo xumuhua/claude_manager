@@ -1,0 +1,4 @@
+VCD info: dumpfile tb_c_rep12_src_fixed.vcd opened for output.
+[INFO] c_rep12_src_fixed 单拍3端口同发 PASS (beat@7)
+[PASS] c_rep12_src_fixed
+/home/glmdev/dr4_judge_work/chip_design_ir/rtl_gen/inst_ucode_splitter/tb_c_rep12_src_fixed.v:156: $finish called at 85000 (1ps)

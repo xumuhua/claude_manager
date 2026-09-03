@@ -1,0 +1,5 @@
+VCD info: dumpfile tb_c_mv2d_merge16.vcd opened for output.
+[INFO] c_mv2d_merge16 4份同一拍四端口同发 PASS (beat@7, m_merge_issue_cycles=1)
+[INFO] c_mv2d_merge16 table total=4 登记 PASS
+[PASS] c_mv2d_merge16
+/home/glmdev/dr4_judge_work/chip_design_ir/rtl_gen/inst_ucode_splitter/tb_c_mv2d_merge16.v:174: $finish called at 85000 (1ps)

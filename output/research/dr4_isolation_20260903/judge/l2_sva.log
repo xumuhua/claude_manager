@@ -1,0 +1,41 @@
+S1 cyc6
+FIRE cyc46 id=3 inflight 1->0
+S2 cyc53 inflight=0
+S2 full cyc133 irdy=0 inflight=16
+FIRE cyc140 id=0 inflight 17->16
+FIRE cyc142 id=1 inflight 16->15
+FIRE cyc144 id=2 inflight 15->14
+FIRE cyc146 id=3 inflight 14->13
+FIRE cyc148 id=4 inflight 13->12
+FIRE cyc150 id=5 inflight 12->11
+FIRE cyc152 id=6 inflight 11->10
+FIRE cyc154 id=7 inflight 10->9
+FIRE cyc156 id=8 inflight 9->8
+FIRE cyc158 id=9 inflight 8->7
+FIRE cyc160 id=10 inflight 7->6
+FIRE cyc162 id=11 inflight 6->5
+FIRE cyc164 id=12 inflight 5->4
+FIRE cyc166 id=13 inflight 4->3
+FIRE cyc168 id=14 inflight 3->2
+FIRE cyc170 id=15 inflight 2->1
+S2 drained cyc183 inflight=1
+VIOL A9 lifecycle_hole inflight=1 cyc183 (done 已回满而有指令永不上报)
+S3 cyc183
+S3 slot0 total3 done0 sent4
+S3 slot1 total4 done0 sent4
+FIRE cyc220 id=4 inflight 5->4
+S3 slot2 total3 done0 sent3
+FIRE cyc226 id=6 inflight 4->3
+S3 slot3 total6 done0 sent6
+FIRE cyc238 id=9 inflight 3->2
+S4 cyc259
+END cyc273 inflight=3
+COUNT A1 0
+COUNT A2 0
+COUNT A3 0
+COUNT A4 0
+COUNT A5 0
+COUNT A6 0
+COUNT A7 0
+COUNT A8 0
+COUNT A9 1

@@ -1,0 +1,5 @@
+VCD info: dumpfile tb_c_beat_lock.vcd opened for output.
+[INFO] c_beat_lock stall 3 拍整拍未提交、valid/载荷保持 PASS
+[INFO] c_beat_lock 松开后整拍同发 PASS (commit@11)
+[PASS] c_beat_lock
+/home/glmdev/dr4_judge_work/chip_design_ir/rtl_gen/inst_ucode_splitter/tb_c_beat_lock.v:218: $finish called at 125000 (1ps)

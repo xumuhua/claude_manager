@@ -1,0 +1,5 @@
+VCD info: dumpfile tb_c_mv2d_iter8.vcd opened for output.
+[INFO] c_mv2d_iter8 两拍各4端口同拍且相邻 PASS (beat0@7 beat1@8)
+[INFO] c_mv2d_iter8 m_first_ucode_latency=2 旁证 PASS
+[PASS] c_mv2d_iter8
+/home/glmdev/dr4_judge_work/chip_design_ir/rtl_gen/inst_ucode_splitter/tb_c_mv2d_iter8.v:194: $finish called at 95000 (1ps)
