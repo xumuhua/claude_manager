@@ -129,3 +129,15 @@ iverilog -g2012 -o sim_l2 tb_l2_sva.v <被试RTL> && vvp sim_l2   # L2：A1-A8=0
 iverilog -g2012 -o sim_l25 tb_l25_perf.v <被试RTL> && vvp sim_l25  # L2.5：M1-M5
 # 对照：adapter.v + dut_ref.v（被试改名副本）+ 真品 TB（chip_design_ir rtl_gen）
 ```
+
+## 附录：A9FIX 复判销项 2026-09-03
+
+- **复判对象**：coder A9FIX `e9a515d`（rebase 于本判卷 `90b3322` 之上），被试 RTL 仅改 `rtl/inst_ucode_splitter.v` 跟踪表时序块——release 分支追加 `!(in_fire && alloc_slot == t)` 排除条件（同拍同槽 release+alloc 时 alloc 登记生效）+ 注释两处。
+- **复判独立性**：判卷方（glmdev）在原判卷环境（iverilog 12.0 / 同 judge/ 工件）亲自复跑全部四项，非 coder 自报。激励确定性验证：`gen_l1.py` 重跑后 `case_stim.vh`/`l1_expected.json` 与入库版逐字节一致（git 零 diff）。复跑日志入 `judge/recheck_a9fix/`；原判基线日志未动。
+- **四项复跑结果**：
+  1. `repro_a9.v` 最小复现 → **PASS**：cyc93 冲突拍（`alloc=0 rls_v=1 rls=0`）后 cyc94 起 `tbl_valid[0]=1, id=14`（新登记生效；基线为 v=0/id=0 永死）→ 回 done 收满上报 → 释放终态 v=0。生命周期"置位→收满上报→释放"完整走通。
+  2. `tb_l2_sva.v` → **PASS**：COUNT A1~A9 全 0（基线 A9=1）；S2 drained cyc183 `inflight=0`（基线残留 1），满表第 17 条活性违例消除，A1~A8 无新违例。
+  3. `tb_l1_contract.v` 六案 → **PASS**：**30/30 ALL MATCH**（8+3+6+4+3+6），与原判一致，无回退。
+  4. `tb_l25_perf.v` → **PASS**：M1 first_latency=2 / M2 done_latency=0 / M3·M4·M5 beats 分布与原判实测 `l25_perf.log` 逐行一致，无性能回退。
+- **机检五约束**（e9a515d 全文 grep）：case 族 0 命中；function/endfunction 代码 0 命中（仅注释记述展开史）；`always @(*)` 0 命中；SV 类型（logic/always_ff/always_comb/enum/typedef）0 命中；generate 三处均为 `90b3322`/`b8958c8` 已判合规的 16 槽 genvar assign 展开，本次 diff（行 392~404 时序块 if 条件 + 两处注释）未触碰。五约束维持全绿。
+- **销项判定**：A9 归零 + L1 30/30 不回退 → **销项 PASS**。第 6 节"L2 FAIL 1 条（A9）"就此销项，D-R4 实验正式全绿收官。

@@ -1,0 +1,24 @@
+cyc78 iv=0 irdy=0 F=0 dv=0000 tbl0: v=1 id=0 tot=1 dn=0 | alloc=15 rls_v=0 rls=x
+cyc79 iv=0 irdy=1 F=0 dv=0000 tbl0: v=1 id=0 tot=1 dn=0 | alloc=15 rls_v=0 rls=x
+cyc80 iv=0 irdy=1 F=0 dv=0000 tbl0: v=1 id=0 tot=1 dn=0 | alloc=15 rls_v=0 rls=x
+cyc81 iv=0 irdy=1 F=0 dv=0000 tbl0: v=1 id=0 tot=1 dn=0 | alloc=15 rls_v=0 rls=x
+cyc82 iv=1 irdy=1 F=0 dv=0000 tbl0: v=1 id=0 tot=1 dn=0 | alloc=15 rls_v=0 rls=x
+cyc83 iv=0 irdy=0 F=0 dv=0000 tbl0: v=1 id=0 tot=1 dn=0 | alloc=15 rls_v=0 rls=x
+cyc84 iv=0 irdy=0 F=0 dv=0000 tbl0: v=1 id=0 tot=1 dn=0 | alloc=15 rls_v=0 rls=x
+cyc85 iv=0 irdy=0 F=0 dv=0000 tbl0: v=1 id=0 tot=1 dn=0 | alloc=15 rls_v=0 rls=x
+cyc86 iv=0 irdy=0 F=0 dv=0000 tbl0: v=1 id=0 tot=1 dn=0 | alloc=15 rls_v=0 rls=x
+cyc87 iv=1 irdy=0 F=0 dv=0000 tbl0: v=1 id=0 tot=1 dn=0 | alloc=15 rls_v=0 rls=x
+cyc88 iv=1 irdy=0 F=0 dv=0000 tbl0: v=1 id=0 tot=1 dn=0 | alloc=15 rls_v=0 rls=x
+cyc89 iv=1 irdy=0 F=0 dv=0000 tbl0: v=1 id=0 tot=1 dn=0 | alloc=15 rls_v=0 rls=x
+cyc90 iv=1 irdy=0 F=0 dv=0000 tbl0: v=1 id=0 tot=1 dn=0 | alloc=15 rls_v=0 rls=x
+cyc91 iv=1 irdy=0 F=0 dv=0000 tbl0: v=1 id=0 tot=1 dn=0 | alloc=15 rls_v=0 rls=x
+cyc92 iv=1 irdy=0 F=0 dv=0000 tbl0: v=1 id=0 tot=1 dn=0 | alloc=15 rls_v=0 rls=x
+cyc93 iv=1 irdy=1 F=1 dv=0001 tbl0: v=1 id=0 tot=1 dn=0 | alloc=0 rls_v=1 rls=0
+cyc94 iv=0 irdy=0 F=0 dv=0000 tbl0: v=1 id=14 tot=1 dn=0 | alloc=15 rls_v=0 rls=x
+cyc95 iv=0 irdy=0 F=0 dv=0000 tbl0: v=1 id=14 tot=1 dn=0 | alloc=15 rls_v=0 rls=x
+cyc96 iv=0 irdy=0 F=0 dv=0000 tbl0: v=1 id=14 tot=1 dn=0 | alloc=15 rls_v=0 rls=x
+cyc97 iv=0 irdy=0 F=0 dv=0000 tbl0: v=1 id=14 tot=1 dn=0 | alloc=15 rls_v=0 rls=x
+cyc98 iv=0 irdy=0 F=0 dv=0000 tbl0: v=1 id=14 tot=1 dn=0 | alloc=15 rls_v=0 rls=x
+-- now send done for instr#17 (uid=0, iter=1)
+final tbl0: v=0 tot=1 dn=0  (expect v=1..reported..v=0)
+repro_a9.v:56: $finish called at 1110000 (1ps)
