@@ -13,25 +13,52 @@ const TEXT_NAMES = ['license', 'readme', 'changelog', 'makefile', 'dockerfile'];
 Page({
   data: {
     owner: '', repo: '', path: '', branch: '',
+    branches: [], branchIdx: 0,
     rows: [], loading: true, error: '',
   },
 
   onLoad(q) {
-    const { owner, repo, path = '' } = q;
+    const { owner, repo, path = '', branch = '' } = q;
     this.fullTree = null;
-    this.setData({ owner, repo, path });
+    this.setData({ owner, repo, path, branch });
     wx.setNavigationBarTitle({ title: path ? repo + ' / ' + path : repo });
+    this.loadBranches().then(() => this.loadTree());
+  },
+
+  async loadBranches() {
+    const { owner, repo } = this.data;
+    try {
+      const d = await api.request({ path: `/gh/${owner}/${repo}/branches`, timeout: 15000 });
+      const branches = d.branches || [];
+      const branch = this.data.branch || d.default_branch || branches[0] || 'main';
+      this.setData({ branches, branch, branchIdx: Math.max(0, branches.indexOf(branch)) });
+    } catch (e) {
+      // 分支列表拉取失败不阻塞：回落默认分支行为
+    }
+  },
+
+  onBranchChange(e) {
+    const idx = Number(e.detail.value);
+    const branch = this.data.branches[idx];
+    if (!branch || branch === this.data.branch) return;
+    delete TREE_CACHE[this.cacheKey()];
+    this.setData({ branch, branchIdx: idx });
     this.loadTree();
+  },
+
+  cacheKey() {
+    return this.data.owner + '/' + this.data.repo + '@' + (this.data.branch || '');
   },
 
   async loadTree() {
     const { owner, repo } = this.data;
     this.setData({ loading: true, error: '' });
     try {
-      const cacheKey = owner + '/' + repo;
+      const cacheKey = this.cacheKey();
       let full = TREE_CACHE[cacheKey];
       if (!full || Date.now() - full.ts > 5 * 60 * 1000) {
-        const data = await api.request({ path: `/gh/${owner}/${repo}/tree?recursive=1`, timeout: 30000 });
+        const br = this.data.branch ? `&branch=${encodeURIComponent(this.data.branch)}` : '';
+        const data = await api.request({ path: `/gh/${owner}/${repo}/tree?recursive=1${br}`, timeout: 30000 });
         full = { ts: Date.now(), branch: data.branch, tree: data.tree || [] };
         TREE_CACHE[cacheKey] = full;
       }
@@ -78,7 +105,7 @@ Page({
     const { owner, repo, branch } = this.data;
     if (row.type === 'dir') {
       wx.navigateTo({
-        url: `/pages/repo/tree?owner=${owner}&repo=${repo}&path=${encodeURIComponent(row.path)}`,
+        url: `/pages/repo/tree?owner=${owner}&repo=${repo}&branch=${this.data.branch}&path=${encodeURIComponent(row.path)}`,
       });
       return;
     }
