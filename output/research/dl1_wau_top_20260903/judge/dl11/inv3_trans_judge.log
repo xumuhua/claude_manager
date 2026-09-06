@@ -1,0 +1,4 @@
+FIRE #0 head_q=1
+FIRE #1 head_q=2
+INV3-JUDGE: PASS (trans traffic, 2 fires, head_q strict +1)
+tb_inv3_trans_judge.v:104: $finish called at 895000 (1ps)

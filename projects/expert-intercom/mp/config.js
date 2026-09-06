@@ -35,6 +35,7 @@ module.exports = {
     'xumuhua/claude_manager',
     'xumuhua/aichip',
     'xumuhua/mcn_design',
+    'xumuhua/chip_design_ir',
   ],
 
   // dm 快捷指令条（C5，本地配置）

@@ -10,6 +10,12 @@
   </view>
 
   <block wx:else>
+    <view wx:if="{{branches.length > 1}}" class="branch-bar">
+      <text class="branch-label">🌿</text>
+      <picker class="branch-picker" range="{{branches}}" value="{{branchIdx}}" bindchange="onBranchChange">
+        <view class="branch-current">{{branch}} ▾</view>
+      </picker>
+    </view>
     <view class="tree-list">
       <view wx:for="{{rows}}" wx:key="path" class="tree-row" data-row="{{item}}" bindtap="openRow">
         <text class="tree-icon">{{item.type === 'dir' ? '📂' : (item.isMd ? '📄' : '🖼')}}</text>

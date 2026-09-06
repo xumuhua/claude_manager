@@ -1,0 +1,6 @@
+[机算交叉验证] trans 期望（bankrot×几何×rail 升序）≡ 契约钉值：3/3 自洽
+[c_xuop_b2b_data] 钉值×日志逐点比对（端口分组）：8/8 MATCH  [跨端口交错序：data 内序/rack 内序均严格一致——D-L1 既定裁定，非考核点]
+[c_single_window_edge] 钉值×日志逐点比对（端口分组）：3/3 MATCH
+[c_trans_e2e_diagonal] 钉值×日志逐点比对（端口分组）：5/5 MATCH
+
+=== 三案判定：ALL MATCH (16/16) ===

@@ -269,6 +269,11 @@ async def ws_handler(request):
 # ---------- GitHub 代理（包一层鉴权） ----------
 
 @require_agent
+async def gh_branches_route(request):
+    return await gh_proxy.gh_branches(request.app["cfg"], request)
+
+
+@require_agent
 async def gh_tree_route(request):
     return await gh_proxy.gh_tree(request.app["cfg"], request)
 
@@ -335,6 +340,7 @@ def main():
     app.router.add_post("/api/messages", send_group)
     app.router.add_get("/api/dm/messages", get_dm_messages)
     app.router.add_post("/api/dm/messages", send_dm)
+    app.router.add_get(r"/gh/{owner}/{repo}/branches", gh_branches_route)
     app.router.add_get(r"/gh/{owner}/{repo}/tree", gh_tree_route)
     app.router.add_get(r"/gh/{owner}/{repo}/blob/{branch}/{path:.*}", gh_blob_route)
     # AI 中转（D1 v2 §9，哥哥 token 鉴权 + 频控 + 日限额熔断 + 即焚）

@@ -14,3 +14,9 @@
 .error-box { margin: 80px 16px 0; text-align: center; }
 .error-text { color: var(--fg2); font-size: 14px; }
 .error-retry { color: var(--primary); font-size: 14px; margin-top: 12px; }
+
+/* 分支切换条（2026-09-06） */
+.branch-bar { display: flex; align-items: center; padding: 16rpx 24rpx; background: #f6f8fa; border-bottom: 1rpx solid #e5e8ec; }
+.branch-label { margin-right: 12rpx; font-size: 28rpx; }
+.branch-picker { flex: 1; }
+.branch-current { font-size: 28rpx; color: #0969da; font-weight: 500; }

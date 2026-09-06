@@ -54,6 +54,38 @@ def _is_text_path(path):
     return dot >= 0 and name[dot:] in TEXT_EXTS
 
 
+async def gh_branches(cfg, request):
+    """GET /gh/<owner>/<repo>/branches — 列分支（小程序分支切换器用）。"""
+    owner = request.match_info["owner"]
+    repo = request.match_info["repo"]
+    if not (_valid_segment(owner, _RE_OWNER_REPO) and _valid_segment(repo, _RE_OWNER_REPO)):
+        return _bad_request("BAD_REPO", "owner/repo 含非法字符")
+    timeout = aiohttp.ClientTimeout(total=cfg["gh_timeout_s"])
+    try:
+        async with aiohttp.ClientSession(timeout=timeout,
+                                         headers=_session_headers(cfg)) as s:
+            base = cfg["gh_api_base"]
+            async with s.get(f"{base}/repos/{owner}/{repo}") as r0:
+                if r0.status == 404:
+                    return web.json_response({"code": "NOT_FOUND", "message": "仓库不存在"}, status=404)
+                default_branch = (await r0.json()).get("default_branch", "main") if r0.status == 200 else "main"
+            names = []
+            page = 1
+            while page <= 5:  # 上限 500 分支足够
+                async with s.get(f"{base}/repos/{owner}/{repo}/branches?per_page=100&page={page}") as r:
+                    if r.status != 200:
+                        break
+                    arr = await r.json()
+                    names += [b.get("name") for b in arr if b.get("name")]
+                    if len(arr) < 100:
+                        break
+                    page += 1
+    except (aiohttp.ClientError, TimeoutError) as e:
+        return web.json_response({"code": "GH_UNREACHABLE", "message": f"GitHub 上游不可达: {e}"}, status=502)
+    return web.json_response({"owner": owner, "repo": repo,
+                              "default_branch": default_branch, "branches": names})
+
+
 async def gh_tree(cfg, request):
     """GET /gh/<owner>/<repo>/tree[?branch=&recursive=] — 列目录（阅读页浏览用）。"""
     owner = request.match_info["owner"]
