@@ -18,6 +18,8 @@ Page({
   },
 
   onLoad(q) {
+    // [MP-LOG1 诊断埋点①] 只加日志不改逻辑
+    console.log('[tree] onLoad owner=' + q.owner + ' repo=' + q.repo + ' branch=' + (q.branch === undefined ? '<undefined>' : q.branch) + ' path=' + (q.path === undefined ? '<undefined>' : q.path));
     const { owner, repo, path = '', branch = '' } = q;
     this.fullTree = null;
     this.setData({ owner, repo, path, branch });
@@ -40,6 +42,8 @@ Page({
   onBranchChange(e) {
     const idx = Number(e.detail.value);
     const branch = this.data.branches[idx];
+    // [MP-LOG1 诊断埋点⑥] 分支切换
+    console.log('[tree] branchChange from=' + this.data.branch + ' to=' + branch);
     if (!branch || branch === this.data.branch) return;
     delete TREE_CACHE[this.cacheKey()];
     this.setData({ branch, branchIdx: idx });
@@ -56,9 +60,15 @@ Page({
     try {
       const cacheKey = this.cacheKey();
       let full = TREE_CACHE[cacheKey];
+      const cacheHit = !!(full && Date.now() - full.ts <= 5 * 60 * 1000);
+      // [MP-LOG1 诊断埋点②] 请求 URL 全串（含 branch 参数）+ cacheKey + 缓存命中情况
+      const reqUrl = '/gh/' + owner + '/' + repo + '/tree?recursive=1' + (this.data.branch ? '&branch=' + this.data.branch : '');
+      console.log('[tree] request url=' + reqUrl + ' cacheKey=' + cacheKey + ' cacheHit=' + cacheHit + (cacheHit ? ' cachedBranch=' + full.branch : ''));
       if (!full || Date.now() - full.ts > 5 * 60 * 1000) {
         const br = this.data.branch ? `&branch=${encodeURIComponent(this.data.branch)}` : '';
         const data = await api.request({ path: `/gh/${owner}/${repo}/tree?recursive=1${br}`, timeout: 30000 });
+        // [MP-LOG1 诊断埋点③] 返回后打 branch/条数/truncated
+        console.log('[tree] loaded branch=' + data.branch + ' entries=' + (data.tree ? data.tree.length : 0) + ' truncated=' + !!data.truncated);
         full = { ts: Date.now(), branch: data.branch, tree: data.tree || [] };
         TREE_CACHE[cacheKey] = full;
       }
@@ -68,6 +78,8 @@ Page({
     } catch (e) {
       const msg = e.code === 'NOT_FOUND' ? '仓库不存在或非 public'
         : e.code === 'NETWORK' ? '网络不可用' : '加载失败：' + e.message;
+      // [MP-LOG1 诊断埋点⑦] 加载失败
+      console.log('[tree] loadFail code=' + (e && e.code) + ' message=' + (e && e.message));
       this.setData({ loading: false, error: msg });
     }
   },
@@ -97,6 +109,15 @@ Page({
     });
     const rows = [...seen.values()].sort((a, b) =>
       a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1);
+    // [MP-LOG1 诊断埋点④] 渲染命中条数；0 条时追加诊断：区分"整树空"vs"本目录空"
+    console.log('[tree] render path=' + this.data.path + ' prefix=' + prefix + ' rows=' + rows.length);
+    if (rows.length === 0) {
+      const all = (this.fullTree && this.fullTree.tree) || [];
+      const evCount = all.filter((e) => e.path && e.path.indexOf('examples_vnext') === 0).length;
+      const parentPrefix = prefix.slice(0, prefix.lastIndexOf('/', Math.max(0, prefix.length - 2)) + 1);
+      const parentCount = parentPrefix ? all.filter((e) => e.path && e.path.indexOf(parentPrefix) === 0).length : all.length;
+      console.log('[tree] render empty: totalEntries=' + all.length + ' startswith(examples_vnext)=' + evCount + ' startswith(parent:' + parentPrefix + ')=' + parentCount + ' fullTree.branch=' + (this.fullTree && this.fullTree.branch));
+    }
     this.setData({ rows, loading: false });
   },
 
@@ -104,6 +125,8 @@ Page({
     const row = e.currentTarget.dataset.row;
     const { owner, repo, branch } = this.data;
     if (row.type === 'dir') {
+      // [MP-LOG1 诊断埋点⑤] 点目录
+      console.log('[tree] openRow dir=' + row.path + ' branch=' + branch);
       wx.navigateTo({
         url: `/pages/repo/tree?owner=${owner}&repo=${repo}&branch=${this.data.branch}&path=${encodeURIComponent(row.path)}`,
       });
