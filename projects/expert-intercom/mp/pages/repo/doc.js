@@ -4,6 +4,12 @@ const api = require('../../utils/api');
 const store = require('../../utils/store');
 const md = require('../../utils/md');
 
+// MP-FIX1：onLoad query 参数安全解码（与 tree.js 同口径，decode 失败回退原值）
+function safeDecode(s) {
+  if (s === undefined || s === null) return s;
+  try { return decodeURIComponent(s); } catch (e) { return s; }
+}
+
 Page({
   data: {
     owner: '', repo: '', branch: '', path: '',
@@ -16,8 +22,9 @@ Page({
   },
 
   onLoad(q) {
-    const { owner, repo, branch, path } = q;
-    const decodedPath = decodeURIComponent(path || '');
+    // MP-FIX1：owner/repo/branch 同样可能被 encode（branch 含 '/' 时如 ir-refactor 无影响，feature/xxx 类会中招）
+    const owner = safeDecode(q.owner), repo = safeDecode(q.repo),
+          branch = safeDecode(q.branch), decodedPath = safeDecode(q.path || '');
     this.setData({ owner, repo, branch, path: decodedPath });
     this.docKey = store.docKey(owner, repo, decodedPath);
     const name = decodedPath.split('/').pop();

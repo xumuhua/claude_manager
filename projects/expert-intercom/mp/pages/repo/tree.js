@@ -10,6 +10,12 @@ const TREE_CACHE = {};  // { 'owner/repo': {ts, branch, tree} }
 const TEXT_RE = /\.(md|markdown|mdown|txt|rst|py|js|ts|tsx|jsx|json|yaml|yml|toml|ini|cfg|sh|bash|c|h|cpp|hpp|go|rs|java|html|css|xml|sql|vue)$/i;
 const TEXT_NAMES = ['license', 'readme', 'changelog', 'makefile', 'dockerfile'];
 
+// MP-FIX1：onLoad query 参数安全解码——小程序框架不定层 encode，%2F 未解码会让 prefix startsWith 全失配（真机空目录根因）
+function safeDecode(s) {
+  if (s === undefined || s === null) return s;
+  try { return decodeURIComponent(s); } catch (e) { return s; }
+}
+
 Page({
   data: {
     owner: '', repo: '', path: '', branch: '',
@@ -21,9 +27,13 @@ Page({
     // [MP-LOG1 诊断埋点①] 只加日志不改逻辑
     console.log('[tree] onLoad owner=' + q.owner + ' repo=' + q.repo + ' branch=' + (q.branch === undefined ? '<undefined>' : q.branch) + ' path=' + (q.path === undefined ? '<undefined>' : q.path));
     const { owner, repo, path = '', branch = '' } = q;
+    const dOwner = safeDecode(owner), dRepo = safeDecode(repo),
+          dPath = safeDecode(path), dBranch = safeDecode(branch);
+    // [MP-FIX1 埋点①补] 解码后值（与①原值对照，一眼看出是否被双重编码）
+    console.log('[tree] onLoad decoded owner=' + dOwner + ' repo=' + dRepo + ' branch=' + dBranch + ' path=' + dPath);
     this.fullTree = null;
-    this.setData({ owner, repo, path, branch });
-    wx.setNavigationBarTitle({ title: path ? repo + ' / ' + path : repo });
+    this.setData({ owner: dOwner, repo: dRepo, path: dPath, branch: dBranch });
+    wx.setNavigationBarTitle({ title: dPath ? dRepo + ' / ' + dPath : dRepo });
     this.loadBranches().then(() => this.loadTree());
   },
 
