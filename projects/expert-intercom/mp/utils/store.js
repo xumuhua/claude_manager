@@ -9,6 +9,7 @@ const K = {
   docIdx: 'doc_cache_idx',    // [{key, size, ts}]（ts 升序，头最旧）
   doc: (key) => 'doc_' + key,
   aiCardFold: 'ai_card_fold', // { key: bool }
+  treeSort: 'tree_sort',      // MP-UX4：tree 列表排序记忆（'name' | 'mtime'）
 };
 
 function get(key, def) {
@@ -57,6 +58,10 @@ function setCardFold(key, folded) {
   set(K.aiCardFold, all);
 }
 
+// ---- MP-UX4：tree 列表排序记忆 ----
+const getTreeSort = () => (get(K.treeSort, 'name') === 'mtime' ? 'mtime' : 'name');
+const setTreeSort = (mode) => set(K.treeSort, mode === 'mtime' ? 'mtime' : 'name');
+
 // ---- 离线文档缓存（G4：LRU 20 篇 / 4MB）----
 function getDoc(key) {
   const v = get(K.doc(key), null);
@@ -89,5 +94,6 @@ module.exports = {
   getLastRead, setLastRead,
   getFavs, setFavs, getCustoms, addCustom,
   getSummary, setSummary, getCardFold, setCardFold,
+  getTreeSort, setTreeSort,
   getDoc, putDoc, listDocs, docKey,
 };

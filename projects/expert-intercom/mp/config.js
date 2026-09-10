@@ -29,6 +29,13 @@ module.exports = {
   CONV_GROUP: 'grp_experts',
   CONV_DM: 'dm_yifei',
 
+  // MP-UX4：群会话显示名映射（key=conversation_id）；未登记的 grp_* 自动去前缀展示，
+  // 新增群不用改代码。会话列表走 /api/conversations 动态拉取，本表只管文案。
+  GROUP_NAMES: {
+    grp_experts: '专家群',
+    grp_mp: '小程序群',
+  },
+
   // 默认常用仓（D1 §2.2，可本地收藏排序）
   DEFAULT_REPOS: [
     'xumuhua/claude_stock',

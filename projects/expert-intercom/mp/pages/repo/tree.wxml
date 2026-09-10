@@ -16,6 +16,12 @@
         <view class="branch-current">{{branch}} ▾</view>
       </picker>
     </view>
+    <!-- MP-UX4：排序栏（吸顶，不随列表滚动）——默认按名称，选择存 storage -->
+    <view class="sort-bar">
+      <text class="sort-item {{sortMode === 'name' ? 'on' : ''}}" data-mode="name" bindtap="onSortChange">按名称</text>
+      <text class="sort-sep">|</text>
+      <text class="sort-item {{sortMode === 'mtime' ? 'on' : ''}}" data-mode="mtime" bindtap="onSortChange">按时间</text>
+    </view>
     <view class="tree-list">
       <view wx:for="{{rows}}" wx:key="path" class="tree-row" data-row="{{item}}" bindtap="openRow">
         <text class="tree-icon">{{item.type === 'dir' ? '📂' : (item.isMd ? '📄' : '🖼')}}</text>

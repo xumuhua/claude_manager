@@ -1,12 +1,17 @@
 <view class="page">
   <!-- 顶栏：segmented 切会话 + 状态点 + @我过滤 + 速览（D1 §7 P1） -->
+  <!-- MP-UX4：群 tab 动态渲染（/api/conversations），未读角标按 conv 独立计数；
+       群多时横向滚动；亦菲私聊固定在最右（行为不变） -->
   <view class="topbar">
-    <view class="seg">
-      <text class="seg-item {{conv === 'grp_experts' ? 'on' : ''}}"
-            data-conv="grp_experts" bindtap="switchConv">专家群</text>
-      <text class="seg-item {{conv === 'dm_yifei' ? 'on' : ''}}"
-            data-conv="dm_yifei" bindtap="switchConv">亦菲</text>
-    </view>
+    <scroll-view scroll-x class="seg-scroll" enhanced show-scrollbar="{{false}}">
+      <view class="seg">
+        <text wx:for="{{tabs}}" wx:key="id"
+              class="seg-item {{conv === item.id ? 'on' : ''}}"
+              data-conv="{{item.id}}" bindtap="switchConv">{{item.label}}<text wx:if="{{item.unread}}" class="seg-badge">{{item.unread > 99 ? '99+' : item.unread}}</text></text>
+        <text class="seg-item seg-dm {{conv === dmTab.id ? 'on' : ''}}"
+              data-conv="{{dmTab.id}}" bindtap="switchConv">{{dmTab.label}}<text wx:if="{{dmTab.unread}}" class="seg-badge">{{dmTab.unread > 99 ? '99+' : dmTab.unread}}</text></text>
+      </view>
+    </scroll-view>
     <view class="dot dot-{{wsStatus}}" title="连接状态"></view>
     <text class="top-btn {{atMeOnly ? 'on' : ''}}" bindtap="toggleAtMe">@我</text>
     <text class="top-btn" bindtap="onSummaryTap">✦速览</text>
@@ -76,7 +81,8 @@
     </scroll-view>
 
     <!-- Q1 拍板：STOP 快捷条（长按 1s 防误触），挪输入栏上方（Q2 拍板） -->
-    <view wx:if="{{conv === 'grp_experts'}}" class="stopbar">
+    <!-- MP-UX4：任意群态显示（发当前群），私聊态不显示 -->
+    <view wx:if="{{conv.slice(0, 4) === 'grp_'}}" class="stopbar">
       <text class="stop-tip" bindlongpress="onStopSend">STOP · 长按 1s 发送，终止当前话题链</text>
     </view>
 

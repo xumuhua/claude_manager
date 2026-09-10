@@ -1,4 +1,15 @@
 .page { min-height: 100vh; }
+/* MP-UX4：排序栏吸顶——sticky 钉在屏顶，不随列表滚动滚走；
+   页面本身是文档流滚动（无 scroll-view），sticky 天然可用，不动 MP-UX2 布局 */
+.sort-bar {
+  position: sticky; top: 0; z-index: 50;
+  display: flex; align-items: center;
+  padding: 8px 16px; background: var(--bg);
+  border-bottom: 1px solid var(--divider);
+}
+.sort-item { font-size: 13px; color: var(--fg2); padding: 4px 10px; border-radius: 6px; }
+.sort-item.on { color: var(--primary); font-weight: 600; background: var(--bg2); }
+.sort-sep { font-size: 12px; color: var(--divider); margin: 0 2px; }
 .tree-list { margin: 8px 16px; background: var(--bg2); border-radius: 8px; overflow: hidden; }
 .tree-row {
   display: flex; align-items: center; min-height: 48px; padding: 0 12px;

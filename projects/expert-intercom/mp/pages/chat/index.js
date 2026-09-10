@@ -13,6 +13,10 @@ const player = require('../../utils/player');
 Page({
   data: {
     conv: cfg.CONV_GROUP,
+    // MP-UX4：会话 tab 动态渲染——onLoad 拉 /api/conversations，群会话（grp_*）
+    // 生成 tabs；亦菲私聊保留固定入口（行为不变）。拉取失败回落双 tab 不白屏。
+    tabs: [{ id: cfg.CONV_GROUP, label: cfg.GROUP_NAMES[cfg.CONV_GROUP] || '专家群', unread: 0 }],
+    dmTab: { id: cfg.CONV_DM, label: '亦菲', unread: 0 },
     wsStatus: 'off',
     networkOk: true,
     atMeOnly: false,
@@ -37,12 +41,15 @@ Page({
       console.log('[MPUX2] onLoad window: ' + wi.windowWidth + 'x' + wi.windowHeight +
         ', dpr=' + wi.pixelRatio + ', safeBottom=' + (wi.safeArea ? wi.safeArea.bottom : '?'));
     } catch (e) { console.log('[MPUX2] onLoad windowInfo err: ' + e.message); }
-    this.msgs = { [cfg.CONV_GROUP]: [], [cfg.CONV_DM]: [] };  // conv -> decorated msgs
+    // MP-UX4：msgs/unread/entryRead/seqIdx 全部按 conversation_id 动态建 key，
+    // 不再按 CONV_GROUP/CONV_DM 两个常量硬编码（ensureConv 惰性初始化）
+    this.msgs = {};          // conv -> decorated msgs
     this.pending = [];       // 待 ack 的本地消息
     this.seenIds = {};       // msg_id 去重
     this.atBottom = true;
     this.entryRead = {};     // 进入会话时的 last_read_seq（速览 from_seq 口径）
-    this.unread = { [cfg.CONV_GROUP]: 0, [cfg.CONV_DM]: 0 };
+    this.unread = {};
+    this.convIds = [cfg.CONV_GROUP, cfg.CONV_DM];  // 可见会话 id 列表（拉取成功后替换）
     this.recorder = null;
     this.recTimer = null;
     this.recCancelled = false;
@@ -74,7 +81,52 @@ Page({
     ws.connect();
     getApp().onNetworkChange((ok) => this.setData({ networkOk: ok }));
 
+    this.ensureConv(cfg.CONV_GROUP);
+    this.loadConvs();
     this.initConv(cfg.CONV_GROUP);
+  },
+
+  // MP-UX4：会话容器惰性初始化（动态会话不预建 key，用到再建）
+  ensureConv(conv) {
+    if (!this.msgs[conv]) this.msgs[conv] = [];
+    if (typeof this.unread[conv] !== 'number') this.unread[conv] = 0;
+    if (typeof this.entryRead[conv] !== 'number') this.entryRead[conv] = 0;
+    if (!this.seqIdx) this.seqIdx = {};
+    if (!this.seqIdx[conv]) this.seqIdx[conv] = {};
+  },
+
+  // MP-UX4：拉 /api/conversations 生成群 tab（grp_* 动态列表）+ 亦菲固定入口。
+  // 失败静默回落：默认 tabs 已在 data 里（专家群+亦菲），不白屏。
+  // 排序：grp_experts 置顶第一，其余群按 last_read_seq 倒序近似"最近活跃在前"
+  // （接口只回 id 数组，无时间字段——9/10 与亦菲口径：默认置顶亦可）。
+  async loadConvs() {
+    try {
+      const d = await api.request({ path: '/api/conversations', timeout: 10000 });
+      const ids = (d.conversations || [])
+        .map((c) => (typeof c === 'string' ? c : c && c.conversation_id))
+        .filter((c) => typeof c === 'string' && c);
+      if (!ids.length) return;
+      // DEBUG-MPUX4：看后端实际下发的可见会话
+      console.log('[MPUX4] conversations: ' + JSON.stringify(ids));
+      const groups = ids.filter((c) => c.indexOf('grp_') === 0);
+      const extras = groups.filter((c) => c !== cfg.CONV_GROUP)
+        .sort((a, b) => store.getLastRead(b) - store.getLastRead(a));
+      const ordered = (groups.includes(cfg.CONV_GROUP) ? [cfg.CONV_GROUP] : []).concat(extras);
+      const convIds = ordered.concat(ids.filter((c) => c === cfg.CONV_DM));
+      this.convIds = convIds;
+      ordered.forEach((c) => this.ensureConv(c));
+      this.setData({
+        tabs: ordered.map((c) => ({ id: c, label: this.convLabel(c), unread: 0 })),
+      });
+    } catch (e) {
+      // DEBUG-MPUX4：回落双 tab（data 默认值），只打日志不打扰用户
+      console.log('[MPUX4] loadConvs fail, fallback 2-tab: ' + (e && e.message));
+    }
+  },
+
+  convLabel(conv) {
+    if (cfg.GROUP_NAMES[conv]) return cfg.GROUP_NAMES[conv];
+    return conv.indexOf('grp_') === 0 ? conv.slice(4) : conv;
   },
 
   onShow() { ws.resume(); },
@@ -84,6 +136,7 @@ Page({
   // ---------- 会话加载 ----------
 
   async initConv(conv) {
+    this.ensureConv(conv);
     const entry = store.getLastRead(conv);
     this.entryRead[conv] = entry;
     this.unread[conv] = 0;
@@ -122,6 +175,8 @@ Page({
       if (m.msg_id) this.seenIds[m.msg_id] = 1;
       this.indexMsg(conv, m);
     });
+    // DEBUG-MPUX4：首屏会话历史加载量
+    console.log('[MPUX4] loadAll conv=' + conv + ' msgs=' + all.length);
   },
 
   decorate(m) {
@@ -200,23 +255,37 @@ Page({
   },
 
   // 断线/回前台补拉缺口（F1 R6.4 语义，复用 after_seq 增量）
+  // MP-UX4：遍历动态会话列表。已加载过历史的会话做增量 catchUp；
+  // 未进入过的群只探 1 条增量维持未读计数（量大后端自然截断 limit，不打爆）。
   async catchUp() {
-    for (const conv of [cfg.CONV_GROUP, cfg.CONV_DM]) {
-      const list = this.msgs[conv] || [];
-      const lastSeq = list.length ? list[list.length - 1].seq : 0;
+    for (const conv of this.convIds) {
+      if (!this.msgs[conv]) continue;   // 未初始化的会话下一轮再说
+      const list = this.msgs[conv];
+      const lastSeq = list.length && typeof list[list.length - 1].seq === 'number'
+        ? list[list.length - 1].seq : 0;
       try {
         const data = await api.request({
           path: '/api/messages',
           data: { conversation_id: conv, after_seq: lastSeq, limit: cfg.MSG_PAGE_LIMIT },
         });
-        (data.messages || []).forEach((m) => this.ingest(conv, m));
+        const batch = data.messages || [];
+        if (!list.length && batch.length >= cfg.MSG_PAGE_LIMIT) {
+          // 未进过的群历史太厚：不积压 ingest（500 条/轮 费内存），只留最新一条
+          // 撑起未读计数并推进游标——下轮增量从此处续，点进来再 loadAll 全量
+          // DEBUG-MPUX4
+          console.log('[MPUX4] catchUp thick conv=' + conv + ', keep latest only (backlog >' + batch.length + ')');
+          this.ingest(conv, batch[batch.length - 1]);
+          continue;
+        }
+        batch.forEach((m) => this.ingest(conv, m));
       } catch (e) { /* 轮询失败下轮再试 */ }
     }
   },
 
   onDeliver(msg) {
     const conv = msg.conversation_id;
-    if (conv !== cfg.CONV_GROUP && conv !== cfg.CONV_DM) return;
+    // MP-UX4：白名单从写死两个改成"该会话在我可见列表里"
+    if (!this.convIds.includes(conv)) return;
     this.ingest(conv, msg);
   },
 
@@ -252,7 +321,17 @@ Page({
   },
 
   updateBadge() {
-    const n = (this.unread[cfg.CONV_GROUP] || 0) + (this.unread[cfg.CONV_DM] || 0);
+    // MP-UX4：未读按 conv 独立计数，tab 角标 + tabBar 角标同步刷新
+    let n = 0;
+    const tabs = (this.data.tabs || []).map((t) => {
+      const u = this.unread[t.id] || 0;
+      n += u;
+      return t.unread === u ? t : Object.assign({}, t, { unread: u });
+    });
+    const dmUnread = this.unread[cfg.CONV_DM] || 0;
+    n += dmUnread;
+    const dmTab = Object.assign({}, this.data.dmTab, { unread: dmUnread });
+    this.setData({ tabs, dmTab });
     if (n > 0) wx.setTabBarBadge({ index: 0, text: String(n > 99 ? '99+' : n) });
     else wx.removeTabBarBadge({ index: 0 });
   },
@@ -314,6 +393,7 @@ Page({
   async switchConv(e) {
     const conv = e.currentTarget.dataset.conv;
     if (conv === this.data.conv) return;
+    this.ensureConv(conv);
     this.markRead(this.data.conv);
     this.setData({ conv, summary: null, newMsgCount: 0, inputText: '', canSend: false });
     if (!this.msgs[conv].length) await this.initConv(conv);
@@ -340,9 +420,9 @@ Page({
     this.setData({ inputText: v, canSend: !!v.trim() });
     // 群态 @ 补全：列表来源 = 消息流中出现过的发送者 + all（D1 §4.3，R-4 未到位降级）
     const m = /@([A-Za-z0-9_-]*)$/.exec(v);
-    if (m && this.data.conv === cfg.CONV_GROUP) {
+    if (m && this.data.conv.indexOf('grp_') === 0) {   // MP-UX4：任意群态都启用 @ 补全
       const names = new Set(['all']);
-      this.msgs[cfg.CONV_GROUP].forEach((x) => names.add(x.from));
+      this.msgs[this.data.conv].forEach((x) => names.add(x.from));
       const list = [...names].filter((n) => n.startsWith(m[1]) && n !== 'gege' && n !== 'test_gege');
       this.setData({ mentionPopup: list.slice(0, 6).map((n) => ({ name: n, prefix: m[0] })) });
     } else if (this.data.mentionPopup.length) {
@@ -460,7 +540,8 @@ Page({
     try {
       await api.request({
         method: 'POST', path: '/api/messages',
-        data: { conversation_id: cfg.CONV_GROUP, body: 'STOP', type: 'system' },
+        // MP-UX4：STOP 发当前群（动态会话后不再钉死 grp_experts）
+        data: { conversation_id: this.data.conv, body: 'STOP', type: 'system' },
       });
       wx.showToast({ title: 'STOP 已发送', icon: 'none' });
     } catch (e) {
@@ -492,6 +573,7 @@ Page({
   askYifei(msg) {
     const quote = `> [${msg.from} ${msg.timeStr}] ${(msg.body || '').replace(/\n/g, ' ').slice(0, 200)}\n\n我的问题：`;
     this.markRead(this.data.conv);
+    this.ensureConv(cfg.CONV_DM);
     this.setData({ conv: cfg.CONV_DM, summary: null, inputText: quote, canSend: true });
     const after = async () => {
       if (!this.msgs[cfg.CONV_DM].length) await this.initConv(cfg.CONV_DM);

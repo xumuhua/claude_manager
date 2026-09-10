@@ -10,9 +10,18 @@
   border-bottom: 1px solid var(--divider); flex-shrink: 0;
   box-sizing: border-box;
 }
-.seg { display: flex; background: var(--bg2); border-radius: 8px; padding: 2px; }
+/* MP-UX4：群 tab 动态化——数量不定，横向滚动防挤爆顶栏 */
+.seg-scroll { flex: 1; min-width: 0; }
+.seg { display: inline-flex; background: var(--bg2); border-radius: 8px; padding: 2px; white-space: nowrap; }
 .seg-item { font-size: 14px; padding: 4px 14px; border-radius: 6px; color: var(--fg2); }
 .seg-item.on { background: var(--bg); color: var(--fg); font-weight: 600; }
+/* MP-UX4：会话未读角标（小程序红底圆点，与 tabBar 角标同色） */
+.seg-badge {
+  font-size: 10px; color: #fff; background: var(--err);
+  border-radius: 8px; padding: 0 5px; margin-left: 4px;
+  vertical-align: 2px; font-weight: 400;
+}
+.seg-item.on .seg-badge { font-weight: 400; }
 .dot { width: 6px; height: 6px; border-radius: 3px; margin: 0 10px; }
 .dot-ws { background: #22C55E; }
 .dot-down { background: #F59E0B; }
