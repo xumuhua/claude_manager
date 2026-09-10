@@ -20,6 +20,7 @@
       <view wx:for="{{rows}}" wx:key="path" class="tree-row" data-row="{{item}}" bindtap="openRow">
         <text class="tree-icon">{{item.type === 'dir' ? '📂' : (item.isMd ? '📄' : '🖼')}}</text>
         <text class="tree-name {{item.type === 'file' && !item.isMd ? 'binary' : ''}}">{{item.name}}</text>
+        <text wx:if="{{item.mtimeStr}}" class="tree-mtime">{{item.mtimeStr}}</text>
         <text wx:if="{{item.sizeStr}}" class="tree-size">{{item.sizeStr}}</text>
         <text wx:if="{{item.type === 'dir'}}" class="tree-arrow">›</text>
       </view>

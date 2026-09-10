@@ -72,11 +72,13 @@ Page({
       let full = TREE_CACHE[cacheKey];
       const cacheHit = !!(full && Date.now() - full.ts <= 5 * 60 * 1000);
       // [MP-LOG1 诊断埋点②] 请求 URL 全串（含 branch 参数）+ cacheKey + 缓存命中情况
-      const reqUrl = '/gh/' + owner + '/' + repo + '/tree?recursive=1' + (this.data.branch ? '&branch=' + this.data.branch : '');
+      const reqUrl = '/gh/' + owner + '/' + repo + '/tree?recursive=1&with_mtime=1' + (this.data.branch ? '&branch=' + this.data.branch : '');
       console.log('[tree] request url=' + reqUrl + ' cacheKey=' + cacheKey + ' cacheHit=' + cacheHit + (cacheHit ? ' cachedBranch=' + full.branch : ''));
       if (!full || Date.now() - full.ts > 5 * 60 * 1000) {
         const br = this.data.branch ? `&branch=${encodeURIComponent(this.data.branch)}` : '';
-        const data = await api.request({ path: `/gh/${owner}/${repo}/tree?recursive=1${br}`, timeout: 30000 });
+        // MP-UX1：with_mtime=1 让后端补 mtime（可选参数，老后端忽略不报错——此时
+        // 条目无 mtime 字段，renderLevel 会容错为空串，不阻塞展示）
+        const data = await api.request({ path: `/gh/${owner}/${repo}/tree?recursive=1&with_mtime=1${br}`, timeout: 30000 });
         // [MP-LOG1 诊断埋点③] 返回后打 branch/条数/truncated
         console.log('[tree] loaded branch=' + data.branch + ' entries=' + (data.tree ? data.tree.length : 0) + ' truncated=' + !!data.truncated);
         full = { ts: Date.now(), branch: data.branch, tree: data.tree || [] };
@@ -94,10 +96,17 @@ Page({
     }
   },
 
-  // 过滤出当前 path 的直接子级（目录在前、文件在后，字典序）
+  // 过滤出当前 path 的直接子级（目录在前、文件在后；MP-UX1：组内按 mtime 倒序，
+  // 无 mtime 的排最后保持稳定；目录 mtime 后端已按"子树文件 max"口径给出）
   renderLevel() {
     const prefix = this.data.path ? this.data.path + '/' : '';
     const seen = new Map();
+    // 目录 mtime 索引：recursive tree 里目录条目自带（type=dir），mtime 由后端
+    // 按"子树内文件 mtime max"算好——预建 map 避免 forEach 内 find 的 O(n²)
+    const dirMtimeMap = {};
+    (this.fullTree.tree || []).forEach((e) => {
+      if (e.type === 'dir' && e.path && e.mtime) dirMtimeMap[e.path] = e.mtime;
+    });
     (this.fullTree.tree || []).forEach((e) => {
       if (!e.path || !e.path.startsWith(prefix)) return;
       const rest = e.path.slice(prefix.length);
@@ -108,17 +117,30 @@ Page({
         seen.set(e.path, {
           path: e.path, name: rest, type: 'file', size: e.size,
           sizeStr: fmt.fmtSize(e.size),
+          mtime: e.mtime || '',
+          mtimeStr: fmt.fmtMtime(e.mtime),
           isMd: TEXT_RE.test(rest) || TEXT_NAMES.includes(rest.toLowerCase()),
         });
       } else {
         const dirPath = prefix + rest.slice(0, slash);
         if (!seen.has(dirPath)) {
-          seen.set(dirPath, { path: dirPath, name: rest.slice(0, slash), type: 'dir' });
+          const dirMtime = dirMtimeMap[dirPath] || '';
+          seen.set(dirPath, {
+            path: dirPath, name: rest.slice(0, slash), type: 'dir',
+            mtime: dirMtime,
+            mtimeStr: fmt.fmtMtime(dirMtime),
+          });
         }
       }
     });
+    const byMtimeDesc = (a, b) => {
+      if (a.mtime && b.mtime) return a.mtime < b.mtime ? 1 : (a.mtime > b.mtime ? -1 : a.name.localeCompare(b.name));
+      if (a.mtime) return -1;
+      if (b.mtime) return 1;
+      return a.name.localeCompare(b.name);
+    };
     const rows = [...seen.values()].sort((a, b) =>
-      a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1);
+      a.type === b.type ? byMtimeDesc(a, b) : a.type === 'dir' ? -1 : 1);
     // [MP-LOG1 诊断埋点④] 渲染命中条数；0 条时追加诊断：区分"整树空"vs"本目录空"
     console.log('[tree] render path=' + this.data.path + ' prefix=' + prefix + ' rows=' + rows.length);
     if (rows.length === 0) {

@@ -83,8 +83,11 @@ Page({
     this.unread[conv] = 0;
     this.updateBadge();
     await this.loadAll(conv);
-    this.buildDisplay();
-    this.scrollBottom(false);
+    // MP-UX1：buildDisplay 的 setData 是异步入队，直接同步调 scrollBottom 会让
+    // scroll-into-view 在 m<seq> 元素尚未渲染时静默失败（冷启动+消息多必现，
+    // hermes 9/10 实锤）。把 scroll 挂进 buildDisplay 的 setData 回调，保证打在
+    // displayItems 渲染完成之后。
+    this.buildDisplay(() => this.scrollBottom(false));
     this.markRead(conv);
   },
 
@@ -151,7 +154,11 @@ Page({
 
   // ---------- 展示构建（@我过滤 C2 + 日期分隔线） ----------
 
-  buildDisplay() {
+  // MP-UX1：buildDisplay 加可选 cb——setData({displayItems}) 是异步入队，调用方
+  // 若要在渲染完成后动作（典型：scrollBottom），必须挂进 setData 回调而不是
+  // 同步紧随其后（同步紧随其后 = 两条独立 setData 队列同帧竞跑，scroll-into-view
+  // 会打在 DOM 未更新前）。
+  buildDisplay(cb) {
     const list = this.msgs[this.data.conv];
     const filtered = this.data.atMeOnly ? list.filter((m) => m.atMe) : list;
     const items = [];
@@ -163,7 +170,7 @@ Page({
       }
       items.push({ type: 'msg', id: 'm' + m.seq, m });
     });
-    this.setData({ displayItems: items });
+    this.setData({ displayItems: items }, cb);
   },
 
   // ---------- 实时与降级 ----------
@@ -291,8 +298,8 @@ Page({
       this.entryRead[conv] = store.getLastRead(conv);
       this.unread[conv] = 0;
       this.updateBadge();
-      this.buildDisplay();
-      this.scrollBottom(false);
+      // MP-UX1：同 initConv，scroll 必须挂在 buildDisplay 的 setData 回调里
+      this.buildDisplay(() => this.scrollBottom(false));
       this.markRead(conv);
     }
   },
@@ -465,7 +472,8 @@ Page({
     this.setData({ conv: cfg.CONV_DM, summary: null, inputText: quote, canSend: true });
     const after = async () => {
       if (!this.msgs[cfg.CONV_DM].length) await this.initConv(cfg.CONV_DM);
-      else { this.buildDisplay(); this.scrollBottom(false); }
+      // MP-UX1：同 initConv 根因，scroll 挂进 buildDisplay 回调
+      else this.buildDisplay(() => this.scrollBottom(false));
     };
     after();
   },

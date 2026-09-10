@@ -33,6 +33,22 @@ function fmtSize(bytes) {
   return (bytes / 1024 / 1024).toFixed(1) + ' MB';
 }
 
+// MP-UX1 树页 mtime 展示：当天相对时间（<1h X 分钟前 / <24h X 小时前），
+// 隔天绝对 MM-DD HH:mm（哥哥 9/10 拍板格式）。无效输入返回 ''。
+function fmtMtime(ts) {
+  const d = toDate(ts);
+  if (!d) return '';
+  const now = new Date();
+  const diffMs = now - d;
+  if (d.toDateString() === now.toDateString() && diffMs >= 0) {
+    const mins = Math.floor(diffMs / 60000);
+    if (mins < 1) return '刚刚';
+    if (mins < 60) return mins + ' 分钟前';
+    return Math.floor(mins / 60) + ' 小时前';
+  }
+  return pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+
 // 发送者名配色盘：gege 主蓝 / yifei 青 / hub 灰 / 其余按哈希取 6 色盘（D1 §8.1）
 const PALETTE = ['c-quant', 'c-teal', 'c-pink', 'c-olive', 'c-violet', 'c-rust'];
 function nameColor(from) {
@@ -53,4 +69,4 @@ function roleBadge(msg) {
   return { gege: '哥哥', yifei: '亦菲', expert: '专家', hub: '系统' }[role] || '专家';
 }
 
-module.exports = { fmtTime, dateLabel, fmtSize, nameColor, roleBadge };
+module.exports = { fmtTime, dateLabel, fmtSize, fmtMtime, nameColor, roleBadge };

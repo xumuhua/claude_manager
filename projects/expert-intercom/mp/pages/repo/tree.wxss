@@ -9,6 +9,8 @@
 .tree-name { flex: 1; font-size: 15px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .tree-name.binary { color: var(--fg2); }
 .tree-size { font-size: 11px; color: var(--fg2); margin-left: 8px; }
+/* MP-UX1：mtime 显示——与 size 同色调，略宽 margin 保持两列可读 */
+.tree-mtime { font-size: 11px; color: var(--fg2); margin-left: 8px; white-space: nowrap; }
 .tree-arrow { color: var(--fg2); margin-left: 8px; }
 .empty { text-align: center; color: var(--fg2); font-size: 13px; margin-top: 60px; }
 .error-box { margin: 80px 16px 0; text-align: center; }

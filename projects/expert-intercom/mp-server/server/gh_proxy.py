@@ -5,6 +5,7 @@
 只读 PAT，仅服务端 env 注入、端侧与小程序不接触）以解除私有仓匿名 404。
 未配置 / env 未设置 = 匿名，行为与旧版完全一致。
 """
+import asyncio
 import re
 
 import aiohttp
@@ -87,7 +88,14 @@ async def gh_branches(cfg, request):
 
 
 async def gh_tree(cfg, request):
-    """GET /gh/<owner>/<repo>/tree[?branch=&recursive=] — 列目录（阅读页浏览用）。"""
+    """GET /gh/<owner>/<repo>/tree[?branch=&recursive=&with_mtime=] — 列目录（阅读页浏览用）。
+
+    with_mtime=1（MP-UX1）：每个条目追加 mtime（ISO 8601，该文件最近一次提交的
+    committer date；目录取其下所有文件 mtime 的 max）。实现：对每个顶层目录并发调
+    commits?path=<dir>&per_page=100，按提交从新到旧回填文件 mtime（每条提交只盖
+    还没拿到 mtime 的文件，最旧的提交兜底）。某目录 commits 接口失败只该目录留空，
+    不阻塞整体返回。默认 off，不带 mtime 字段时与旧版逐字节一致。
+    """
     owner = request.match_info["owner"]
     repo = request.match_info["repo"]
     if not (_valid_segment(owner, _RE_OWNER_REPO) and _valid_segment(repo, _RE_OWNER_REPO)):
@@ -96,6 +104,7 @@ async def gh_tree(cfg, request):
     if branch and not _valid_segment(branch, _RE_BRANCH):
         return _bad_request("BAD_BRANCH", "branch 含非法字符")
     recursive = "1" if request.query.get("recursive", "1") != "0" else ""
+    with_mtime = request.query.get("with_mtime", "0") == "1"
 
     timeout = aiohttp.ClientTimeout(total=cfg["gh_timeout_s"])
     try:
@@ -121,18 +130,91 @@ async def gh_tree(cfg, request):
                     return web.json_response(
                         {"code": "GH_ERROR", "message": f"GitHub API 返回 {r.status}"}, status=502)
                 data = await r.json()
+            mtime_map = None
+            if with_mtime:
+                mtime_map = await _fetch_mtimes(s, base, owner, repo, branch,
+                                                data.get("tree", []))
     except (aiohttp.ClientError, TimeoutError) as e:
         return web.json_response({"code": "GH_UNREACHABLE", "message": f"GitHub 上游不可达: {e}"},
                                  status=502)
-    tree = [
-        {"path": e.get("path"), "type": "dir" if e.get("type") == "tree" else "file",
-         "size": e.get("size", 0)}
-        for e in data.get("tree", [])
-    ]
+    tree = []
+    for e in data.get("tree", []):
+        item = {"path": e.get("path"), "type": "dir" if e.get("type") == "tree" else "file",
+                "size": e.get("size", 0)}
+        if mtime_map is not None:
+            mt = mtime_map.get(e.get("path"))
+            if mt:
+                item["mtime"] = mt
+        tree.append(item)
     return web.json_response({
         "owner": owner, "repo": repo, "branch": branch,
         "truncated": bool(data.get("truncated")), "tree": tree,
     })
+
+
+async def _fetch_mtimes(session, base, owner, repo, branch, entries):
+    """with_mtime=1 的 mtime 求解。返回 {path: iso8601}（含文件与目录）。
+
+    步骤：按顶层目录分组 → 每目录一次 commits?path=<dir>&per_page=100（并发，
+    return_exceptions 降级）→ 提交从新到旧逐条拉 files 列表，只回填尚未有 mtime
+    的文件（GitHub commits API 按时间倒序返回，首次命中即最近一次改动）→ 目录
+    mtime = 子树内文件 mtime max。全程静默降级：任何一步失败只影响对应目录。
+    """
+    file_paths = [e.get("path") for e in entries if e.get("type") == "blob" and e.get("path")]
+    top_dirs = sorted({p.split("/", 1)[0] for p in file_paths if "/" in p})
+    # 顶层散文件（无 "/"）归到 "" 一组，用 path="" 的 commits 全仓查询兜底
+    if any("/" not in p for p in file_paths):
+        top_dirs.append("")
+
+    async def commits_for(d):
+        q = f"{base}/repos/{owner}/{repo}/commits?sha={branch}&per_page=100"
+        if d:
+            q += f"&path={d}"
+        async with session.get(q) as r:
+            if r.status != 200:
+                return d, []
+            return d, await r.json()
+
+    results = await asyncio.gather(*(commits_for(d) for d in top_dirs),
+                                   return_exceptions=True)
+    mtime = {}
+    for res in results:
+        if isinstance(res, Exception):
+            continue
+        d, commits = res
+        prefix = (d + "/") if d else ""
+        remaining = {p for p in file_paths if p.startswith(prefix) and p not in mtime}
+        for c in commits:
+            if not remaining:
+                break
+            date = ((c.get("commit") or {}).get("committer") or {}).get("date")
+            detail_url = c.get("url")
+            if not date or not detail_url:
+                continue
+            try:
+                async with session.get(detail_url) as r:
+                    if r.status != 200:
+                        continue
+                    detail = await r.json()
+            except (aiohttp.ClientError, TimeoutError):
+                continue
+            for f in detail.get("files", []):
+                fn = f.get("filename")
+                if fn in remaining:
+                    mtime[fn] = date
+                    remaining.discard(fn)
+    # 目录 mtime = 子树内文件 mtime 的 max
+    for e in entries:
+        if e.get("type") != "tree" or not e.get("path"):
+            continue
+        dp = e["path"] + "/"
+        best = None
+        for p, mt in mtime.items():
+            if p.startswith(dp) and (best is None or mt > best):
+                best = mt
+        if best:
+            mtime[e["path"]] = best
+    return mtime
 
 
 async def gh_blob(cfg, request):
