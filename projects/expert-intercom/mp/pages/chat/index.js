@@ -31,6 +31,12 @@ Page({
   },
 
   onLoad() {
+    // DEBUG-MPUX2：页面就绪时记录视口/像素比，真机对比 scroll-view 布局
+    try {
+      const wi = wx.getWindowInfo ? wx.getWindowInfo() : wx.getSystemInfoSync();
+      console.log('[MPUX2] onLoad window: ' + wi.windowWidth + 'x' + wi.windowHeight +
+        ', dpr=' + wi.pixelRatio + ', safeBottom=' + (wi.safeArea ? wi.safeArea.bottom : '?'));
+    } catch (e) { console.log('[MPUX2] onLoad windowInfo err: ' + e.message); }
     this.msgs = { [cfg.CONV_GROUP]: [], [cfg.CONV_DM]: [] };  // conv -> decorated msgs
     this.pending = [];       // 待 ack 的本地消息
     this.seenIds = {};       // msg_id 去重
@@ -170,7 +176,11 @@ Page({
       }
       items.push({ type: 'msg', id: 'm' + m.seq, m });
     });
-    this.setData({ displayItems: items }, cb);
+    this.setData({ displayItems: items }, () => {
+      // DEBUG-MPUX2：setData 回调触发，确认渲染队列完成（可配合 wx.getDeviceInfo 看时序）
+      console.log('[MPUX2] buildDisplay setData done, items=' + items.length);
+      if (cb) cb();
+    });
   },
 
   // ---------- 实时与降级 ----------
@@ -259,6 +269,11 @@ Page({
     const h = e.detail.scrollHeight - e.detail.scrollTop;
     // 距底部 <200rpx≈100px 视为贴底（粗略，scroll-view 高度约屏高）
     this.atBottom = (scrollHeight - scrollTop) < 800;
+    // DEBUG-MPUX2：观察 scrollHeight 是否随内容增长（=0 说明 scroll-view 无高度）
+    if (!this._dbgScrollN) this._dbgScrollN = 0;
+    if (++this._dbgScrollN % 20 === 1) {
+      console.log('[MPUX2] onScroll scrollTop=' + scrollTop + ', scrollHeight=' + scrollHeight);
+    }
     if (this.atBottom && this.data.newMsgCount) {
       this.setData({ newMsgCount: 0 });
       this.markRead(this.data.conv);
@@ -267,9 +282,17 @@ Page({
 
   scrollBottom(anim) {
     const items = this.data.displayItems;
+    // DEBUG-MPUX2：滚底入口——看 items 数与目标 id，真机复现时对 console 截图
+    console.log('[MPUX2] scrollBottom enter, items=' + items.length +
+      ', lastId=' + (items.length ? items[items.length - 1].id : '(empty)') +
+      ', anim=' + anim);
     if (!items.length) return;
     this.setData({ scrollTo: '' }, () => {
-      this.setData({ scrollTo: items[items.length - 1].id, newMsgCount: 0 });
+      const target = items[items.length - 1].id;
+      // DEBUG-MPUX2：scrollTo 二次设置值——若此处 log 有但页面没动，
+      // 说明 scroll-into-view 命中失败（id 不在 DOM / scroll-view 高度为 0 等）
+      console.log('[MPUX2] scrollTo set -> ' + target);
+      this.setData({ scrollTo: target, newMsgCount: 0 });
     });
   },
 

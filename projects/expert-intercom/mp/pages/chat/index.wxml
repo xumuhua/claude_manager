@@ -59,33 +59,36 @@
   <!-- 翻历史时的新消息浮动提示 -->
   <view wx:if="{{newMsgCount}}" class="new-msg" bindtap="jumpBottom">↓ {{newMsgCount}} 条新消息</view>
 
-  <!-- 群态 @ 补全 -->
-  <view wx:if="{{mentionPopup.length}}" class="mention-pop">
-    <text wx:for="{{mentionPopup}}" wx:key="name" class="mention-item"
-          data-name="{{item.name}}" data-prefix="{{item.prefix}}" bindtap="onMentionPick">@{{item.name}}</text>
-  </view>
-
-  <!-- C5 快捷指令条（私聊态） -->
-  <scroll-view wx:if="{{conv === 'dm_yifei'}}" scroll-x class="quickbar" enhanced show-scrollbar="{{false}}">
-    <view class="quickbar-inner">
-      <text wx:for="{{quickPhrases}}" wx:key="index" class="quick-chip"
-            data-text="{{item}}" bindtap="onQuickPhrase">{{item}}</text>
+  <!-- MP-UX2：底部固定区（mention 补全 + 快捷指令 + STOP + 输入栏），不跟内容滚 -->
+  <view class="dock">
+    <!-- 群态 @ 补全 -->
+    <view wx:if="{{mentionPopup.length}}" class="mention-pop">
+      <text wx:for="{{mentionPopup}}" wx:key="name" class="mention-item"
+            data-name="{{item.name}}" data-prefix="{{item.prefix}}" bindtap="onMentionPick">@{{item.name}}</text>
     </view>
-  </scroll-view>
 
-  <!-- Q1 拍板：STOP 快捷条（长按 1s 防误触），挪输入栏上方（Q2 拍板） -->
-  <view wx:if="{{conv === 'grp_experts'}}" class="stopbar">
-    <text class="stop-tip" bindlongpress="onStopSend">STOP · 长按 1s 发送，终止当前话题链</text>
-  </view>
+    <!-- C5 快捷指令条（私聊态） -->
+    <scroll-view wx:if="{{conv === 'dm_yifei'}}" scroll-x class="quickbar" enhanced show-scrollbar="{{false}}">
+      <view class="quickbar-inner">
+        <text wx:for="{{quickPhrases}}" wx:key="index" class="quick-chip"
+              data-text="{{item}}" bindtap="onQuickPhrase">{{item}}</text>
+      </view>
+    </scroll-view>
 
-  <!-- 输入栏：🎤按住说话 + 多行自增输入 + 显式发送钮 -->
-  <view class="inputbar">
-    <view class="mic" bindtouchstart="onMicStart" bindtouchmove="onMicMove"
-          bindtouchend="onMicEnd" bindtouchcancel="onMicCancel">🎤</view>
-    <textarea class="input" value="{{inputText}}" bindinput="onInput" auto-height
-              maxlength="-1" confirm-type="send" bindconfirm="onSend"
-              placeholder="输入消息…" placeholder-class="ph" />
-    <view class="send {{canSend ? '' : 'disabled'}}" bindtap="onSend">发送</view>
+    <!-- Q1 拍板：STOP 快捷条（长按 1s 防误触），挪输入栏上方（Q2 拍板） -->
+    <view wx:if="{{conv === 'grp_experts'}}" class="stopbar">
+      <text class="stop-tip" bindlongpress="onStopSend">STOP · 长按 1s 发送，终止当前话题链</text>
+    </view>
+
+    <!-- 输入栏：🎤按住说话 + 多行自增输入 + 显式发送钮 -->
+    <view class="inputbar">
+      <view class="mic" bindtouchstart="onMicStart" bindtouchmove="onMicMove"
+            bindtouchend="onMicEnd" bindtouchcancel="onMicCancel">🎤</view>
+      <textarea class="input" value="{{inputText}}" bindinput="onInput" auto-height
+                maxlength="-1" confirm-type="send" bindconfirm="onSend"
+                placeholder="输入消息…" placeholder-class="ph" />
+      <view class="send {{canSend ? '' : 'disabled'}}" bindtap="onSend">发送</view>
+    </view>
   </view>
 
   <!-- C4 录音浮层 -->

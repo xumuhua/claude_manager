@@ -17,7 +17,9 @@
 .top-btn.on { color: var(--primary); font-weight: 600; }
 
 /* 消息流 */
-.msgs { flex: 1; }
+/* MP-UX2：底部固定区高约 56px+（输入栏 auto-height 会再高），padding-bottom 预留
+   防最后一条消息被 dock 遮挡；iOS 安全区一并兜底 */
+.msgs { flex: 1; padding-bottom: 80px; box-sizing: border-box; }
 .date-sep {
   text-align: center; font-size: 11px; color: var(--fg2); margin: 14px 0 6px;
 }
@@ -65,12 +67,20 @@
 
 .empty { text-align: center; color: var(--fg2); font-size: 13px; margin-top: 80px; }
 
-/* 新消息浮动提示 */
+/* 新消息浮动提示（MP-UX2：dock 固定后抬高，避免与输入栏重叠） */
 .new-msg {
-  position: fixed; right: 16px; bottom: 130px; z-index: 50;
+  position: fixed; right: 16px; bottom: 150px; z-index: 110;
   background: var(--primary); color: #fff; font-size: 12px;
   border-radius: 14px; padding: 6px 14px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+/* MP-UX2：底部固定区——mention 补全/快捷指令/STOP/输入栏整体钉在屏底，
+   往下翻历史时不再跟着内容滚走 */
+.dock {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 100;
+  background: var(--bg);
+  padding-bottom: env(safe-area-inset-bottom);
 }
 
 /* @ 补全 */
