@@ -145,6 +145,24 @@ async def main():
             d = await r.json()
             ok = r.status == 200 and any(e["path"] == "README.md" for e in d.get("tree", []))
             check("T7b tree 列目录（含 README.md）", ok, f"branch={d.get('branch')}")
+        # MP-UX5：path 单层模式——只返回该目录直接子级；老 recursive 调用不破坏
+        async with s.get(BASE + "/gh/xumuhua/claude_manager/tree",
+                         params={"path": ""}, headers=H(GEGE)) as r:
+            d = await r.json()
+            tree = d.get("tree", [])
+            ok = (r.status == 200 and any(e["path"] == "README.md" for e in tree)
+                  and all("/" not in e["path"] for e in tree))
+            check("T7c path= 顶层单层（直接子级无 '/'）", ok, f"entries={len(tree)}")
+        async with s.get(BASE + "/gh/xumuhua/claude_manager/tree",
+                         params={"path": "projects"}, headers=H(GEGE)) as r:
+            d = await r.json()
+            tree = d.get("tree", [])
+            ok = (r.status == 200 and tree
+                  and all(e["path"].startswith("projects/") for e in tree))
+            check("T7d path=projects 单层（前缀正确）", ok, f"entries={len(tree)}")
+        async with s.get(BASE + "/gh/xumuhua/claude_manager/tree",
+                         params={"path": "README.md"}, headers=H(GEGE)) as r:
+            check("T7e path 指向文件 → 400 BAD_PATH", r.status == 400)
 
         # T8 GitHub 代理约束
         async with s.get(BASE + "/gh/xumuhua/claude_manager/blob/main/../config",

@@ -1,21 +1,22 @@
 // pages/repo/tree — P3 目录浏览页（D1 §4.4：逐层 push 页面栈，导航栏=当前路径）
-// 实现：拉一次全量 recursive tree（一次请求），逐层在前端过滤前缀——避免每层一次网络往返。
-// 全量 tree 缓存在模块级（跨页面栈各层共享，5 分钟有效）。
-// MP-UX4：两段加载——先无 mtime 快树秒出列表（大仓 31s → <3s），mtime 图后台异步补；
-//         顶部排序栏（名称/时间，存 storage 记忆，吸顶不随列表滚动）。
+// MP-UX5：目录级按需加载——每层一次请求、只拉当前层（后端 path 参数单层模式），
+//         废掉"一次 recursive 拉全树+前端过滤"（大仓 3.9MB/24s 超时根因）；
+//         每层独立缓存（owner/repo@branch:path，5 分钟）。
+// MP-UX4 沿用：两段加载——先无 mtime 秒出当前目录列表，mtime 后台异步补当前层；
+//              顶部排序栏（名称/时间，存 storage 记忆，吸顶不随列表滚动）。
 const api = require('../../utils/api');
 const fmt = require('../../utils/fmt');
 const store = require('../../utils/store');
 
-const TREE_CACHE = {};  // { 'owner/repo@branch': {ts, branch, tree} } 快树 5 分钟缓存
-// MP-UX4：mtime 图独立缓存（与快树同周期）——key 结构沿用 owner/repo@branch 口径
-const MTIME_CACHE = {}; // { 'owner/repo@branch': {ts, map: {path: mtime}} }
+// MP-UX5：按层缓存——key 为 'owner/repo@branch:path'，各层独立 5 分钟有效
+const LEVEL_CACHE = {};  // { key: {ts, branch, tree} } 单层快树
+const MTIME_CACHE = {};  // { key: {ts, map: {path: mtime}} } 单层 mtime 图
 
 // 文本/markdown 扩展名（与后端白名单一致，决定能否进 P4）
 const TEXT_RE = /\.(md|markdown|mdown|txt|rst|py|js|ts|tsx|jsx|json|yaml|yml|toml|ini|cfg|sh|bash|c|h|cpp|hpp|go|rs|java|html|css|xml|sql|vue)$/i;
 const TEXT_NAMES = ['license', 'readme', 'changelog', 'makefile', 'dockerfile'];
 
-// MP-FIX1：onLoad query 参数安全解码——小程序框架不定层 encode，%2F 未解码会让 prefix startsWith 全失配（真机空目录根因）
+// MP-FIX1：onLoad query 参数安全解码——小程序框架不定层 encode，%2F 未解码会让 path 错位（真机空目录根因）
 function safeDecode(s) {
   if (s === undefined || s === null) return s;
   try { return decodeURIComponent(s); } catch (e) { return s; }
@@ -37,7 +38,7 @@ Page({
           dPath = safeDecode(path), dBranch = safeDecode(branch);
     // [MP-FIX1 埋点①补] 解码后值（与①原值对照，一眼看出是否被双重编码）
     console.log('[tree] onLoad decoded owner=' + dOwner + ' repo=' + dRepo + ' branch=' + dBranch + ' path=' + dPath);
-    this.fullTree = null;
+    this.levelTree = null;
     this.setData({
       owner: dOwner, repo: dRepo, path: dPath, branch: dBranch,
       sortMode: store.getTreeSort(),   // MP-UX4：记住上次排序选择
@@ -64,7 +65,7 @@ Page({
     // [MP-LOG1 诊断埋点⑥] 分支切换
     console.log('[tree] branchChange from=' + this.data.branch + ' to=' + branch);
     if (!branch || branch === this.data.branch) return;
-    delete TREE_CACHE[this.cacheKey()];
+    delete LEVEL_CACHE[this.cacheKey()];
     delete MTIME_CACHE[this.cacheKey()];
     this.setData({ branch, branchIdx: idx });
     this.loadTree();
@@ -79,41 +80,48 @@ Page({
     this.renderLevel();
   },
 
+  // MP-UX5：缓存 key 含当前层 path——各层独立缓存，不再共享全树
   cacheKey() {
-    return this.data.owner + '/' + this.data.repo + '@' + (this.data.branch || '');
+    return this.data.owner + '/' + this.data.repo + '@' + (this.data.branch || '')
+      + ':' + (this.data.path || '');
   },
 
-  // MP-UX4 两段加载：
-  //   第①段：recursive tree（不带 with_mtime，秒回）→ 立即渲染，mtime 列先空着；
-  //   第②段：后台 with_mtime（60s 超时）→ 按 path 合入已渲染列表逐条补时间；
+  // MP-UX5 两段加载（当前层）：
+  //   第①段：单层 tree（带 path、不带 with_mtime，秒回）→ 立即渲染，mtime 列先空着；
+  //   第②段：后台 with_mtime 同层（60s 超时）→ 按 path 合入已渲染列表逐条补时间；
   //           若当前"按时间排序"，补全后自动重排一次。
   // 第②段失败（超时/限流）静默降级：列表照常可用，只是没时间列。
   async loadTree() {
-    const { owner, repo } = this.data;
+    const { owner, repo, path } = this.data;
     this.setData({ loading: true, error: '' });
     try {
       const cacheKey = this.cacheKey();
-      let full = TREE_CACHE[cacheKey];
-      const cacheHit = !!(full && Date.now() - full.ts <= 5 * 60 * 1000);
-      // [MP-LOG1 诊断埋点②] 请求 URL 全串（含 branch 参数）+ cacheKey + 缓存命中情况
-      const reqUrl = '/gh/' + owner + '/' + repo + '/tree?recursive=1' + (this.data.branch ? '&branch=' + this.data.branch : '');
-      console.log('[tree] request url=' + reqUrl + ' cacheKey=' + cacheKey + ' cacheHit=' + cacheHit + (cacheHit ? ' cachedBranch=' + full.branch : ''));
+      let lvl = LEVEL_CACHE[cacheKey];
+      const cacheHit = !!(lvl && Date.now() - lvl.ts <= 5 * 60 * 1000);
+      // [MP-LOG1 诊断埋点②] 请求 URL 全串（含 branch/path 参数）+ cacheKey + 缓存命中情况
+      const reqUrl = '/gh/' + owner + '/' + repo + '/tree?path=' + (path || '')
+        + (this.data.branch ? '&branch=' + this.data.branch : '');
+      console.log('[tree] request url=' + reqUrl + ' cacheKey=' + cacheKey + ' cacheHit=' + cacheHit + (cacheHit ? ' cachedBranch=' + lvl.branch : ''));
       let fastFresh = cacheHit;
       if (!cacheHit) {
         const br = this.data.branch ? `&branch=${encodeURIComponent(this.data.branch)}` : '';
-        const data = await api.request({ path: `/gh/${owner}/${repo}/tree?recursive=1${br}`, timeout: 15000 });
+        // DEBUG-MPUX5：单层请求——只拉当前目录直接子级，不再 recursive 全树
+        const data = await api.request({
+          path: `/gh/${owner}/${repo}/tree?path=${encodeURIComponent(path || '')}${br}`,
+          timeout: 15000,
+        });
         // [MP-LOG1 诊断埋点③] 返回后打 branch/条数/truncated
-        console.log('[tree] loaded branch=' + data.branch + ' entries=' + (data.tree ? data.tree.length : 0) + ' truncated=' + !!data.truncated);
-        full = { ts: Date.now(), branch: data.branch, tree: data.tree || [] };
-        TREE_CACHE[cacheKey] = full;
+        console.log('[tree] loaded branch=' + data.branch + ' path=' + (path || '') + ' entries=' + (data.tree ? data.tree.length : 0) + ' truncated=' + !!data.truncated);
+        lvl = { ts: Date.now(), branch: data.branch, tree: data.tree || [] };
+        LEVEL_CACHE[cacheKey] = lvl;
       }
-      this.fullTree = full;
-      this.setData({ branch: full.branch });
+      this.levelTree = lvl;
+      this.setData({ branch: lvl.branch });
       this.applyMtimeMap(this.getCachedMtimeMap(cacheKey));   // 有旧 mtime 图直接先补
       this.renderLevel();
       this.fetchMtimes(cacheKey, fastFresh);                  // 后台补 mtime（不 await）
     } catch (e) {
-      const msg = e.code === 'NOT_FOUND' ? '仓库不存在或非 public'
+      const msg = e.code === 'NOT_FOUND' ? '目录/仓库不存在或非 public'
         : e.code === 'NETWORK' ? '网络不可用' : '加载失败：' + e.message;
       // [MP-LOG1 诊断埋点⑦] 加载失败
       console.log('[tree] loadFail code=' + (e && e.code) + ' message=' + (e && e.message));
@@ -126,81 +134,58 @@ Page({
     return hit && Date.now() - hit.ts <= 5 * 60 * 1000 ? hit.map : null;
   },
 
-  // MP-UX4 第②段：后台拉 with_mtime 全树，只抽取 path→mtime 图（不替换快树）。
-  // 无竞态语义：同一页面栈多层共享 TREE_CACHE/MTIME_CACHE，后到者覆盖先写者
-  // 内容等价（同分支同 commit 内 mtime 不变），无需加锁。
+  // MP-UX5 第②段：后台拉 with_mtime 同层列表，只抽取 path→mtime 图（不替换快树）。
+  // 后端单层 mtime 只算当前目录直接子级（每条目一次 commits 调用，并发限流），
+  // 大目录也能在 60s 内出；失败静默降级。
   async fetchMtimes(cacheKey, fastFresh) {
     if (fastFresh && this.getCachedMtimeMap(cacheKey)) return;  // 快树新+mtime 图新：无需再拉
-    const { owner, repo } = this.data;
+    const { owner, repo, path } = this.data;
     const br = this.data.branch ? `&branch=${encodeURIComponent(this.data.branch)}` : '';
-    // DEBUG-MPUX4：第②段发起——大仓预计 ~31s，期间列表已可用
-    console.log('[MPUX4] fetchMtimes start key=' + cacheKey);
+    // DEBUG-MPUX5：第②段发起——只补当前层 mtime
+    console.log('[MPUX5] fetchMtimes start key=' + cacheKey);
     try {
       const data = await api.request({
-        path: `/gh/${owner}/${repo}/tree?recursive=1&with_mtime=1${br}`, timeout: 60000,
+        path: `/gh/${owner}/${repo}/tree?path=${encodeURIComponent(path || '')}&with_mtime=1${br}`,
+        timeout: 60000,
       });
       const map = {};
       (data.tree || []).forEach((e) => { if (e.path && e.mtime) map[e.path] = e.mtime; });
       MTIME_CACHE[cacheKey] = { ts: Date.now(), map };
-      // DEBUG-MPUX4：mtime 图到达，触发合入
-      console.log('[MPUX4] fetchMtimes done key=' + cacheKey + ' entries=' + Object.keys(map).length);
-      // 防御：等待期间用户切了分支/页面参数，合入会错位——key 对不上直接丢弃
-      if (this.cacheKey() !== cacheKey || !this.fullTree) return;
+      // DEBUG-MPUX5：mtime 图到达，触发合入
+      console.log('[MPUX5] fetchMtimes done key=' + cacheKey + ' entries=' + Object.keys(map).length);
+      // 防御：等待期间用户切了分支/目录，合入会错位——key 对不上直接丢弃
+      if (this.cacheKey() !== cacheKey || !this.levelTree) return;
       this.applyMtimeMap(map);
       // 用户正在"按时间排序"：补全后重排一次（renderLevel 内部按 sortMode 排序）
       this.renderLevel();
     } catch (e) {
-      // DEBUG-MPUX4：静默降级——列表照常可用，只是没时间列
-      console.log('[MPUX4] fetchMtimes fail, degrade silently: ' + (e && (e.code || e.message)));
+      // DEBUG-MPUX5：静默降级——列表照常可用，只是没时间列
+      console.log('[MPUX5] fetchMtimes fail, degrade silently: ' + (e && (e.code || e.message)));
     }
   },
 
-  // MP-UX4：mtime 按 path 合入快树（不破坏 TREE_CACHE 结构：tree 条目补 mtime 字段，
-  // 与 MP-UX1 后端直发口径同形）
+  // MP-UX4：mtime 按 path 合入快树（覆盖式合入，与已有值等价）
   applyMtimeMap(map) {
-    if (!map || !this.fullTree) return;
-    (this.fullTree.tree || []).forEach((e) => {
-      if (e.path && map[e.path]) e.mtime = map[e.path];   // 覆盖式合入（不覆盖与已有值等价）
+    if (!map || !this.levelTree) return;
+    (this.levelTree.tree || []).forEach((e) => {
+      if (e.path && map[e.path]) e.mtime = map[e.path];
     });
   },
 
-  // 过滤出当前 path 的直接子级（MP-UX4：排序由 sortMode 决定——
+  // MP-UX5：当前层即直接子级，无需前缀过滤——直接按 sortMode 排序渲染。
   // 'name'=目录在前、组内名称升序（现状默认）；
   // 'mtime'=目录/文件混合按 mtime 倒序（新→旧），无 mtime 沉底并保持名称序。
   renderLevel() {
-    const prefix = this.data.path ? this.data.path + '/' : '';
-    const seen = new Map();
-    // 目录 mtime 索引：recursive tree 里目录条目自带（type=dir），mtime 由后端
-    // 按"子树内文件 mtime max"算好——预建 map 避免 forEach 内 find 的 O(n²)
-    const dirMtimeMap = {};
-    (this.fullTree.tree || []).forEach((e) => {
-      if (e.type === 'dir' && e.path && e.mtime) dirMtimeMap[e.path] = e.mtime;
-    });
-    (this.fullTree.tree || []).forEach((e) => {
-      if (!e.path || !e.path.startsWith(prefix)) return;
-      const rest = e.path.slice(prefix.length);
-      if (!rest) return;
-      const slash = rest.indexOf('/');
-      if (slash < 0) {
-        if (e.type !== 'file') return;
-        seen.set(e.path, {
-          path: e.path, name: rest, type: 'file', size: e.size,
-          sizeStr: fmt.fmtSize(e.size),
-          mtime: e.mtime || '',
-          mtimeStr: fmt.fmtMtime(e.mtime),
-          isMd: TEXT_RE.test(rest) || TEXT_NAMES.includes(rest.toLowerCase()),
-        });
-      } else {
-        const dirPath = prefix + rest.slice(0, slash);
-        if (!seen.has(dirPath)) {
-          const dirMtime = dirMtimeMap[dirPath] || '';
-          seen.set(dirPath, {
-            path: dirPath, name: rest.slice(0, slash), type: 'dir',
-            mtime: dirMtime,
-            mtimeStr: fmt.fmtMtime(dirMtime),
-          });
-        }
-      }
+    const items = (this.levelTree && this.levelTree.tree) || [];
+    const rows = items.filter((e) => e.path).map((e) => {
+      const name = e.path.slice((this.data.path ? this.data.path.length + 1 : 0));
+      return {
+        path: e.path, name, type: e.type, size: e.size,
+        sizeStr: e.type === 'file' ? fmt.fmtSize(e.size) : '',
+        mtime: e.mtime || '',
+        mtimeStr: fmt.fmtMtime(e.mtime),
+        isMd: e.type === 'file' && (TEXT_RE.test(name) || TEXT_NAMES.includes(name.toLowerCase())),
+      };
     });
     const byMtimeDesc = (a, b) => {
       if (a.mtime && b.mtime) return a.mtime < b.mtime ? 1 : (a.mtime > b.mtime ? -1 : a.name.localeCompare(b.name));
@@ -208,23 +193,15 @@ Page({
       if (b.mtime) return 1;
       return a.name.localeCompare(b.name);
     };
-    let rows;
     if (this.data.sortMode === 'mtime') {
       // MP-UX4：按时间——目录/文件混合倒序，无 mtime 沉底（名称序）
-      rows = [...seen.values()].sort(byMtimeDesc);
+      rows.sort(byMtimeDesc);
     } else {
-      rows = [...seen.values()].sort((a, b) =>
+      rows.sort((a, b) =>
         a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1);
     }
-    // [MP-LOG1 诊断埋点④] 渲染命中条数；0 条时追加诊断：区分"整树空"vs"本目录空"
-    console.log('[tree] render path=' + this.data.path + ' prefix=' + prefix + ' rows=' + rows.length);
-    if (rows.length === 0) {
-      const all = (this.fullTree && this.fullTree.tree) || [];
-      const evCount = all.filter((e) => e.path && e.path.indexOf('examples_vnext') === 0).length;
-      const parentPrefix = prefix.slice(0, prefix.lastIndexOf('/', Math.max(0, prefix.length - 2)) + 1);
-      const parentCount = parentPrefix ? all.filter((e) => e.path && e.path.indexOf(parentPrefix) === 0).length : all.length;
-      console.log('[tree] render empty: totalEntries=' + all.length + ' startswith(examples_vnext)=' + evCount + ' startswith(parent:' + parentPrefix + ')=' + parentCount + ' fullTree.branch=' + (this.fullTree && this.fullTree.branch));
-    }
+    // [MP-LOG1 诊断埋点④] 渲染命中条数
+    console.log('[tree] render path=' + this.data.path + ' rows=' + rows.length);
     this.setData({ rows, loading: false });
   },
 

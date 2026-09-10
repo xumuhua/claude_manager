@@ -105,6 +105,14 @@ async def gh_tree(cfg, request):
         return _bad_request("BAD_BRANCH", "branch 含非法字符")
     recursive = "1" if request.query.get("recursive", "1") != "0" else ""
     with_mtime = request.query.get("with_mtime", "0") == "1"
+    # MP-UX5：可选 path（目录）——参数出现（含空串）即单层模式：只返回该目录直接
+    # 子级（contents API），强制忽略 recursive；不带 path 的旧调用方行为逐字节不变
+    # （recursive/with_mtime 原语义）。path="" = 顶层目录。
+    path_raw = request.query.get("path")
+    level_mode = path_raw is not None
+    path = (path_raw or "").strip("/")
+    if path and ".." in path.split("/"):
+        return _bad_request("BAD_PATH", "path 非法")
 
     timeout = aiohttp.ClientTimeout(total=cfg["gh_timeout_s"])
     try:
@@ -120,6 +128,9 @@ async def gh_tree(cfg, request):
                         return web.json_response(
                             {"code": "GH_ERROR", "message": f"GitHub API 返回 {r.status}"}, status=502)
                     branch = (await r.json()).get("default_branch", "main")
+            if level_mode:
+                # DEBUG-MPUX5：单层模式——contents API 只取当前层，不管仓多大都快
+                return await _gh_tree_level(s, base, owner, repo, branch, path, with_mtime)
             ref = branch + ("?recursive=1" if recursive == "1" else "")
             url = f"{base}/repos/{owner}/{repo}/git/trees/{ref}"
             async with s.get(url) as r:
@@ -149,6 +160,64 @@ async def gh_tree(cfg, request):
     return web.json_response({
         "owner": owner, "repo": repo, "branch": branch,
         "truncated": bool(data.get("truncated")), "tree": tree,
+    })
+
+
+async def _gh_tree_level(session, base, owner, repo, branch, path, with_mtime):
+    """MP-UX5：单层目录列表（contents API，不带 recursive）。
+
+    返回该目录直接子级（dir/file），与全树模式同形 {owner,repo,branch,truncated,tree}。
+    with_mtime=1 时对每个直接子级并发 commits?path=<条目>&per_page=1（Semaphore(8)
+    限流）取最近一次提交时间——只算当前层，不递归；单条目失败静默留空。
+    每条目 commits 调用受 session 单请求超时保护；条目极多时总时长线性增长，
+    前端按 60s 超时+静默降级兜底（with_mtime 可选语义不变）。
+    """
+    api_url = f"{base}/repos/{owner}/{repo}/contents/{path}?ref={branch}"
+    try:
+        async with session.get(api_url) as r:
+            if r.status == 404:
+                return web.json_response(
+                    {"code": "NOT_FOUND", "message": "目录/分支/仓库不存在或非 public"}, status=404)
+            if r.status != 200:
+                return web.json_response(
+                    {"code": "GH_ERROR", "message": f"GitHub API 返回 {r.status}"}, status=502)
+            arr = await r.json()
+    except (aiohttp.ClientError, TimeoutError) as e:
+        return web.json_response({"code": "GH_UNREACHABLE", "message": f"GitHub 上游不可达: {e}"},
+                                 status=502)
+    if not isinstance(arr, list):
+        # path 指向文件而非目录
+        return _bad_request("BAD_PATH", "path 非目录")
+    tree = [{"path": e.get("path"),
+             "type": "dir" if e.get("type") == "dir" else "file",
+             "size": e.get("size", 0)} for e in arr if e.get("path")]
+    if with_mtime and tree:
+        sem = asyncio.Semaphore(8)
+
+        async def mtime_of(item):
+            try:
+                async with sem:
+                    q = (f"{base}/repos/{owner}/{repo}/commits?sha={branch}"
+                         f"&path={item['path']}&per_page=1")
+                    async with session.get(q) as r:
+                        if r.status != 200:
+                            return None
+                        cs = await r.json()
+                        if not cs:
+                            return None
+                        return ((cs[0].get("commit") or {}).get("committer") or {}).get("date")
+            except (aiohttp.ClientError, TimeoutError):
+                return None
+
+        # MP-UX5：整体兜底——条目多时不让总时长失控，超时部分留空（可选语义不变）
+        results = await asyncio.gather(*(mtime_of(it) for it in tree),
+                                       return_exceptions=True)
+        for it, mt in zip(tree, results):
+            if isinstance(mt, str) and mt:
+                it["mtime"] = mt
+    return web.json_response({
+        "owner": owner, "repo": repo, "branch": branch, "path": path,
+        "truncated": False, "tree": tree,
     })
 
 
