@@ -156,8 +156,9 @@ async def _fetch_mtimes(session, base, owner, repo, branch, entries):
     """with_mtime=1 的 mtime 求解。返回 {path: iso8601}（含文件与目录）。
 
     步骤：按顶层目录分组 → 每目录一次 commits?path=<dir>&per_page=100（并发，
-    return_exceptions 降级）→ 提交从新到旧逐条拉 files 列表，只回填尚未有 mtime
-    的文件（GitHub commits API 按时间倒序返回，首次命中即最近一次改动）→ 目录
+    return_exceptions 降级）→ 每目录前 50 个提交并发拉 files 列表（Semaphore(10)
+    限流防 rate limit，失败单项降级为 None），从新到旧只回填尚未有 mtime 的文件
+    （GitHub commits API 按时间倒序返回，首次命中即最近一次改动）→ 目录
     mtime = 子树内文件 mtime max。全程静默降级：任何一步失败只影响对应目录。
     """
     file_paths = [e.get("path") for e in entries if e.get("type") == "blob" and e.get("path")]
@@ -175,6 +176,22 @@ async def _fetch_mtimes(session, base, owner, repo, branch, entries):
                 return d, []
             return d, await r.json()
 
+    # commit detail 并发拉取，Semaphore 限流防 rate limit
+    sem = asyncio.Semaphore(10)
+
+    async def fetch_detail(c):
+        detail_url = c.get("url")
+        if not detail_url:
+            return None
+        try:
+            async with sem:
+                async with session.get(detail_url) as r:
+                    if r.status != 200:
+                        return None
+                    return await r.json()
+        except (aiohttp.ClientError, TimeoutError):
+            return None
+
     results = await asyncio.gather(*(commits_for(d) for d in top_dirs),
                                    return_exceptions=True)
     mtime = {}
@@ -184,19 +201,22 @@ async def _fetch_mtimes(session, base, owner, repo, branch, entries):
         d, commits = res
         prefix = (d + "/") if d else ""
         remaining = {p for p in file_paths if p.startswith(prefix) and p not in mtime}
+        todo = []      # (date, commit) — 待并发拉 detail
         for c in commits:
             if not remaining:
                 break
             date = ((c.get("commit") or {}).get("committer") or {}).get("date")
-            detail_url = c.get("url")
-            if not date or not detail_url:
+            if not date or not c.get("url"):
                 continue
-            try:
-                async with session.get(detail_url) as r:
-                    if r.status != 200:
-                        continue
-                    detail = await r.json()
-            except (aiohttp.ClientError, TimeoutError):
+            todo.append((date, c))
+            if len(todo) >= 50:  # 只取前 50 个 commit，mtime 回填够用
+                break
+        details = await asyncio.gather(*(fetch_detail(c) for _, c in todo),
+                                       return_exceptions=True)
+        for (date, _), detail in zip(todo, details):
+            if not remaining:
+                break
+            if isinstance(detail, Exception) or detail is None:
                 continue
             for f in detail.get("files", []):
                 fn = f.get("filename")
