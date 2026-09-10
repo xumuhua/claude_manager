@@ -2,9 +2,13 @@
 .page { display: flex; flex-direction: column; height: 100vh; }
 
 /* 顶栏 56pt */
+/* MP-UX2-FIX：顶栏 fixed 钉在屏顶，翻历史时不跟内容滚走（与底部 dock 同法） */
 .topbar {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+  background: var(--bg);
   display: flex; align-items: center; padding: 8px 16px;
   border-bottom: 1px solid var(--divider); flex-shrink: 0;
+  box-sizing: border-box;
 }
 .seg { display: flex; background: var(--bg2); border-radius: 8px; padding: 2px; }
 .seg-item { font-size: 14px; padding: 4px 14px; border-radius: 6px; color: var(--fg2); }
@@ -19,7 +23,12 @@
 /* 消息流 */
 /* MP-UX2：底部固定区高约 56px+（输入栏 auto-height 会再高），padding-bottom 预留
    防最后一条消息被 dock 遮挡；iOS 安全区一并兜底 */
-.msgs { flex: 1; padding-bottom: 80px; box-sizing: border-box; }
+/* MP-UX2-FIX 两处：
+   1. min-height: 0——flex 子项 min-height 默认 auto，内容多时把 .page 撑穿 100vh，
+      scroll-view 失去滚动空间；置 0 后收缩权还给 scroll-view（hermes 真机实测根因）
+   2. padding-top: 41px——topbar 改 fixed 后不再占文档流，预留顶栏高度
+      （8+8 padding + 24px 行高 + 1px 边框）防第一条消息被遮挡 */
+.msgs { flex: 1; min-height: 0; padding-top: 41px; padding-bottom: 80px; box-sizing: border-box; }
 .date-sep {
   text-align: center; font-size: 11px; color: var(--fg2); margin: 14px 0 6px;
 }
