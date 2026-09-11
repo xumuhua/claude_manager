@@ -11,6 +11,10 @@ const store = require('../../utils/store');
 // MP-UX5：按层缓存——key 为 'owner/repo@branch:path'，各层独立 5 分钟有效
 const LEVEL_CACHE = {};  // { key: {ts, branch, tree} } 单层快树
 const MTIME_CACHE = {};  // { key: {ts, map: {path: mtime}} } 单层 mtime 图
+// MP-UX5B：下一层预取——in-flight 去重（防止同层重复渲染触发重复请求）
+const PREFETCH_INFLIGHT = {};  // { childKey: true }
+const PREFETCH_CONCURRENCY = 4;   // 预取并发上限（小请求、后台跑，不抢首屏）
+const PREFETCH_MAX_DIRS = 30;     // 每层最多预取的子目录数（防巨型目录打爆 GitHub 限流）
 
 // 文本/markdown 扩展名（与后端白名单一致，决定能否进 P4）
 const TEXT_RE = /\.(md|markdown|mdown|txt|rst|py|js|ts|tsx|jsx|json|yaml|yml|toml|ini|cfg|sh|bash|c|h|cpp|hpp|go|rs|java|html|css|xml|sql|vue)$/i;
@@ -120,6 +124,7 @@ Page({
       this.applyMtimeMap(this.getCachedMtimeMap(cacheKey));   // 有旧 mtime 图直接先补
       this.renderLevel();
       this.fetchMtimes(cacheKey, fastFresh);                  // 后台补 mtime（不 await）
+      this.prefetchChildren();                                // MP-UX5B：后台预取下一层（不 await）
     } catch (e) {
       const msg = e.code === 'NOT_FOUND' ? '目录/仓库不存在或非 public'
         : e.code === 'NETWORK' ? '网络不可用' : '加载失败：' + e.message;
@@ -132,6 +137,57 @@ Page({
   getCachedMtimeMap(cacheKey) {
     const hit = MTIME_CACHE[cacheKey];
     return hit && Date.now() - hit.ts <= 5 * 60 * 1000 ? hit.map : null;
+  },
+
+  // MP-UX5B：预取当前层各子目录的下一层（哥哥口径"索引当前层和下一层"）——
+  //   用户点进任一子目录直接命中 LEVEL_CACHE 秒开，不再等单层请求；
+  //   首屏渲染已完成后才发起，小请求后台并发（限 4 路），不拖慢当前层刷新；
+  //   不递归全树：每层页面各自只预取自己下一层，链式自然延展。
+  // 全部失败静默（不影响当前页可用）；快照 owner/repo/branch，等期间切了分支自动废弃。
+  prefetchChildren() {
+    if (!this.levelTree) return;
+    const { owner, repo, branch } = this.data;   // 快照：后台期间用户可能切分支
+    const dirs = (this.levelTree.tree || [])
+      .filter((e) => e.type === 'dir' && e.path)
+      .slice(0, PREFETCH_MAX_DIRS);
+    if (!dirs.length) return;
+    const br = branch ? `&branch=${encodeURIComponent(branch)}` : '';
+    const fresh = (k) => {
+      const c = LEVEL_CACHE[k];
+      return !!(c && Date.now() - c.ts <= 5 * 60 * 1000);
+    };
+    const todo = dirs.map((d) => {
+      const childKey = owner + '/' + repo + '@' + (branch || '') + ':' + d.path;
+      return { path: d.path, childKey };
+    }).filter((it) => !fresh(it.childKey) && !PREFETCH_INFLIGHT[it.childKey]);
+    if (!todo.length) return;
+    // DEBUG-MPUX5B：预取批次发起
+    console.log('[MPUX5B] prefetch start layer=' + (this.data.path || '(root)') + ' dirs=' + todo.length + '/' + dirs.length);
+    let idx = 0, done = 0;
+    const worker = () => {
+      if (idx >= todo.length) return Promise.resolve();
+      const it = todo[idx++];
+      PREFETCH_INFLIGHT[it.childKey] = true;
+      return api.request({
+        path: `/gh/${owner}/${repo}/tree?path=${encodeURIComponent(it.path)}${br}`,
+        timeout: 15000,
+      }).then((data) => {
+        LEVEL_CACHE[it.childKey] = { ts: Date.now(), branch: data.branch, tree: data.tree || [] };
+        done++;
+      }).catch((e) => {
+        // DEBUG-MPUX5B：单层预取失败静默降级（点进该子目录时回源站拉，行为同 MP-UX5）
+        console.log('[MPUX5B] prefetch skip ' + it.path + ': ' + (e && (e.code || e.message)));
+      }).then(() => {
+        delete PREFETCH_INFLIGHT[it.childKey];
+        return worker();
+      });
+    };
+    const workers = [];
+    for (let i = 0; i < Math.min(PREFETCH_CONCURRENCY, todo.length); i++) workers.push(worker());
+    Promise.all(workers).then(() => {
+      // DEBUG-MPUX5B：预取批次结束
+      console.log('[MPUX5B] prefetch done layer=' + (this.data.path || '(root)') + ' cached=' + done + '/' + todo.length);
+    });
   },
 
   // MP-UX5 第②段：后台拉 with_mtime 同层列表，只抽取 path→mtime 图（不替换快树）。
