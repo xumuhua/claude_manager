@@ -7,3 +7,15 @@
 - 只记"这个专家特有的"；通用方法论回 task-skill-forge，项目事实回项目记忆体。
 - 沉淀时机：阶段八复盘必做（每个涉事专家"这次学到什么"），或事件中即时发现即时记。
 - 凭证/token 永不写入此处（带外走 dm 私聊通道）。
+
+## EAP skill 两层索引（2026-09-12 起）
+
+按 EAP 设计（`docs/EAP_专家自主化改造设计方案_v1.0.md`），每个专家须登记：【专用】自有 skill 上库，或【通用】复用仓内通用件的使用口径，不留空门。
+
+### coder（EAP-2b 登记 2026-09-12）
+
+- 【专用】无自有 skill——本机 `~/.claude/skills/` 不存在，历史经验已沉淀在本目录 `coder/SKILL.md`，不重复建 skill。
+- 【通用】复用仓内通用件：
+  - [`delivery-checklist`](../delivery-checklist/)：coder 交付自验口径——每个交付件按"每条=可机检命令"自跑，证据（exit 0 输出/diff --stat/日志行）写进 done 文件随回执上浮；机检未过不发给 manager。
+  - [`task-skill-forge`](../task-skill-forge/)：跨专家大工程方法论，派单规格照走。
+- 后续新增自有 skill：落位 `skills/experts/coder/` 并回此索引补登。
