@@ -54,6 +54,10 @@ Page({
     this.unread = {};
     this.convIds = [cfg.CONV_GROUP, cfg.CONV_DM];  // 可见会话 id 列表（拉取成功后替换）
     this.lastTs = {};          // MP-UX6：conv -> 最近一条消息时间（epoch ms，排序键）
+    // MP-UX7 缺陷二：默认激活会话不再硬编码专家群——data.conv 先用 CONV_GROUP 占位
+    // 渲染，loadConvs 热度排序就绪后切到 top1。开关防乱跳：探测完成前 initConv/
+    // catchUp 全部以占位会话为准，探测结束后一次性切换；top1 为空兜底保持占位。
+    this._convPending = true;
     this.recorder = null;
     this.recTimer = null;
     this.recCancelled = false;
@@ -143,10 +147,28 @@ Page({
       ok.forEach((p) => { okIds[p.id] = 1; if (p.ts) this.lastTs[p.id] = p.ts; });
       this.convIds = convIds.filter((id) => okIds[id]);
       this.rebuildConvList();
+      this.applyDefaultConv();   // MP-UX7 缺陷二：热度就绪 → 默认落 top1
     } catch (e) {
       // DEBUG-MPUX6：回落默认列表（data 默认值），只打日志不打扰用户
       console.log('[MPUX6] loadConvs fail, fallback list: ' + (e && e.message));
+      this.applyDefaultConv();   // MP-UX7 缺陷二：失败同样要解除 pending 闸门
     }
+  },
+
+  // MP-UX7 缺陷二：排序数据就绪后，把默认激活会话从占位的 CONV_GROUP 切到热度
+  // top1（和 MP-UX6 菜单同一份排序结果）。只在仍停在占位会话时切一次——用户
+  // 若已手动点过菜单则不抢。top1 为空兜底保持现状（原硬编码专家群行为）。
+  applyDefaultConv() {
+    if (!this._convPending) return;
+    this._convPending = false;
+    const top = this.data.convList[0];
+    if (!top || !top.id) return;
+    if (this.data.conv !== cfg.CONV_GROUP || top.id === cfg.CONV_GROUP) return;
+    console.log('[MPUX7] default conv -> top1: ' + top.id);
+    this.ensureConv(top.id);
+    this.markRead(cfg.CONV_GROUP);
+    this.setData({ conv: top.id, summary: null, newMsgCount: 0, inputText: '', canSend: false });
+    this.initConv(top.id);
   },
 
   convLabel(conv) {
@@ -456,6 +478,7 @@ Page({
   async switchConv(e) {
     const conv = e.currentTarget.dataset.conv;
     this.setData({ menuOpen: false });   // MP-UX6：点选菜单项后收起
+    this._convPending = false;           // MP-UX7：用户手动选了会话，默认 top1 不再抢
     if (conv === this.data.conv) return;
     this.ensureConv(conv);
     this.markRead(this.data.conv);
