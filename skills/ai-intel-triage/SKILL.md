@@ -86,6 +86,7 @@ L4 专题：aichip 任 coordinator 拆子任务书，各专家领线，系列深
   - 模型公司发技术报告 → aicorp 写发布事实 @aitech 拆解
   - 算法-硬件协同（MLA 类）→ aitech 写算法侧 @aichip 补硬件视角
 - 大文件不走 bus：正文落仓，群里摘要+链接
+- bus 帧实测口径（aitech 9/13 踩坑，补）：七字段=msg_id（UUID 字符串，自起文本 id 触发 BAD_SCHEMA 400）/conversation_id/from/mentions/type/body/reply_to（字段名 body 非 text，无 ts 字段，hub 自填）；同 sender 对同 mentions 5s 内连发触发 LOOP_GUARD 429，连发需 sleep ≥6s
 
 ## 六、每日节奏（建议）
 
