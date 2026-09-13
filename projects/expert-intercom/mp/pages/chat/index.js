@@ -13,10 +13,13 @@ const player = require('../../utils/player');
 Page({
   data: {
     conv: cfg.CONV_GROUP,
-    // MP-UX4：会话 tab 动态渲染——onLoad 拉 /api/conversations，群会话（grp_*）
-    // 生成 tabs；亦菲私聊保留固定入口（行为不变）。拉取失败回落双 tab 不白屏。
-    tabs: [{ id: cfg.CONV_GROUP, label: cfg.GROUP_NAMES[cfg.CONV_GROUP] || '专家群', unread: 0 }],
-    dmTab: { id: cfg.CONV_DM, label: '亦菲', unread: 0 },
+    // MP-UX6：segmented 横排 → 下拉菜单。tabs/dmTab 合并为 convList（含 dm，
+    // 按 lastTs 热度倒序渲染），menuOpen 控制浮层。哥哥 9/13 拍板："下拉菜单，
+    // 按最近交互更新热度排序，越热越靠前。"
+    convList: [{ id: cfg.CONV_GROUP, label: cfg.GROUP_NAMES[cfg.CONV_GROUP] || '专家群', unread: 0, lastTs: 0, ago: '' }],
+    convLabelCur: cfg.GROUP_NAMES[cfg.CONV_GROUP] || '专家群',
+    convUnread: 0,
+    menuOpen: false,
     wsStatus: 'off',
     networkOk: true,
     atMeOnly: false,
@@ -50,6 +53,7 @@ Page({
     this.entryRead = {};     // 进入会话时的 last_read_seq（速览 from_seq 口径）
     this.unread = {};
     this.convIds = [cfg.CONV_GROUP, cfg.CONV_DM];  // 可见会话 id 列表（拉取成功后替换）
+    this.lastTs = {};          // MP-UX6：conv -> 最近一条消息时间（epoch ms，排序键）
     this.recorder = null;
     this.recTimer = null;
     this.recCancelled = false;
@@ -95,10 +99,9 @@ Page({
     if (!this.seqIdx[conv]) this.seqIdx[conv] = {};
   },
 
-  // MP-UX4：拉 /api/conversations 生成群 tab（grp_* 动态列表）+ 亦菲固定入口。
-  // 失败静默回落：默认 tabs 已在 data 里（专家群+亦菲），不白屏。
-  // 排序：grp_experts 置顶第一，其余群按 last_read_seq 倒序近似"最近活跃在前"
-  // （接口只回 id 数组，无时间字段——9/10 与亦菲口径：默认置顶亦可）。
+  // MP-UX6：/api/conversations 动态拉取 → convList（群+亦菲统一，按 lastTs 热度
+  // 倒序）。排序键 = 各会话最近一条消息 ts（无消息排最后），dm 不搞特殊置顶。
+  // 失败静默回落：默认 convList 已在 data 里（专家群单项），不白屏。
   async loadConvs() {
     try {
       const d = await api.request({ path: '/api/conversations', timeout: 10000 });
@@ -106,30 +109,90 @@ Page({
         .map((c) => (typeof c === 'string' ? c : c && c.conversation_id))
         .filter((c) => typeof c === 'string' && c);
       if (!ids.length) return;
-      // DEBUG-MPUX4：看后端实际下发的可见会话
-      console.log('[MPUX4] conversations: ' + JSON.stringify(ids));
-      const groups = ids.filter((c) => c.indexOf('grp_') === 0);
-      const extras = groups.filter((c) => c !== cfg.CONV_GROUP)
-        .sort((a, b) => store.getLastRead(b) - store.getLastRead(a));
-      const ordered = (groups.includes(cfg.CONV_GROUP) ? [cfg.CONV_GROUP] : []).concat(extras);
-      const convIds = ordered.concat(ids.filter((c) => c === cfg.CONV_DM));
+      // DEBUG-MPUX6：看后端实际下发的可见会话（接口即成员制过滤，403 群不会下发）
+      console.log('[MPUX6] conversations: ' + JSON.stringify(ids));
+      const dm = ids.filter((c) => c === cfg.CONV_DM);
+      const convIds = ids.filter((c) => c.indexOf('grp_') === 0).concat(dm);
+      if (!convIds.length) return;
       this.convIds = convIds;
-      ordered.forEach((c) => this.ensureConv(c));
-      this.setData({
-        tabs: ordered.map((c) => ({ id: c, label: this.convLabel(c), unread: 0 })),
-      });
+      convIds.forEach((c) => this.ensureConv(c));
+      // 探测各会话最新一条消息（limit=1）取热度 ts；403（成员制无权限）静默过滤
+      // 不进菜单；其他错误保守保留在列表（网络抖动不该把会话弄丢）。
+      const probes = await Promise.all(convIds.map(async (c) => {
+        try {
+          const md = await api.request({
+            path: '/api/messages',
+            data: { conversation_id: c, after_seq: 0, limit: 1 },
+            timeout: 10000,
+          });
+          const arr = md.messages || [];
+          return { id: c, ts: arr.length ? this.msgTs(arr[arr.length - 1]) : 0 };
+        } catch (e) {
+          if (e && e.status === 403) {
+            console.log('[MPUX6] conv ' + c + ' 403 no access, filtered');
+            return null;
+          }
+          return { id: c, ts: 0 };
+        }
+      }));
+      const ok = probes.filter(Boolean);
+      if (!ok.length) return;   // 全灭（多半是断网）：保留回落列表
+      // 只从 convIds 剔除真 403 的会话（okIds 白名单）；网络错保守保留的会话
+      // 仍在 convIds 里，catchUp/onDeliver 继续尝试，菜单项也保留（ts=0 沉底）。
+      const okIds = {};
+      ok.forEach((p) => { okIds[p.id] = 1; if (p.ts) this.lastTs[p.id] = p.ts; });
+      this.convIds = convIds.filter((id) => okIds[id]);
+      this.rebuildConvList();
     } catch (e) {
-      // DEBUG-MPUX4：回落双 tab（data 默认值），只打日志不打扰用户
-      console.log('[MPUX4] loadConvs fail, fallback 2-tab: ' + (e && e.message));
+      // DEBUG-MPUX6：回落默认列表（data 默认值），只打日志不打扰用户
+      console.log('[MPUX6] loadConvs fail, fallback list: ' + (e && e.message));
     }
   },
 
   convLabel(conv) {
+    if (conv === cfg.CONV_DM) return '亦菲';
     if (cfg.GROUP_NAMES[conv]) return cfg.GROUP_NAMES[conv];
     return conv.indexOf('grp_') === 0 ? conv.slice(4) : conv;
   },
 
-  onShow() { ws.resume(); },
+  // MP-UX6：消息 ts → epoch ms（排序键）。ts 为 ISO 8601 UTC（F1 schema）。
+  msgTs(m) {
+    const t = new Date(m && m.ts).getTime();
+    return isNaN(t) ? 0 : t;
+  },
+
+  // MP-UX6：从已加载消息流回填 lastTs（loadAll/ingest 后调用），max ts 为准
+  refreshConvTs(conv) {
+    const list = this.msgs[conv] || [];
+    for (let i = list.length - 1; i >= 0; i--) {
+      const t = this.msgTs(list[i]);
+      if (t) {
+        if (t > (this.lastTs[conv] || 0)) this.lastTs[conv] = t;
+        return;
+      }
+    }
+  },
+
+  // MP-UX6：重建 convList —— lastTs 倒序（越热越靠前），同 ts 按名称字典序兜底
+  // （哥哥硬要求的排序稳定性）。无消息（lastTs=0）自然沉底。
+  rebuildConvList() {
+    const list = this.convIds.map((id) => ({
+      id,
+      label: this.convLabel(id),
+      unread: this.unread[id] || 0,
+      lastTs: this.lastTs[id] || 0,
+      ago: this.lastTs[id] ? fmt.fmtAgo(this.lastTs[id]) : '',
+    }));
+    list.sort((a, b) => (b.lastTs - a.lastTs) || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
+    this.setData({ convList: list, convLabelCur: this.convLabel(this.data.conv),
+                   convUnread: this.unread[this.data.conv] || 0 });
+  },
+
+  // MP-UX6：下拉菜单开关——点标题切换、点遮罩/选中项收起
+  toggleConvMenu() { this.setData({ menuOpen: !this.data.menuOpen }); },
+  closeConvMenu() { if (this.data.menuOpen) this.setData({ menuOpen: false }); },
+
+  onShow() { ws.resume(); this.catchUp(); },
   onHide() { player.pause(); this.stopPolling(); },   // 切 tab/退后台：TTS 自动暂停（D1 §4.7）
   onUnload() { this.stopPolling(); },
 
@@ -175,6 +238,8 @@ Page({
       if (m.msg_id) this.seenIds[m.msg_id] = 1;
       this.indexMsg(conv, m);
     });
+    this.refreshConvTs(conv);
+    this.rebuildConvList();
     // DEBUG-MPUX4：首屏会话历史加载量
     console.log('[MPUX4] loadAll conv=' + conv + ' msgs=' + all.length);
   },
@@ -292,6 +357,10 @@ Page({
   ingest(conv, raw) {
     if (raw.msg_id && this.seenIds[raw.msg_id]) return;
     if (raw.msg_id) this.seenIds[raw.msg_id] = 1;
+    // MP-UX6：新消息刷新该会话热度（自己发言回显 pending 的 ts 沿用本地时间，
+    // 服务端 ack 到达后 replaceLocal 用真 ts 再刷一次），并重排菜单
+    const rt = this.msgTs(raw);
+    if (rt > (this.lastTs[conv] || 0)) { this.lastTs[conv] = rt; this.rebuildConvList(); }
 
     // 自己刚发的消息回显：替换 pending（按 conv+body 匹配）
     const pi = this.pending.findIndex((p) => p.conv === conv && p.body === raw.body && raw.from === p.from);
@@ -320,18 +389,12 @@ Page({
     }
   },
 
+  // MP-UX6：未读按 conv 独立计数——convList 角标 + tabBar 角标同步刷新
+  // （菜单数据唯一入口 rebuildConvList，tabBar 汇总照旧）
   updateBadge() {
-    // MP-UX4：未读按 conv 独立计数，tab 角标 + tabBar 角标同步刷新
     let n = 0;
-    const tabs = (this.data.tabs || []).map((t) => {
-      const u = this.unread[t.id] || 0;
-      n += u;
-      return t.unread === u ? t : Object.assign({}, t, { unread: u });
-    });
-    const dmUnread = this.unread[cfg.CONV_DM] || 0;
-    n += dmUnread;
-    const dmTab = Object.assign({}, this.data.dmTab, { unread: dmUnread });
-    this.setData({ tabs, dmTab });
+    this.convIds.forEach((id) => { n += this.unread[id] || 0; });
+    this.rebuildConvList();
     if (n > 0) wx.setTabBarBadge({ index: 0, text: String(n > 99 ? '99+' : n) });
     else wx.removeTabBarBadge({ index: 0 });
   },
@@ -392,6 +455,7 @@ Page({
 
   async switchConv(e) {
     const conv = e.currentTarget.dataset.conv;
+    this.setData({ menuOpen: false });   // MP-UX6：点选菜单项后收起
     if (conv === this.data.conv) return;
     this.ensureConv(conv);
     this.markRead(this.data.conv);

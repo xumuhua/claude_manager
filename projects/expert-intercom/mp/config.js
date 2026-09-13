@@ -31,9 +31,12 @@ module.exports = {
 
   // MP-UX4：群会话显示名映射（key=conversation_id）；未登记的 grp_* 自动去前缀展示，
   // 新增群不用改代码。会话列表走 /api/conversations 动态拉取，本表只管文案。
+  // MP-UX6：补齐四个群的登记名（任务书口径）
   GROUP_NAMES: {
     grp_experts: '专家群',
     grp_mp: '小程序群',
+    grp_quant: '量化群',
+    grp_ai_research: 'AI 调研群',
   },
 
   // 默认常用仓（D1 §2.2，可本地收藏排序）

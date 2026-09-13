@@ -1,20 +1,30 @@
 <view class="page">
-  <!-- 顶栏：segmented 切会话 + 状态点 + @我过滤 + 速览（D1 §7 P1） -->
-  <!-- MP-UX4：群 tab 动态渲染（/api/conversations），未读角标按 conv 独立计数；
-       群多时横向滚动；亦菲私聊固定在最右（行为不变） -->
+  <!-- 顶栏：会话下拉菜单 + 状态点 + @我过滤 + 速览 -->
+  <!-- MP-UX6：segmented 横排 → 下拉菜单（哥哥 9/13 拍板），菜单项按最近消息
+       热度倒序（越热越靠前），当前项高亮+✓，未读小红点延续 -->
   <view class="topbar">
-    <scroll-view scroll-x class="seg-scroll" enhanced show-scrollbar="{{false}}">
-      <view class="seg">
-        <text wx:for="{{tabs}}" wx:key="id"
-              class="seg-item {{conv === item.id ? 'on' : ''}}"
-              data-conv="{{item.id}}" bindtap="switchConv">{{item.label}}<text wx:if="{{item.unread}}" class="seg-badge">{{item.unread > 99 ? '99+' : item.unread}}</text></text>
-        <text class="seg-item seg-dm {{conv === dmTab.id ? 'on' : ''}}"
-              data-conv="{{dmTab.id}}" bindtap="switchConv">{{dmTab.label}}<text wx:if="{{dmTab.unread}}" class="seg-badge">{{dmTab.unread > 99 ? '99+' : dmTab.unread}}</text></text>
-      </view>
-    </scroll-view>
+    <view class="conv-pick" bindtap="toggleConvMenu">
+      <text class="conv-pick-name">{{convLabelCur}}</text>
+      <text class="conv-pick-arrow {{menuOpen ? 'up' : ''}}">▾</text>
+      <text wx:if="{{convUnread}}" class="seg-badge">{{convUnread > 99 ? '99+' : convUnread}}</text>
+    </view>
     <view class="dot dot-{{wsStatus}}" title="连接状态"></view>
     <text class="top-btn {{atMeOnly ? 'on' : ''}}" bindtap="toggleAtMe">@我</text>
     <text class="top-btn" bindtap="onSummaryTap">✦速览</text>
+  </view>
+
+  <!-- MP-UX6：下拉浮层（遮罩点击收起；菜单项 = 会话名 + 热度时间 + 未读数） -->
+  <view wx:if="{{menuOpen}}" class="menu-mask" bindtap="closeConvMenu"></view>
+  <view wx:if="{{menuOpen}}" class="conv-menu">
+    <view wx:for="{{convList}}" wx:key="id"
+          class="conv-item {{conv === item.id ? 'on' : ''}}"
+          data-conv="{{item.id}}" bindtap="switchConv">
+      <text class="conv-item-check">{{conv === item.id ? '✓' : ''}}</text>
+      <text class="conv-item-name">{{item.label}}</text>
+      <text wx:if="{{item.ago}}" class="conv-item-ago">{{item.ago}}</text>
+      <text wx:if="{{item.unread}}" class="seg-badge">{{item.unread > 99 ? '99+' : item.unread}}</text>
+    </view>
+    <view wx:if="{{!convList.length}}" class="conv-item-empty">暂无可用会话</view>
   </view>
 
   <view wx:if="{{!networkOk}}" class="banner-err">网络不可用，请检查网络</view>

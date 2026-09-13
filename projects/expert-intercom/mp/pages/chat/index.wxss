@@ -10,18 +10,44 @@
   border-bottom: 1px solid var(--divider); flex-shrink: 0;
   box-sizing: border-box;
 }
-/* MP-UX4：群 tab 动态化——数量不定，横向滚动防挤爆顶栏 */
-.seg-scroll { flex: 1; min-width: 0; }
-.seg { display: inline-flex; background: var(--bg2); border-radius: 8px; padding: 2px; white-space: nowrap; }
-.seg-item { font-size: 14px; padding: 4px 14px; border-radius: 6px; color: var(--fg2); }
-.seg-item.on { background: var(--bg); color: var(--fg); font-weight: 600; }
-/* MP-UX4：会话未读角标（小程序红底圆点，与 tabBar 角标同色） */
+/* MP-UX6：会话下拉菜单（segmented 横排已废弃）。
+   顶栏左侧 = 当前会话名 + ▾；浮层 z-index 压在顶栏(100)之上、遮罩垫底下。 */
+.conv-pick { flex: 1; min-width: 0; display: flex; align-items: baseline; }
+.conv-pick-name {
+  font-size: 16px; font-weight: 600; color: var(--fg);
+  max-width: 180px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.conv-pick-arrow { font-size: 12px; color: var(--fg2); margin-left: 4px; }
+.conv-pick-arrow.up { color: var(--primary); }
+.conv-pick .seg-badge { margin-left: 6px; }
+
+.menu-mask { position: fixed; inset: 0; z-index: 200; background: rgba(0, 0, 0, 0.35); }
+.conv-menu {
+  position: fixed; top: 42px; left: 12px; z-index: 201;
+  min-width: 200px; max-width: 70vw; max-height: 60vh; overflow-y: auto;
+  background: var(--bg2); border: 1px solid var(--divider); border-radius: 10px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  padding: 4px;
+}
+.conv-item {
+  display: flex; align-items: baseline; padding: 10px 10px;
+  border-radius: 8px; font-size: 14px; color: var(--fg);
+}
+.conv-item.on { background: var(--bg); }
+.conv-item-check { width: 18px; flex-shrink: 0; color: var(--primary); font-weight: 600; }
+.conv-item-name { flex-shrink: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.conv-item.on .conv-item-name { font-weight: 600; }
+.conv-item-ago { font-size: 11px; color: var(--fg2); margin-left: auto; padding-left: 10px; flex-shrink: 0; }
+.conv-item .seg-badge { margin-left: 6px; flex-shrink: 0; }
+.conv-item-empty { padding: 14px; font-size: 13px; color: var(--fg2); text-align: center; }
+
+/* 会话未读角标（MP-UX4 起沿用：红底圆点，与 tabBar 角标同色） */
 .seg-badge {
   font-size: 10px; color: #fff; background: var(--err);
   border-radius: 8px; padding: 0 5px; margin-left: 4px;
   vertical-align: 2px; font-weight: 400;
 }
-.seg-item.on .seg-badge { font-weight: 400; }
+
 .dot { width: 6px; height: 6px; border-radius: 3px; margin: 0 10px; }
 .dot-ws { background: #22C55E; }
 .dot-down { background: #F59E0B; }

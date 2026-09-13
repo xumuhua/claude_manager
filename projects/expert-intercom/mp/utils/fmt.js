@@ -49,6 +49,24 @@ function fmtMtime(ts) {
   return pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
 }
 
+// MP-UX6：会话热度徽标（下拉菜单用）——刚刚/X分钟前/X小时前/昨天/MM-DD。
+// 接受 ISO 字符串或 epoch 毫秒；无效输入返回 ''（调用方不显示徽标）。
+function fmtAgo(ts) {
+  const d = toDate(ts);
+  if (!d) return '';
+  const now = new Date();
+  let diff = now - d;
+  if (diff < 0) diff = 0;   // 未来时间（时钟漂移）按刚刚处理
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return '刚刚';
+  if (mins < 60) return mins + ' 分钟前';
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return hours + ' 小时前';
+  const yest = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  if (d.toDateString() === yest.toDateString()) return '昨天';
+  return pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+}
+
 // 发送者名配色盘：gege 主蓝 / yifei 青 / hub 灰 / 其余按哈希取 6 色盘（D1 §8.1）
 const PALETTE = ['c-quant', 'c-teal', 'c-pink', 'c-olive', 'c-violet', 'c-rust'];
 function nameColor(from) {
@@ -69,4 +87,4 @@ function roleBadge(msg) {
   return { gege: '哥哥', yifei: '亦菲', expert: '专家', hub: '系统' }[role] || '专家';
 }
 
-module.exports = { fmtTime, dateLabel, fmtSize, fmtMtime, nameColor, roleBadge };
+module.exports = { fmtTime, dateLabel, fmtSize, fmtMtime, fmtAgo, nameColor, roleBadge };
