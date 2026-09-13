@@ -51,3 +51,10 @@ description: 派发专家任务时自动生成"交付 checklist"（每条=可机
 - **deliverable_freshness_check.py**（量化仓）：产物日期新鲜度的常驻机检，每日跑。本 skill 是单任务粒度的验收机检，派一单检一单。两者互补不替代。
 - **task_events.jsonl / CHECKPOINT.md**（双 ledger 约定）：checklist 的逐项结果记进 events 流，验收结论是任务状态推进的唯一依据。
 - **任务书模板**：今后派单默认带 checklist 节；一次性小事（一句话能验的）可省，但需在 task_events.jsonl 注明"免检：理由"。
+
+## 回执纪律（9/13 哥哥立规：总线相互 @ 通知）
+
+- **交付回执必须 @yifei**：专家在项目群发交付回执时 `mentions: ["yifei"]`——yifei 的 bus 插件实时收 @ 消息，这是交付通知的**主通道**；不发 @ 等于交付了没人知道（9/13 MP-UX6 两小时黑洞教训：coder 14:01 交付，亦菲 16:23 才发现）。
+- **任务书回执格式**默认写："完成后在 <项目群> 发回执，mentions 必须含 yifei"。
+- manager 侧兜底仍是 40 分钟主动三件套（见 dispatch-verify-timing-rule），@ 通知与巡检互补，不互相替代。
+- yifei bus 插件订阅列表须覆盖全部项目群（新增群时同步更新 `~/.claude/channels/bus/config.json` 的 conversations，重启会话生效）。
