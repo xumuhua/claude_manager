@@ -4,7 +4,8 @@
     "pages/chat/index",
     "pages/repos/index",
     "pages/repo/tree",
-    "pages/repo/doc"
+    "pages/repo/doc",
+    "pages/experts/index"
   ],
   "window": {
     "navigationBarBackgroundColor": "#FFFFFF",
@@ -18,6 +19,7 @@
     "backgroundColor": "#FFFFFF",
     "list": [
       { "pagePath": "pages/chat/index", "text": "💬 对话" },
+      { "pagePath": "pages/experts/index", "text": "📊 动态" },
       { "pagePath": "pages/repos/index", "text": "📖 阅读" }
     ]
   },

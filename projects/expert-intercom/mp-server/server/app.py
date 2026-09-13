@@ -5,7 +5,9 @@
 """
 import argparse
 import asyncio
+import json
 import logging
+import os
 import time
 import uuid
 
@@ -283,6 +285,30 @@ async def gh_blob_route(request):
     return await gh_proxy.gh_blob(request.app["cfg"], request)
 
 
+# ---------- 专家动态（MP-DASH1：manager 机 cron 采集 → scp 落本目录 experts.json） ----------
+
+EXPERTS_JSON = "/data/workspace/expert-intercom/mp-backend/experts.json"
+
+
+@require_agent
+async def get_experts(request):
+    """GET /api/experts：全队专家状态卡片。采集层 10min 粒度写死规则提炼（不调 LLM）。
+    文件缺失/损坏返回 503 EXPERTS_UNAVAILABLE，不炸服务；stale_s 供前端标灰判断。"""
+    try:
+        with open(EXPERTS_JSON, encoding="utf-8") as f:
+            data = json.load(f)
+        mtime = int(os.path.getmtime(EXPERTS_JSON))
+    except FileNotFoundError:
+        return web.json_response({"code": "EXPERTS_UNAVAILABLE",
+                                  "message": "采集数据尚未就位"}, status=503)
+    except Exception as e:
+        log.warning("experts.json 读取失败: %s", e)
+        return web.json_response({"code": "EXPERTS_UNAVAILABLE",
+                                  "message": "采集数据读取失败"}, status=503)
+    data["stale_s"] = int(time.time()) - mtime   # 距上次采集秒数（cron 10min → 正常 <700）
+    return web.json_response(data)
+
+
 # ---------- 健康检查 ----------
 
 async def healthz(request):
@@ -343,6 +369,8 @@ def main():
     app.router.add_get(r"/gh/{owner}/{repo}/branches", gh_branches_route)
     app.router.add_get(r"/gh/{owner}/{repo}/tree", gh_tree_route)
     app.router.add_get(r"/gh/{owner}/{repo}/blob/{branch}/{path:.*}", gh_blob_route)
+    # MP-DASH1：专家动态面板（采集 JSON 由 manager 机 cron 10min 推送落盘）
+    app.router.add_get("/api/experts", get_experts)
     # AI 中转（D1 v2 §9，哥哥 token 鉴权 + 频控 + 日限额熔断 + 即焚）
     app.router.add_post("/ai/summary", require_agent(ai_proxy.ai_summary))
     app.router.add_post("/ai/asr", require_agent(ai_proxy.ai_asr))
