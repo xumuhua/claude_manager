@@ -20,6 +20,12 @@ description: 【通用】AI 情报分级与深研流程——L0-L4 五级判定�
 
 ## 二、判定细则
 
+### 权威媒体信源（哥哥 9/13 立规加入扫描面）
+- **SemiAnalysis**（semianalysis.com，芯片/算力/供应链权威分析）——芯片线必扫，其报告可直接作一手级信源对待
+- 同级权威媒体参考谱：The Information、Bloomberg Tech、Reuters Tech、FT Tech（公司线）；Import AI、BAIR Blog、Distill 类（技术线）
+- 权威媒体深度报道可升 L3（视同"≥2 独立信源"档），但仍需按§三标注"媒体信源"与官方信源区分
+- 被墙源走 AWS web-relay 中转桥（docs/web-relay使用说明.md，~/.web_relay）
+
 ### 升 L3 硬条件（满足其一）
 - 官方一手来源（官博/财报/arXiv 原文/官方 GitHub）+ 核心玩家"首次/旗舰/范式"级
 - ≥2 独立一手信源交叉印证的重大事件
