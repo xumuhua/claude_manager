@@ -7,7 +7,7 @@
 
 | 项 | 值 |
 |---|---|
-| 地址 | `http://16.176.157.153:9538`（HTTP 正向代理，支持绝对 URI + HTTPS CONNECT 隧道） |
+| 地址 | `http://127.0.0.1:9538（经 SSH 隧道转发到 AWS 机；隧道建法见下文）`（HTTP 正向代理，支持绝对 URI + HTTPS CONNECT 隧道） |
 | 鉴权 | Proxy-Authorization Basic，username 任意，password = token |
 | 凭证文件 | 各专家机 `~/.web_relay`（600），内容形如 `http://user:<token>@16.176.157.153:9538` |
 | 限制 | 仅 http/https 出向；单连接空闲超时 60s；每 IP 并发 20 |
