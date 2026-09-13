@@ -12,6 +12,10 @@
 }
 /* MP-UX6：会话下拉菜单（segmented 横排已废弃）。
    顶栏左侧 = 当前会话名 + ▾；浮层 z-index 压在顶栏(100)之上、遮罩垫底下。 */
+/* MP-UX7：浮层背景不透明修复（哥哥实测深色模式下文字与下层混叠）。
+   根因：iOS 真机深色模式下 position:fixed 的 var() 背景渲染不可靠（M3 病史），
+   故深浅两态各自写死实色 HEX（浅色 #FFFFFF / 深色 #2C2C2E），不再依赖 var(--bg2) 解析。
+   其余 var()（文字/边框）仍走主题变量——文字节点非 fixed 容器背景，无此坑。 */
 .conv-pick { flex: 1; min-width: 0; display: flex; align-items: baseline; }
 .conv-pick-name {
   font-size: 16px; font-weight: 600; color: var(--fg);
@@ -25,15 +29,28 @@
 .conv-menu {
   position: fixed; top: 42px; left: 12px; z-index: 201;
   min-width: 200px; max-width: 70vw; max-height: 60vh; overflow-y: auto;
-  background: var(--bg2); border: 1px solid var(--divider); border-radius: 10px;
+  background: #FFFFFF; border: 1px solid var(--divider); border-radius: 10px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
   padding: 4px;
+}
+/* MP-UX7：深色态实色背景（@media 规则仅命中深色，不扰浅色逻辑） */
+@media (prefers-color-scheme: dark) {
+  .conv-menu {
+    background: #2C2C2E;
+    border-color: #48484A;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
+  }
 }
 .conv-item {
   display: flex; align-items: baseline; padding: 10px 10px;
   border-radius: 8px; font-size: 14px; color: var(--fg);
 }
 .conv-item.on { background: var(--bg); }
+/* MP-UX7：浅色态高亮项与 #FFFFFF 浮层拉开层次（原 --bg 浅色=#FFFFFF 与浮层同色，
+   高亮只剩 ✓+粗体，补一层 --bg2 浅灰底）；深色态 --bg=#111111 比 #2C2C2E 浮层更深，天然分层 */
+@media (prefers-color-scheme: light) {
+  .conv-item.on { background: var(--bg2); }
+}
 .conv-item-check { width: 18px; flex-shrink: 0; color: var(--primary); font-weight: 600; }
 .conv-item-name { flex-shrink: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .conv-item.on .conv-item-name { font-weight: 600; }
