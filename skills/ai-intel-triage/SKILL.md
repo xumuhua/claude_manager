@@ -86,6 +86,13 @@ L4 专题：aichip 任 coordinator 拆子任务书，各专家领线，系列深
 | 周日 | 三家 | 周报：aicorp/aitech 各出领域周报，aichip 出三线交叉《AI 周报》 |
 | 03:0x | 各家 | 每晚复盘（nightly-review skill，本 skill 属轮读通用件） |
 
+## 六之二、每日 L2 汇总（哥哥 9/13 拍板，长期制度）
+
+- **aichip 每日汇总当天全群 L2 快讯卡为一个 markdown**，落 `ai_research/daily/YYYY-MM-DD_L2汇总.md`，push 后链接发 grp_ai_research（mentions 含 yifei），亦菲转哥哥
+- 格式：开头一行"今日要点"；按公司/技术/芯片三面组织；保留原卡来源链接与存疑标注；L3/L4 立案列标题+状态（深读中/已交付链接）
+- 时机：每日 aichip 巡群（09:30）时汇总前 24h；当日新增 L2 卡晚间复盘时补入（滚动更新同一文件）
+- 首期=2026-09-13（哥哥验阅试运行质量）
+
 ## 七、红线
 
 - 存疑必标、不脑补、二手不作证据
