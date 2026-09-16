@@ -15,6 +15,13 @@ bus client 代码零改动、配置切开关（responder.mode 由 claude 改 ech
 - ③ 并发闸≤3+排队：超出排队；任务优先复盘让路；跑中复盘不抢占；
   进程组隔离+超时 SIGKILL killpg（BUS-FIX1 三件套）
 
+SUPERVISOR-2（亦菲 9/17 P0 派单）：定时任务表 schedules——config 里
+schedules 数组每项 {time:HH:MM, weekdays:"*"|"1-5"|"0"|..., prompt_file,
+kind:"job", target_group, label}，到点按 kind=job 起 claude 走既有三段式
+prompt（读落盘→读群消息→干活），兜底回执发 target_group（mentions 空）。
+复盘 review_time 保留为 schedules 之外的独立项（kind=review 不兜底回执，
+逻辑不动）。无 schedules 字段时行为与 SUPERVISOR-1 首版完全一致。
+
 落盘六件套（expert_dir/）：
   identity.md / state.yaml / history/YYYY-MM-DD.md / knowledge.md /
   dir_map.yaml / 冷存储 archive_dir
@@ -59,6 +66,32 @@ RECEIPT_STDERR_CAP = 500                  # ❌ 档 stderr 摘要预算
 RECEIPT_BODY_CAP = 800                    # 回执正文总长预算
 TASK_DONE_LINE_RE = re.compile(r"^\[TASK_DONE\][ \t]*产出[:：][ \t]*(.*)$",
                                re.MULTILINE)
+
+
+def _parse_weekdays(spec: str) -> "set[int] | None":
+    """cron 口径周日数：0/7=周日，1-5=周一至五。返回 None 表示 '*'（每天）。
+
+    支持："*" / "0" / "1-5" / "1,3,5" / "0-6" 及逗号混合（如 "1-5,0"）。
+    """
+    spec = str(spec).strip()
+    if spec == "*":
+        return None
+    days: set[int] = set()
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            a, b = part.split("-", 1)
+            lo, hi = int(a), int(b)
+        else:
+            lo = hi = int(part)
+        if not (0 <= lo <= hi <= 7):
+            raise SystemExit(f"weekdays 非法: {spec}（cron 口径 0/7=周日）")
+        days.update(d % 7 for d in range(lo, hi + 1))
+    if not days:
+        raise SystemExit(f"weekdays 非法: {spec}")
+    return days
 
 
 def utcnow() -> str:
@@ -129,6 +162,43 @@ def load_config(path: Path) -> dict:
     cfg.setdefault("job_template", "prompts/job.md")
     cfg.setdefault("review_template", "prompts/review.md")
 
+    # SUPERVISOR-2 定时任务表（替代退役 cron 的日报/周报等点火源）。
+    # 每项：{time:"HH:MM", weekdays:"*"或"1-5"或"0"或"1,3,5"（cron 口径 0=周日），
+    #        prompt_file:路径, kind:"job"（首版仅 job；review 仍走 review_time 独立项）,
+    #        target_group:兜底回执群, label:任务名}
+    # 向后兼容：无此字段/空数组 → 行为与首版完全一致。
+    scheds = cfg.setdefault("schedules", [])
+    for i, s in enumerate(scheds):
+        if not isinstance(s, dict):
+            raise SystemExit(f"schedules[{i}] 必须是对象")
+        for key in ("time", "prompt_file"):
+            if not s.get(key):
+                raise SystemExit(f"schedules[{i}] 缺少 {key}")
+        try:
+            hh, mm = str(s["time"]).split(":")[:2]
+            if not (0 <= int(hh) <= 23 and 0 <= int(mm) <= 59):
+                raise ValueError
+        except ValueError:
+            raise SystemExit(f"schedules[{i}] time 非法: {s['time']}（HH:MM）")
+        pf = Path(s["prompt_file"])
+        if not pf.is_absolute():
+            pf = cfg["_base_dir"] / pf
+        if not pf.is_file():
+            raise SystemExit(f"schedules[{i}] prompt_file 不存在: {s['prompt_file']}")
+        s["_prompt_path"] = pf
+        s.setdefault("weekdays", "*")
+        _parse_weekdays(s["weekdays"])  # 起即校验，非法直接拒起
+        s.setdefault("kind", "job")
+        if s["kind"] != "job":
+            raise SystemExit(f"schedules[{i}] kind 首版仅支持 job: {s['kind']}")
+        s.setdefault("target_group", "")
+        s.setdefault("label", f"schedule-{i}")
+        # 防重启重复点火（同 last_review_fired 口径）：state.json 按 label 记
+        s["_fire_key"] = f"schedule:{s['label']}"
+    # 测试用：秒级点火偏移（生产恒 None；自验"每分钟点火"用 "*:*" 实现，
+    # 即每分第 schedule_fire_second 秒点火，避免真等整点）
+    cfg.setdefault("schedule_delay_seconds", None)
+
     c = cfg.setdefault("concurrency", {})
     c.setdefault("max", 3)                             # 并发闸硬顶
     c.setdefault("job_timeout", 3600)                  # 任务 claude 超时
@@ -152,6 +222,7 @@ class StateStore:
         self.frozen = {}          # conversation_id -> epoch
         self.stop_until = {}      # conversation_id -> epoch
         self.last_review_fired = ""  # YYYY-MM-DD（重启防重复点火复盘）
+        self.fired = {}           # schedule key -> YYYY-MM-DD（重启防重复点火定时任务）
         self._load()
 
     def _load(self):
@@ -161,6 +232,7 @@ class StateStore:
             self.frozen = {k: float(v) for k, v in raw.get("frozen", {}).items()}
             self.stop_until = {k: float(v) for k, v in raw.get("stop_until", {}).items()}
             self.last_review_fired = str(raw.get("last_review_fired", ""))
+            self.fired = {str(k): str(v) for k, v in raw.get("fired", {}).items()}
         except FileNotFoundError:
             pass
         except Exception as e:
@@ -174,6 +246,7 @@ class StateStore:
             "frozen": self.frozen,
             "stop_until": self.stop_until,
             "last_review_fired": self.last_review_fired,
+            "fired": self.fired,
         }, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, self.path)
 
@@ -429,7 +502,7 @@ class Launcher:
             return  # 复盘摘要由 claude 自己发群，程序不兜底（防一结双发）
         meta = job["meta"]
         conv, trig_from = meta.get("conv"), meta.get("trig_from")
-        if not conv or not trig_from:
+        if not conv or (not trig_from and not meta.get("sched_receipt")):
             log.error("#%d 回执缺触发群/触发者 meta=%s，无法闭环", job["id"], meta)
             return
         jid, rc = job["id"], proc.returncode
@@ -445,6 +518,17 @@ class Launcher:
             extra = "（超时被 SIGKILL）" if getattr(proc, "_timed_out", False) else ""
             body = f"❌ #{jid} 异常{extra}（耗时{dur}s）：退出码{rc}\nstderr：{tail}"
         body = cap_chars(body, RECEIPT_BODY_CAP, f"#{jid} 回执 ")
+        if meta.get("sched_receipt"):
+            # SUPERVISOR-2 定时任务兜底回执：发 target_group，mentions 空
+            label = meta.get("label", "")
+            body = cap_chars(f"[{label}] " + body, RECEIPT_BODY_CAP,
+                             f"#{jid} 回执 ")
+            try:
+                await self.sup.send_group_message(conv, body, [])
+            except Exception:
+                log.exception("#%d 定时任务回执发送失败（conv=%s），仅留日志：%s",
+                              jid, conv, body[:120])
+            return
         try:
             await self.sup.send_group_message(conv, body, [trig_from])
         except Exception:
@@ -641,7 +725,90 @@ class Supervisor:
                 self.state.last_seq = seq
                 self.state.save()  # R6.5：处理完成先落盘
 
-    # ---------- 定时复盘（替代 cron） ----------
+    # ---------- SUPERVISOR-2 定时任务表（替代退役 cron 的日报/周报等点火源） ----------
+
+    def _cron_weekday(self, d) -> int:
+        """python weekday()（周一=0）→ cron 口径（周日=0，周六=6）。"""
+        return (d.weekday() + 1) % 7
+
+    def _schedule_due(self, sched: dict, now: datetime) -> bool:
+        """到点判定：time+weekdays 双匹配（cron 口径）。测试口径
+        schedule_delay_seconds 非 None 时退化为'每分第 N 秒'（weekdays 仍校验）。"""
+        days = _parse_weekdays(sched["weekdays"])  # 启动已校验，此处仅取集合
+        if days is not None and self._cron_weekday(now.date()) not in days:
+            return False
+        test_sec = self.cfg.get("schedule_delay_seconds")
+        if test_sec is not None:
+            return now.second == int(test_sec)
+        hh, mm = str(sched["time"]).split(":")[:2]
+        return now.hour == int(hh) and now.minute == int(mm)
+
+    def build_scheduled_job_prompt(self, sched: dict):
+        """定时任务 prompt：同任务三段式骨架（读落盘→读 target_group 群消息→
+        干活），干活正文来自 prompt_file（按 job 模板同款预算截断）。"""
+        cfg = self.cfg
+        cl = cfg["claude"]
+        budget = int(cl["max_chars"]) // 2
+        history = read_recent_history(cfg, cfg["history_max_chars"])
+        body = cap_chars(sched["_prompt_path"].read_text(encoding="utf-8"), budget,
+                         f"prompt_file {sched['label']} ")
+        group = sched.get("target_group") or "（无）"
+        prompt = f"""# 定时任务执行 prompt（SUPERVISOR-2 schedules）
+
+你是 {cfg['agent_name']} 专家的常驻工作程序派生的一次性定时任务会话（点火时点 {localnow()}）。
+本次会话由定时任务表触发（label={sched['label']}），按三段式工作。
+
+{PROMPT_READ_SET.format(**self._common_ctx())}
+
+## 第二步：读 bus 群消息（上下文对齐）
+用 bus 工具读群 {group} 近期消息，对齐上下文后再动手。
+
+## 第三步：干活（定时任务正文）
+---
+{body}
+---
+
+要求：
+- 产出代码按既有纪律 commit/push；回执按各群既有格式。
+- 收场前必须在最后一行输出自报标记（supervisor 据此判定真完成并兜底回执）：
+  [TASK_DONE] 产出: <一句话产出摘要，含 commit hash/文件路径/结论>
+
+{PROMPT_ARCHIVE.format(**self._common_ctx())}
+
+## 附：近两日 history（热数据，供上下文）
+
+{history}
+"""
+        return self._wrap_prompt(prompt), int(cfg["concurrency"]["job_timeout"])
+
+    async def schedule_timer(self):
+        """每分钟扫一次定时任务表；到点且当日未点 → kind=job 入队。
+        防重启重复点火：state.fired[fire_key]=当天日期（同 last_review_fired 口径）。"""
+        while not self._stopping:
+            now = datetime.now()
+            due = [s for s in self.cfg["schedules"]
+                   if self._schedule_due(s, now)
+                   and self.state.fired.get(s["_fire_key"]) != now.date().isoformat()]
+            for s in due:
+                self.state.fired[s["_fire_key"]] = now.date().isoformat()
+                self.state.save()
+                log.info("定时任务到点：%s（time=%s weekdays=%s）",
+                         s["label"], s["time"], s["weekdays"])
+                await self.gate.submit(
+                    "job",
+                    lambda sc=s: self.build_scheduled_job_prompt(sc),
+                    {"label": s["label"], "conv": s["target_group"],
+                     "trig_from": "", "sched_receipt": True})
+            # 睡到下一分钟边界（分段 sleep 让 stop 及时生效）；测试口径睡到下一秒的
+            # schedule_delay_seconds 整秒附近，分钟循环同样适用
+            test_sec = self.cfg.get("schedule_delay_seconds")
+            if test_sec is not None:
+                await self._sleep_or_stop(0.5)
+            else:
+                nxt = (now.replace(second=0, microsecond=0) + timedelta(minutes=1))
+                await self._sleep_or_stop(max(1, (nxt - now).total_seconds() + 0.2))
+
+    # ---------- 定时复盘（独立项，review_time 口径不动） ----------
 
     def _seconds_to_next_review(self) -> float:
         hh, mm = self.cfg["review_time"].split(":")[:2]
@@ -839,6 +1006,11 @@ def main():
         loop.create_task(sup.review_timer()),
         loop.create_task(sup.gate.run()),
     ]
+    if cfg["schedules"]:
+        tasks.append(loop.create_task(sup.schedule_timer()))
+        log.info("定时任务表 %d 项已挂载：%s", len(cfg["schedules"]),
+                 ", ".join(f"{s['label']}({s['time']} {s['weekdays']})"
+                           for s in cfg["schedules"]))
     try:
         loop.run_until_complete(asyncio.gather(*tasks))
     except KeyboardInterrupt:

@@ -46,6 +46,48 @@ cd ~/supervisor-app && cp config.example.json config.json
 | `archive_dir` | 冷存储 `/data/workspace/cache/<EXPERT>/archive` |
 | `work_dir` | claude 干活目录，默认 `~` |
 | `claude.cmd` | 真 claude 路径（which claude 核实） |
+| `schedules` | SUPERVISOR-2 定时任务表（可省/空数组=不启用，见 §二之一） |
+
+### 二之一、schedules 定时任务表（SUPERVISOR-2，替代退役 cron 的日报/周报）
+
+cron 全面退役后，日报/周报等定时点火源收进 supervisor 本体 `config.json` 的
+`schedules` 数组。每项：
+
+| 键 | 说明 |
+|----|------|
+| `time` | 点火时点 `HH:MM`（本机时区），分钟粒度 |
+| `weekdays` | cron 口径周日数过滤：`"*"`=每天、`"1-5"`=周一至五、`"0"`=周日、`"1,3,5"`/区间逗号混合均可（0/7=周日） |
+| `prompt_file` | 定时任务正文文件（相对 config 所在目录或绝对路径），点火时读入作为"干活"段 |
+| `kind` | 首版仅 `"job"`（复盘仍走独立 `review_time`，不混表） |
+| `target_group` | 兜底回执发向群（mentions 空） |
+| `label` | 任务名，回执前缀+防重启重复点火的 state key |
+
+aichip 示例（09:30 日报周一~五 + 周日 10:00 周报）：
+
+```json
+"schedules": [
+  {"time": "09:30", "weekdays": "1-5",
+   "prompt_file": "prompts/daily.md", "kind": "job",
+   "target_group": "grp_experts", "label": "aichip-日报"},
+  {"time": "10:00", "weekdays": "0",
+   "prompt_file": "prompts/weekly.md", "kind": "job",
+   "target_group": "grp_experts", "label": "aichip-周报"}
+]
+```
+
+要点：
+
+- **向后兼容**：不配 `schedules` 或空数组 → 行为与 SUPERVISOR-1 首版完全一致
+  （schedule_timer 不挂载）。
+- **到点判定**：每分钟扫一次，time+weekdays 双匹配即 kind=job 入队，走既有
+  三段式 prompt（读落盘→读 target_group 群消息→干活=prompt_file 正文）、
+  同一并发闸与 job_timeout。
+- **兜底回执**：任务结束按 P0 三档（✅/⚠️/❌）发 target_group，mentions 空，
+  body 带 `[label]` 前缀（派单必闭环同口径）。
+- **防重启重复点火**：state.json `fired` 按 label 记当天日期（同
+  last_review_fired 口径），重启重叠不二次点火。
+- **起即校验**：time/weekdays/prompt_file 非法或文件不存在直接拒起，不哑火。
+
 
 ## 三、冷存储目录（root 一次性建目录 chown）
 
@@ -143,6 +185,9 @@ cgroup v2 委派正常（coder 203 已实测可行，transient/user unit 均生�
    前 3 任一完成后补位。
 4. **冷热分离首周**：复盘第 4 步把两日前 history 挪 archive/，热目录只留近两日。
 5. **盯梢哨**：aichip 10:15 哨确认无哑火后撤哨（沿用现机制）。
+6. **schedules 首跑**（如配置）：临时把某项 `time` 调到近时点 → 日志见
+   "定时任务到点：<label>" → 点火 kind=job → 结束后 target_group 收到
+   `[<label>] ✅/⚠️/❌` 回执（mentions 空）。验完调回正式时点。
 
 日志位置：`~/supervisor/logs/supervisor.log`（RotatingFileHandler 5MB×3）。
 排入口诀：入队/点火/完成/异常全有行；WS 断连按 R6.3 退避重连自动恢复。

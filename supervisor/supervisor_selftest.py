@@ -41,6 +41,7 @@ def write_mock_claude(d: Path) -> Path:
 prompt="${@: -1}"
 kind="unknown"
 case "$prompt" in
+  *"定时任务执行 prompt"*) kind="sched_job" ;;
   *"任务执行 prompt"*) kind="job" ;;
   *"每日复盘 prompt"*) kind="review" ;;
 esac
@@ -60,6 +61,7 @@ case "$prompt" in *"收场归档"*) has_archive=yes ;; esac
 case "$prompt" in *"复盘七步"*) has_steps=yes ;; esac
 trig=""
 case "$prompt" in *"__TRIG1__"*) trig="__TRIG1__" ;; esac
+case "$prompt" in *"__SCHED1__"*) trig="__SCHED1__" ;; esac
 # P0 三档回执用例控制：__RC0_MARK__=退出0+自报标记；__RC0_NOMARK__=退出0无标记；
 # __RC7__=退出码7+stderr。标记行内容含场景标记供回执内容断言。
 mark=""
@@ -68,6 +70,10 @@ case "$prompt" in
 esac
 # 区分序：任务A/B 同批 prompt 差异在 seq——B(seq22) 无标记档
 case "$prompt" in *"seq 22"*) mark="" ;; esac
+# 定时任务自验：__SCHED1__ 退出0+自报标记（回执内容带场景标记）
+case "$prompt" in
+  *"__SCHED1__"*) mark="[TASK_DONE] 产出: 自验定时产出Y __SCHED1__" ;;
+esac
 rc=0
 case "$prompt" in *"__RC7__"*) rc=7 ;; esac
 python3 - "$FAKECLAUDE_LOG" "$kind" "$start" "$end" "$has_read_set" "$has_group_log" "$has_archive" "$has_steps" "$trig" <<'EOF'
@@ -390,6 +396,111 @@ def scenario_D(root: Path):
           and mentions_of("❌") == ["yifei"],
           f"✅→{mentions_of('✅')} ⚠️→{mentions_of('⚠️')} ❌→{mentions_of('❌')}")
 
+def scenario_E(root: Path):
+    """SUPERVISOR-2 定时任务表 schedules：
+    E1 schedule_delay_seconds 秒级到点点火（kind=job 走三段式 sched prompt）
+    E2 prompt 含读落盘/读群消息/prompt_file 正文标记 __SCHED1__
+    E3 兜底回执发 target_group、mentions 空、body 带 label 前缀+✅档
+    E4 weekdays 过滤：不匹配项不点火
+    E5 重启防重复点火：fired 已记当天 → 不二次点火
+    E6 无 schedules 字段：行为与首版一致（A/B/C/D 全部不挂 schedule_timer，PASS 即证）
+    """
+    print("=== 场景E：SUPERVISOR-2 定时任务表 schedules ===")
+    d = root / "E"; d.mkdir(parents=True)
+    fake = write_mock_claude(d)
+    fake_log = d / "fake_calls.jsonl"
+    posts_log = d / "hub_posts.jsonl"
+    expert_dir = d / "expert"
+    pf = d / "daily.md"
+    pf.write_text("每日定时任务正文：干 __SCHED1__ 这件事并收场", encoding="utf-8")
+
+    # 今天 cron 口径周日数；不匹配项用 (today+3)%7 保证今天必不中
+    sys.path.insert(0, str(BASE))
+    import supervisor as sup_mod
+    import datetime as _dt
+    today_cron = (_dt.date.today().weekday() + 1) % 7
+    off_cron = (today_cron + 3) % 7
+
+    rt = time.strftime("%H:%M", time.localtime(time.time() + 3600))  # 复盘不点火
+    cfg = make_config(d, fake, rt, max_conc=2, expert_dir=expert_dir,
+                      extra={
+                          "schedule_delay_seconds": 2,  # 每分第2秒点火
+                          "schedules": [
+                              {"time": "09:30", "weekdays": "*",
+                               "prompt_file": str(pf), "kind": "job",
+                               "target_group": "grp_mp", "label": "日报E"},
+                              {"time": "10:00", "weekdays": str(off_cron),
+                               "prompt_file": str(pf), "kind": "job",
+                               "target_group": "grp_mp", "label": "永不点E"},
+                          ]})
+    hub_env = dict(os.environ); hub_env["MOCK_HUB_POSTS"] = str(posts_log)
+    spec = d / "msgs.json"; spec.write_text("[]", encoding="utf-8")
+    hub = subprocess.Popen([PY, str(BASE / "mock_hub.py"), str(HUB_PORT), str(spec)],
+                           env=hub_env,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(0.8)
+    sup = start_supervisor(cfg, fake_log)
+    try:
+        # 等每分第2秒到点（最坏 60s 一轮）
+        calls = wait_calls(fake_log, 1, timeout=75)
+        t0 = time.time()
+        posts = []
+        while time.time() - t0 < 15:
+            if posts_log.exists():
+                posts = [json.loads(l) for l in
+                         posts_log.read_text(encoding="utf-8").splitlines()
+                         if l.strip()]
+                if len(posts) >= 1:
+                    break
+            time.sleep(0.3)
+        # 再等一个完整分钟，确认"永不点E"没点、且"日报E"当日不二次点火
+        time.sleep(0.5)
+        t1 = time.time()
+        while time.time() - t1 < 62:
+            if len([c for c in read_calls(fake_log) if c["kind"] == "sched_job"]) > 1:
+                break  # 防重失效会快速暴露
+            time.sleep(0.5)
+        calls2 = read_calls(fake_log)
+    finally:
+        sup.terminate(); hub.terminate()
+        for p in (sup, hub):
+            try:
+                p.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                p.kill(); p.wait(timeout=5)
+
+    sched = [c for c in calls2 if c["kind"] == "sched_job"]
+    check("E1 定时任务到点点火 kind=sched_job", len(sched) == 1,
+          f"sched_job 点火 {len(sched)} 次（全日calls={len(calls2)}）")
+    if sched:
+        c = sched[0]
+        check("E2 三段式骨架+prompt_file 正文进 prompt",
+              c.get("read_set") == "yes" and c.get("group_log") == "yes"
+              and c.get("archive") == "yes" and c.get("trig") == "__SCHED1__",
+              f"read_set={c.get('read_set')} group_log={c.get('group_log')} "
+              f"archive={c.get('archive')} trig={c.get('trig')}")
+    check("E4 weekdays 不匹配项不点火", len(sched) <= 1,
+          f"总 sched_job={len(sched)}（日报E 当日防重已记，永不点E weekdays 排除）")
+    sp = [p for p in posts if "[日报E]" in p["msg"]["body"]]
+    check("E3 兜底回执发 target_group mentions 空",
+          len(sp) == 1 and sp[0]["msg"]["conversation_id"] == "grp_mp"
+          and sp[0]["msg"]["mentions"] == []
+          and sp[0]["msg"]["body"].startswith("[日报E] ✅"),
+          f"posts={[(p['msg']['body'][:40], p['msg']['mentions']) for p in posts]}")
+
+    # E5 白盒：fired 已记当天 → _schedule_due 不重复点火（同生产路径：weekdays+time 全过滤）
+    os.environ["SUP_SELFTEST_TOKEN"] = TOKEN
+    cfg2 = sup_mod.load_config(cfg)
+    st = sup_mod.StateStore(expert_dir / "state.json")
+    sup2 = sup_mod.Supervisor(cfg2)
+    now = _dt.datetime.now()
+    s_due = [s for s in cfg2["schedules"]
+             if sup2._schedule_due(s, now)
+             and st.fired.get(s["_fire_key"]) != now.date().isoformat()]
+    check("E5 重启后 fired 防重复点火", not s_due,
+          f"当日到点未点项={[(s['label']) for s in s_due]}（期望空：日报E fired 已记，"
+          f"永不点E weekdays 排除）")
+
 def main():
     root = Path(tempfile.mkdtemp(prefix="sup_selftest_"))
     print(f"自验工作目录: {root}")
@@ -398,6 +509,7 @@ def main():
         scenario_B(root)
         scenario_C(root)
         scenario_D(root)
+        scenario_E(root)
     finally:
         print(f"（保留现场供核查：{root}；确认后可 rm -rf）")
     print("=== 汇总 ===")
