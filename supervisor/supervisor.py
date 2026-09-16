@@ -30,6 +30,7 @@ import json
 import logging
 import logging.handlers
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -51,6 +52,13 @@ BACKOFF_STEPS = [0, 5, 10, 30, 60]       # R6.3 重连退避：封顶 60s，无�
 STOP_BODY = "STOP"                        # F1 §2.3
 ROUND_LIMIT_BODY = "ROUND_LIMIT_REACHED"  # F1 R4.5
 REVIEW_REPLY_TO = "__review__"            # state.json 里复盘触发时间的特殊 key
+
+# P0（哥哥 9/16 23:36 拍板）：on_job_done 兜底回执，派单必闭环
+TASK_DONE_PREFIX = "[TASK_DONE]"          # job prompt 要求 claude 收场输出的标记行
+RECEIPT_STDERR_CAP = 500                  # ❌ 档 stderr 摘要预算
+RECEIPT_BODY_CAP = 800                    # 回执正文总长预算
+TASK_DONE_LINE_RE = re.compile(r"^\[TASK_DONE\][ \t]*产出[:：][ \t]*(.*)$",
+                               re.MULTILINE)
 
 
 def utcnow() -> str:
@@ -87,6 +95,11 @@ def load_config(path: Path) -> dict:
         cfg["_http_url"] = "http" + hub[2:]
     else:
         raise SystemExit(f"hub_url 无法识别: {hub}")
+    # 自验专用：HTTP API 与 WS 分端口时可用 hub_http_url 覆盖 _http_url
+    # （mock hub 同端口双监听撞 EADDRINUSE，故 HTTP=WS 端口+1）
+    http_override = cfg.get("hub_http_url", "").rstrip("/")
+    if http_override:
+        cfg["_http_url"] = http_override
 
     # 落盘根目录（六件套所在），默认 ~/supervisor
     expert_dir = Path(cfg.get("expert_dir", "~/supervisor")).expanduser()
@@ -251,6 +264,8 @@ def run_killpg(cmd: list, timeout: float, cwd: Path) -> "subprocess.CompletedPro
     """同步执行 claude；start_new_session 独立成组，超时 SIGKILL 整组防孤儿。
 
     （BUS-FIX1 原样口径：subprocess.run(timeout=) 只杀直接子进程，孙进程泄漏。）
+    P0 变更：超时不抛异常，返回 CompletedProcess(returncode=-9, _timed_out=True)，
+    让 on_job_done 按「退出码非0」统一出 ❌ 档回执，任务不悬空。
     """
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -270,8 +285,12 @@ def run_killpg(cmd: list, timeout: float, cwd: Path) -> "subprocess.CompletedPro
         except subprocess.TimeoutExpired:
             proc.kill()
             out, err = proc.communicate()
-        raise RuntimeError(
-            f"claude 超时（{timeout}s），已 SIGKILL 进程组 pgid={pgid}")
+        cp = subprocess.CompletedProcess(cmd, -9, out,
+                                         (err or "") +
+                                         f"\n[supervisor] 超时 {timeout}s，"
+                                         f"已 SIGKILL 进程组 pgid={pgid}")
+        cp._timed_out = True  # type: ignore[attr-defined]  # ❌ 档标注超时
+        return cp
 
 
 def cap_chars(text: str, budget: int, label: str) -> str:
@@ -363,7 +382,7 @@ class Gate:
                           jid, proc.returncode, dur, proc.stderr[:300])
             else:
                 log.info("#%d 完成（%ds，输出 %d 字符）", jid, dur, len(proc.stdout))
-            await self.launcher.on_job_done(job, proc)
+            await self.launcher.on_job_done(job, proc, dur)
         except Exception:
             log.exception("#%d 执行异常", jid)
         finally:
@@ -387,13 +406,50 @@ class Gate:
 # ---------- 主程序 ----------
 
 class Launcher:
-    """供 Gate 回调：任务/复盘结束后的收尾（占位，日志已在 Gate 内）。"""
+    """Gate 回调：任务结束兜底回执（P0 哥哥 9/16 23:36 拍板，派单必闭环）。
+
+    判断口径两层（首版；产出物核验③留试点后）：
+    ①退出码 0=成功/非0（含超时 killpg SIGKILL）=失败
+    ②回执内容自检：job prompt 要求 claude 收场输出 `[TASK_DONE] 产出: <...>`，
+      stdout 有标记=真完成，无=完成未自报
+
+    三档回执主动发向触发群、mentions 含触发者：
+    ✅ #N 完成（0+有标记）：耗时xs 产出<标记行内容>
+    ⚠️ #N 完成但未自报产出（0 无标记）：耗时xs，请人工看一眼
+    ❌ #N 异常（非0/超时）：退出码X stderr 摘要
+    复盘不发回执（复盘摘要由 claude 自己经 channels 发，属双保险上半）。
+    """
 
     def __init__(self, sup: "Supervisor"):
         self.sup = sup
 
-    async def on_job_done(self, job: dict, proc: "subprocess.CompletedProcess"):
-        pass
+    async def on_job_done(self, job: dict, proc: "subprocess.CompletedProcess",
+                          dur: int):
+        if job["kind"] != "job":
+            return  # 复盘摘要由 claude 自己发群，程序不兜底（防一结双发）
+        meta = job["meta"]
+        conv, trig_from = meta.get("conv"), meta.get("trig_from")
+        if not conv or not trig_from:
+            log.error("#%d 回执缺触发群/触发者 meta=%s，无法闭环", job["id"], meta)
+            return
+        jid, rc = job["id"], proc.returncode
+        m = TASK_DONE_LINE_RE.search(proc.stdout or "")
+        if rc == 0 and m:
+            body = f"✅ #{jid} 完成（耗时{dur}s）产出：{m.group(1).strip()}"
+        elif rc == 0:
+            body = (f"⚠️ #{jid} 完成但未自报产出（耗时{dur}s）："
+                    f"退出码0但未见 [TASK_DONE] 标记，请人工看一眼")
+        else:
+            tail = cap_chars((proc.stderr or "").strip(), RECEIPT_STDERR_CAP,
+                             f"#{jid} stderr ")
+            extra = "（超时被 SIGKILL）" if getattr(proc, "_timed_out", False) else ""
+            body = f"❌ #{jid} 异常{extra}（耗时{dur}s）：退出码{rc}\nstderr：{tail}"
+        body = cap_chars(body, RECEIPT_BODY_CAP, f"#{jid} 回执 ")
+        try:
+            await self.sup.send_group_message(conv, body, [trig_from])
+        except Exception:
+            log.exception("#%d 兜底回执发送失败（conv=%s），仅留日志：%s",
+                          jid, conv, body[:120])
 
 
 class Supervisor:
@@ -407,6 +463,36 @@ class Supervisor:
         self._catchup_from = self.state.last_seq
         self.launcher = Launcher(self)
         self.gate = Gate(cfg, self.launcher)
+
+    # ---------- P0 兜底回执：bus 直调发群（七字段口径同 client.py §R3.6） ----------
+
+    def _http_post_message(self, msg: dict) -> dict:
+        req = urllib.request.Request(
+            self.cfg["_http_url"] + "/messages",
+            data=json.dumps(msg, ensure_ascii=False).encode("utf-8"),
+            headers={"Authorization": f"Bearer {self.cfg['_token']}",
+                     "Content-Type": "application/json"},
+            method="POST")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    async def send_group_message(self, conv: str, body: str,
+                                 mentions: list) -> dict:
+        """P0 兜底回执主动发触发群。七字段：msg_id/conversation_id/from/
+        mentions/type/body/reply_to（reply_to 无源序时置 null）。"""
+        msg = {
+            "msg_id": str(uuid.uuid4()),
+            "conversation_id": conv,
+            "from": self.cfg["agent_name"],  # hub 以 token 反查覆盖（F1 §2.2）
+            "mentions": mentions,
+            "type": "text",
+            "body": body,
+            "reply_to": None,
+        }
+        data = await asyncio.to_thread(self._http_post_message, msg)
+        log.info("兜底回执已入库（HTTP）：conv=%s seq=%s",
+                 conv, data.get("msg", {}).get("seq"))
+        return data
 
     # ---------- prompt 构造 ----------
 
@@ -547,7 +633,8 @@ class Supervisor:
                 await self.gate.submit(
                     "job",
                     lambda m=msg, c=ctx_snapshot: self.build_job_prompt(m, c),
-                    {"label": f"{conv}#seq{msg['seq']} from={msg['from']}"})
+                    {"label": f"{conv}#seq{msg['seq']} from={msg['from']}",
+                     "conv": conv, "trig_from": msg["from"]})  # 回执去向/被@人
         finally:
             seq = msg.get("seq")
             if isinstance(seq, int) and seq > self.state.last_seq:

@@ -60,6 +60,16 @@ case "$prompt" in *"收场归档"*) has_archive=yes ;; esac
 case "$prompt" in *"复盘七步"*) has_steps=yes ;; esac
 trig=""
 case "$prompt" in *"__TRIG1__"*) trig="__TRIG1__" ;; esac
+# P0 三档回执用例控制：__RC0_MARK__=退出0+自报标记；__RC0_NOMARK__=退出0无标记；
+# __RC7__=退出码7+stderr。标记行内容含场景标记供回执内容断言。
+mark=""
+case "$prompt" in
+  *"__RC0_MARK__"*) mark="[TASK_DONE] 产出: 自验产出X __RC0_MARK__" ;;
+esac
+# 区分序：任务A/B 同批 prompt 差异在 seq——B(seq22) 无标记档
+case "$prompt" in *"seq 22"*) mark="" ;; esac
+rc=0
+case "$prompt" in *"__RC7__"*) rc=7 ;; esac
 python3 - "$FAKECLAUDE_LOG" "$kind" "$start" "$end" "$has_read_set" "$has_group_log" "$has_archive" "$has_steps" "$trig" <<'EOF'
 import json, sys
 log, kind, start, end, rs, gl, ar, st, trig = sys.argv[1:]
@@ -68,6 +78,11 @@ with open(log, "a", encoding="utf-8") as f:
                         "read_set": rs, "group_log": gl, "archive": ar,
                         "steps": st, "trig": trig}) + "\\n")
 EOF
+if [ "$rc" != "0" ]; then
+  echo "FAKECLAUDE-ERROR boom __RC7__" >&2
+  exit "$rc"
+fi
+[ -n "$mark" ] && echo "$mark"
 echo "FAKECLAUDE-DONE kind=$kind"
 """, encoding="utf-8")
     p.chmod(0o755)
@@ -78,6 +93,7 @@ def make_config(d: Path, fake: Path, review_time: str, max_conc: int,
                 expert_dir: Path, extra=None) -> Path:
     cfg = {
         "hub_url": f"http://127.0.0.1:{HUB_PORT}",
+        "hub_http_url": f"http://127.0.0.1:{HUB_PORT + 1}",  # mock HTTP=WS+1
         "token": "env:SUP_SELFTEST_TOKEN",
         "agent_name": "coder",
         "conversations": ["grp_mp"],
@@ -290,6 +306,90 @@ def scenario_C(root: Path):
               f"third={by_start[2]['kind']}")
 
 
+def scenario_D(root: Path):
+    """P0 on_job_done 三档兜底回执：✅(0+标记)/⚠️(0 无标记)/❌(退出码非0)。
+    mock hub 同端口收 POST /messages（MOCK_HUB_POSTS 落盘），断言：
+    每档回执进触发群 grp_mp、mentions 含触发者、文案档位正确、复盘不发回执。"""
+    print("=== 场景D：P0 on_job_done 三档兜底回执（✅/⚠️/❌） ===")
+    d = root / "D"; d.mkdir(parents=True)
+    fake = write_mock_claude(d)
+    fake_log = d / "fake_calls.jsonl"
+    posts_log = d / "hub_posts.jsonl"
+    expert_dir = d / "expert"
+
+    msgs = [
+        {"delay": 1.0, "msg": {"seq": 21, "ts": "2026-09-16T00:00:21Z",
+         "from": "yifei", "conversation_id": "grp_mp", "type": "text",
+         "body": "任务A __RC0_MARK__", "mentions": ["coder"]}},
+        {"delay": 1.0, "msg": {"seq": 22, "ts": "2026-09-16T00:00:22Z",
+         "from": "gege", "conversation_id": "grp_mp", "type": "text",
+         "body": "任务B __RC0_NOMARK__", "mentions": ["coder"]}},
+        {"delay": 1.0, "msg": {"seq": 23, "ts": "2026-09-16T00:00:23Z",
+         "from": "yifei", "conversation_id": "grp_mp", "type": "text",
+         "body": "任务C __RC7__", "mentions": ["coder"]}},
+    ]
+    spec = d / "msgs.json"; spec.write_text(json.dumps(msgs), encoding="utf-8")
+
+    rt = time.strftime("%H:%M", time.localtime(time.time() + 61))  # 复盘不点火
+    cfg = make_config(d, fake, rt, max_conc=3, expert_dir=expert_dir)
+    hub_env = dict(os.environ); hub_env["MOCK_HUB_POSTS"] = str(posts_log)
+    hub = subprocess.Popen([PY, str(BASE / "mock_hub.py"), str(HUB_PORT), str(spec)],
+                           env=hub_env,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(0.8)
+    sup = start_supervisor(cfg, fake_log)
+    try:
+        calls = wait_calls(fake_log, 3, timeout=40)
+        # 回执在 job 结束后异步 POST，给发信留窗
+        t0 = time.time()
+        posts = []
+        while time.time() - t0 < 20:
+            if posts_log.exists():
+                posts = [json.loads(l) for l in
+                         posts_log.read_text(encoding="utf-8").splitlines()
+                         if l.strip()]
+                if len(posts) >= 3:
+                    break
+            time.sleep(0.3)
+    finally:
+        sup.terminate(); hub.terminate()
+        for p in (sup, hub):
+            try:
+                p.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                p.kill(); p.wait(timeout=5)
+
+    check("D1 三个任务全部点火", len(calls) >= 3, f"calls={len(calls)}")
+    check("D2 三条回执全部入库", len(posts) >= 3, f"posts={len(posts)}")
+    bodies = [p["msg"]["body"] for p in posts]
+    convs = {p["msg"]["conversation_id"] for p in posts}
+    check("D3 回执全部进触发群 grp_mp", convs == {"grp_mp"}, f"convs={convs}")
+    check("D4 回执七字段齐备",
+          all(set(p["msg"]) >= {"msg_id", "conversation_id", "from", "mentions",
+                                "type", "body", "reply_to"} for p in posts),
+          f"keys={sorted(posts[0]['msg'].keys()) if posts else '无'}")
+    # 按 jid 分档：#1=✅ #2=⚠️ #3=❌（job_seq 按入队序，msgs 顺序入队）
+    def find(emoji):
+        return next((b for b in bodies if b.startswith(emoji)), None)
+    ok_b, warn_b, err_b = find("✅"), find("⚠️"), find("❌")
+    check("D5 ✅档：码0+标记含耗时+产出",
+          ok_b is not None and "耗时" in ok_b and "自验产出X" in ok_b,
+          f"body={ok_b}")
+    check("D6 ⚠️档：码0 无标记",
+          warn_b is not None and "完成但未自报产出" in warn_b,
+          f"body={warn_b}")
+    check("D7 ❌档：退出码7+stderr 摘要",
+          err_b is not None and "退出码7" in err_b and "boom" in err_b,
+          f"body={err_b}")
+    # mentions 含触发者：✅(#1,seq21,yifei)/⚠️(#2,seq22,gege)/❌(#3,seq23,yifei)
+    def mentions_of(prefix):
+        p = next((p for p in posts if p["msg"]["body"].startswith(prefix)), None)
+        return p["msg"]["mentions"] if p else []
+    check("D8 mentions 含触发者",
+          mentions_of("✅") == ["yifei"] and mentions_of("⚠️") == ["gege"]
+          and mentions_of("❌") == ["yifei"],
+          f"✅→{mentions_of('✅')} ⚠️→{mentions_of('⚠️')} ❌→{mentions_of('❌')}")
+
 def main():
     root = Path(tempfile.mkdtemp(prefix="sup_selftest_"))
     print(f"自验工作目录: {root}")
@@ -297,6 +397,7 @@ def main():
         scenario_A(root)
         scenario_B(root)
         scenario_C(root)
+        scenario_D(root)
     finally:
         print(f"（保留现场供核查：{root}；确认后可 rm -rf）")
     print("=== 汇总 ===")
