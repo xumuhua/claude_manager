@@ -26,6 +26,7 @@ python3 supervisor_selftest.py   # 需 websockets（可复用 bus client venv）
 
 ## 与现有件关系
 
-- bus client.py 零改动（守门+echo 继续），supervisor 是独立第二个 WS 订阅端。
+- bus client.py 代码零改动、配置切开关（responder.mode 由 claude 改 echo，防一信双起，
+  见 DEPLOY.md §五），守门+echo 继续；supervisor 是独立第二个 WS 订阅端。
 - crontab 的 claude 点火行全删，点火权收归本程序；crontab 只留 systemd 常驻。
 - BUS-FIX1 三件套（killpg SIGKILL 进程组/MemoryMax=4G/prompt 截断）原样复用。

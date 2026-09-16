@@ -5,7 +5,8 @@
 哥哥 9/16 立规+拍板：①单独出程序与 bus client 解耦 ②并发闸撞车=任务优先
 复盘让路 ③冷存储 /data/workspace/cache/<expert>/archive/ ④首台试点 aichip。
 亦菲 9/16 拍板方案 A：supervisor 直接监听同群，mentions 含本专家即触发，
-bus client 零改动保 echo 守门。
+bus client 代码零改动、配置切开关（responder.mode 由 claude 改 echo，防一信双起，
+部署步骤见 DEPLOY.md §五），守门+echo 照旧。
 
 三功能口：
 - ① 信道监听→任务执行：WS 监听 bus 群，mentions 含本专家/all → 起 claude，

@@ -67,7 +67,29 @@ ln -sf ~/supervisor/identity.md ~/SOUL.md
 ln -sf ~/supervisor/state.yaml ~/STATE.yaml
 ```
 
-## 五、crontab 清场（设计文档 §五：cron 全面退役）
+## 五、关 bus client responder 起 claude 行为（防一信双起，必须先做）
+
+supervisor 与 bus client 订阅同一批群，mentions 含本专家的消息两边都会收到。
+client 现状 `responder.mode=claude`（coder 机实测 config.json 第 20 行），不关掉就会
+一信双起两个 claude。client 代码零改动，只切配置开关：
+
+```bash
+# 确认 client config 位置（bus client 工作目录下）
+jq '.responder' ~/expert-intercom/config.json
+# client 支持的开关（client.py:101，mode 仅 echo|claude 两种，无 enabled 键）：
+#   把 "mode": "claude" 改为 "mode": "echo"
+jq '.responder.mode = "echo"' ~/expert-intercom/config.json > /tmp/cfg.new \
+  && cp ~/expert-intercom/config.json ~/expert-intercom/config.json.bak_supervisor1 \
+  && mv /tmp/cfg.new ~/expert-intercom/config.json
+# 重启 client 生效（按该机实际守护方式二选一）
+systemctl --user restart bus-client 2>/dev/null || pkill -f 'client.py'   # 有 @reboot 行兜底拉起
+# 核验：日志应见 mode=echo 字样
+grep -i 'mode' ~/bus_client.log | tail -2
+```
+
+切 echo 后 client 职责不变：守门（STOP/冻结/报警）+ echo 应答，起 claude 由 supervisor 独占。
+
+## 六、crontab 清场（设计文档 §五：cron 全面退役）
 
 ```bash
 crontab -l
@@ -77,7 +99,7 @@ crontab -l
 crontab -e
 ```
 
-## 六、systemd --user 常驻（复用 BUS-FIX1 管道）
+## 七、systemd --user 常驻（复用 BUS-FIX1 管道）
 
 ```bash
 # root 先开 lingering（免登录常驻）
@@ -111,7 +133,7 @@ systemctl --user status supervisor-<EXPERT>
 MemoryMax=4G 是 BUS-FIX1 同款 cgroup 铁帽；user unit 的 MemoryMax 需该机
 cgroup v2 委派正常（coder 203 已实测可行，transient/user unit 均生效）。
 
-## 七、验收门（aichip 试点五条，设计文档 §六）
+## 八、验收门（aichip 试点五条，设计文档 §六）
 
 1. **信道触发全链路**：grp 里 @<EXPERT> 派测试单 → 日志见"入队 #N kind=job"→
    点火 → claude 干完 → history/当日.md 追加 + state.yaml 更新。
@@ -125,17 +147,21 @@ cgroup v2 委派正常（coder 203 已实测可行，transient/user unit 均生�
 日志位置：`~/supervisor/logs/supervisor.log`（RotatingFileHandler 5MB×3）。
 排入口诀：入队/点火/完成/异常全有行；WS 断连按 R6.3 退避重连自动恢复。
 
-## 八、回滚
+## 九、回滚
 
 ```bash
 systemctl --user disable --now supervisor-<EXPERT>
 crontab ~/crontab.bak_supervisor1   # 恢复 cron 点火（旧链路）
 # SOUL/STATE 软链改回真文件（.bak_supervisor1 还在）
+# bus client 改回 claude 响应（如需回退整条链路）：
+jq '.responder.mode = "claude"' ~/expert-intercom/config.json > /tmp/cfg.new \
+  && mv /tmp/cfg.new ~/expert-intercom/config.json && pkill -f 'client.py'
 ```
 
-## 九、与 bus client 的边界（哥哥拍板①）
+## 十、与 bus client 的边界（哥哥拍板①）
 
-- bus client.py **零改动**，继续守门+echo 应答；supervisor 是第二个 WS 订阅端，
-  直接监听同群，mentions 含本专家/all 即触发（亦菲 9/16 拍板方案 A）。
+- bus client.py **代码零改动，但配置要切开关**（§五）：responder.mode 由 claude 改 echo，
+  继续守门+echo 应答；supervisor 是第二个 WS 订阅端，直接监听同群，
+  mentions 含本专家/all 即触发，起 claude 由 supervisor 独占（亦菲 9/16 拍板方案 A）。
 - 两边各自持久化 last_seq（各自的 state.json），互不干扰。
 - STOP/冻结/人工复位口径与 client.py 一致（R3.3/R4/§2.3/R6.x 同款实现）。
