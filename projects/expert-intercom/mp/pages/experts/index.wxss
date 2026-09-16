@@ -1,0 +1,37 @@
+/* pages/experts — MP-DASH1 卡片页样式
+   MP-UX7 教训：卡片/浮层背景一律写死实色 HEX + @media 双态，
+   iOS 真机深色模式 var() 渲染不可靠。文字色走 var 无妨（仅背景踩坑）。 */
+.page { min-height: 100vh; padding-bottom: 24px; }
+
+.meta-line { font-size: 11px; color: var(--fg2); padding: 6px 16px; text-align: center; }
+
+.card {
+  margin: 10px 12px;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #F7F7F8;            /* 浅色实色（= --bg2 浅态值写死） */
+}
+.card-head { display: flex; align-items: center; margin-bottom: 4px; }
+.card-status { font-size: 14px; margin-right: 6px; }
+.card-name { font-size: 16px; font-weight: 600; margin-right: 8px; }
+.card-stlabel { font-size: 12px; color: var(--fg2); flex: 1; }
+.card-today { font-size: 11px; color: var(--primary); }
+
+.st-working { /* 🟢 图标自身带色，无需文字色 */ }
+
+.row { display: flex; margin-top: 6px; }
+.row-label {
+  flex-shrink: 0; width: 34px;
+  font-size: 12px; color: var(--fg2); line-height: 1.6;
+}
+.row-val { flex: 1; font-size: 13px; line-height: 1.6; }
+.row-note { color: var(--fg2); font-size: 12px; }
+.recent-line { color: var(--fg2); font-size: 12px; }
+.plan-line { font-size: 13px; }
+
+.empty { text-align: center; color: var(--fg2); font-size: 13px; padding: 32px; }
+
+/* MP-UX7 同款：深色态实色覆盖（仅命中深色，不扰浅色逻辑） */
+@media (prefers-color-scheme: dark) {
+  .card { background: #1C1C1E; }    /* = --bg2 深态值写死 */
+}

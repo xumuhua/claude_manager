@@ -1,0 +1,39 @@
+<!-- pages/experts — MP-DASH1 专家动态面板：全队状态卡片列表 -->
+<view class="page">
+  <view wx:if="{{stale}}" class="banner-warn">采集数据超 15 分钟未更新（{{collectedAt}}），采集链路可能异常</view>
+  <view wx:elif="{{collectedAt}}" class="meta-line">采集于 {{collectedAt}} · 下拉刷新</view>
+
+  <view wx:if="{{loading}}" class="empty">加载中…</view>
+  <view wx:elif="{{error}}" class="empty">{{error}}</view>
+  <view wx:elif="{{!cards.length}}" class="empty">暂无专家数据</view>
+
+  <view wx:for="{{cards}}" wx:key="name" class="card">
+    <view class="card-head">
+      <text class="card-status {{item.statusClass}}">{{item.statusIcon}}</text>
+      <text class="card-name">{{item.name}}</text>
+      <text class="card-stlabel">{{item.statusLabel}}</text>
+      <text wx:if="{{item.todayCount}}" class="card-today">今日 {{item.todayCount}} 件</text>
+    </view>
+
+    <view wx:if="{{item.taskText}}" class="row">
+      <text class="row-label">当前</text>
+      <text class="row-val">{{item.taskText}}<text wx:if="{{item.taskNote}}" class="row-note">（{{item.taskNote}}）</text></text>
+    </view>
+
+    <view wx:if="{{item.recent.length}}" class="row">
+      <text class="row-label">最近</text>
+      <view class="row-val">
+        <view wx:for="{{item.recent}}" wx:for-item="r" wx:key="desc" class="recent-line">
+          {{r.ago}} · {{r.desc}}
+        </view>
+      </view>
+    </view>
+
+    <view wx:if="{{item.planned.length}}" class="row">
+      <text class="row-label">计划</text>
+      <view class="row-val">
+        <view wx:for="{{item.planned}}" wx:for-item="p" wx:key="*this" class="plan-line">· {{p}}</view>
+      </view>
+    </view>
+  </view>
+</view>
