@@ -1,0 +1,44 @@
+{
+  "hub_url": "http://115.190.64.190:8765",
+  "token": "env:INTERCOM_TOKEN",
+  "agent_name": "coder",
+  "conversations": [
+    "dm_coder",
+    "grp_experts",
+    "grp_mp"
+  ],
+  "trigger_groups": [
+    "grp_mp",
+    "dm_coder"
+  ],
+  "review_groups": [
+    "grp_mp"
+  ],
+  "review_time": "03:06",
+  "review_preempt_delay": 2,
+  "expert_dir": "~/supervisor",
+  "archive_dir": "/data/workspace/cache/coder/archive",
+  "work_dir": "~",
+  "review_skill": "nightly-review",
+  "history_hot_days": 2,
+  "history_max_chars": 40000,
+  "concurrency": {
+    "max": 3,
+    "job_timeout": 3600,
+    "review_timeout": 3600
+  },
+  "claude": {
+    "cmd": "claude",
+    "args": [
+      "--dangerously-skip-permissions",
+      "-p"
+    ],
+    "max_chars": 60000,
+    "ctx_keep": 8
+  },
+  "heartbeat_interval": 30,
+  "session_idle_timeout": 600,
+  "stop_cooldown": 60,
+  "human_names": [],
+  "context_lines": 20
+}
