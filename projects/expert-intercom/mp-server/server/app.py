@@ -141,15 +141,15 @@ def _conv_id(c):
 
 @require_agent
 async def get_messages(request):
-    """seq 增量拉取 / 时间段检索（直通 hub F4）。参数：conversation_id 必填，
-    after_seq+limit 或 from_ts+to_ts。"""
+    """seq 增量拉取 / 时间段检索 / 滑窗拉取（直通 hub F4）。参数：conversation_id 必填，
+    after_seq+limit 或 from_ts+to_ts；MP-MSG1 新增 before_seq/latest 透传。"""
     conv = request.query.get("conversation_id", "")
     if not conv:
         return web.json_response({"code": "BAD_SCHEMA", "message": "缺 conversation_id"}, status=400)
     if not check_conv_visible(request, conv):
         return _forbidden()
     params = {"conversation_id": conv}
-    for k in ("after_seq", "limit", "from_ts", "to_ts"):
+    for k in ("after_seq", "before_seq", "latest", "limit", "from_ts", "to_ts"):
         if k in request.query:
             params[k] = request.query[k]
     try:
@@ -225,11 +225,12 @@ async def send_group(request):
 
 @require_agent
 async def get_dm_messages(request):
-    """哥哥 ← 亦菲：读 dm_yifei 回复（after_seq 增量，供轮询降级）。"""
+    """哥哥 ← 亦菲：读 dm_yifei 回复（after_seq 增量，供轮询降级；
+    MP-MSG1：滑窗 before_seq/latest 同口径透传）。"""
     if "dm" not in request["agent"]["scope"]:
         return _forbidden("非哥哥 token 禁止访问 dm 通道")
     params = {"conversation_id": DM_CONV}
-    for k in ("after_seq", "limit", "from_ts", "to_ts"):
+    for k in ("after_seq", "before_seq", "latest", "limit", "from_ts", "to_ts"):
         if k in request.query:
             params[k] = request.query[k]
     try:

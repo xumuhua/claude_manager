@@ -235,21 +235,46 @@ Page({
     this.markRead(conv);
   },
 
-  // 全量分页拉取（R-1 before_seq 未到位前的降级口径，D1 §4.2）
+  // MP-MSG1 滑窗首拉（哥哥 9/17 拍板）：不再 after_seq=0 全量翻页（grp_ai_research
+  // 已 1100+ 条，首屏 3 轮 HTTP + 全量渲染），改 latest=1 只拉最新 MSG_WINDOW_INIT
+  // 条一轮到位。更早历史由 onScrollTop 触顶按 before_seq 逐屏预取。
+  // 后端旧 hub（无 latest 能力）兜底：拿到首批后按"够屏则停/不够再走 after_seq
+  // 全量"续拉，行为等价旧版。
   async loadAll(conv) {
-    let after = 0;
-    const all = [];
+    const W = cfg.MSG_WINDOW_INIT;
+    this.noMoreHistory = this.noMoreHistory || {};
+    this.prefetching = this.prefetching || {};
+    let all = [];
+    let windowed = false;   // 是否真走了滑窗首屏（决定是否允许触顶预取）
     try {
-      for (;;) {
-        const data = await api.request({
-          path: '/api/messages',
-          data: { conversation_id: conv, after_seq: after, limit: cfg.MSG_PAGE_LIMIT },
-        });
-        const batch = data.messages || [];
-        all.push(...batch);
-        if (batch.length < cfg.MSG_PAGE_LIMIT) break;
-        after = batch[batch.length - 1].seq;
-        if (all.length >= cfg.MSG_MAX_KEEP) break;
+      const first = await api.request({
+        path: '/api/messages',
+        data: { conversation_id: conv, latest: 1, limit: W },
+      });
+      const batch = first.messages || [];
+      if (batch.length >= W) {
+        // 历史 ≥ 一屏：滑窗成立，头部还有货留给预取
+        all = batch;
+        windowed = true;
+        this.noMoreHistory[conv] = false;
+      } else {
+        // 返回不足一屏 = 历史总量 ≤ W（滑窗态到顶）或旧 hub 降级从头部返回
+        // （旧 hub 忽略 latest 按 after_seq=0 拉，此时续拉齐历史，行为等价旧版）
+        all = batch.slice();
+        let after = batch.length ? batch[batch.length - 1].seq : 0;
+        while (batch.length && all.length < cfg.MSG_MAX_KEEP) {
+          const data = await api.request({
+            path: '/api/messages',
+            data: { conversation_id: conv, after_seq: after, limit: cfg.MSG_PAGE_LIMIT },
+          });
+          const more = data.messages || [];
+          if (!more.length) break;
+          all.push(...more);
+          if (more.length < cfg.MSG_PAGE_LIMIT) break;
+          after = more[more.length - 1].seq;
+        }
+        // 新 hub 空/短历史：真到顶；旧 hub 降级：已全量拉齐同样到顶
+        this.noMoreHistory[conv] = true;
       }
     } catch (e) {
       if (e.code === 'NETWORK') this.setData({ networkOk: false });
@@ -260,10 +285,83 @@ Page({
       if (m.msg_id) this.seenIds[m.msg_id] = 1;
       this.indexMsg(conv, m);
     });
+    // 空窗 + 已触顶（该会话历史就这么少）：回退保持仅最新一条撑游标（旧口径），
+    // 避免无消息空窗，同时不破坏 noMoreHistory 标记
+    if (!this.msgs[conv].length && all.length) {
+      const last = all[all.length - 1];
+      this.msgs[conv] = [this.decorate(last)];
+      if (last.msg_id) this.seenIds[last.msg_id] = 1;
+      this.indexMsg(conv, last);
+    }
     this.refreshConvTs(conv);
     this.rebuildConvList();
-    // DEBUG-MPUX4：首屏会话历史加载量
-    console.log('[MPUX4] loadAll conv=' + conv + ' msgs=' + all.length);
+    // DEBUG-MPMSG1：首屏滑窗加载量与模式
+    console.log('[MPMSG1] loadAll conv=' + conv + ' msgs=' + this.msgs[conv].length +
+      ' mode=' + (windowed ? 'window' : 'full/legacy') + ' raw=' + all.length);
+  },
+
+  // MP-MSG1：上滑触顶预取上一屏（before_seq=<当前已加载最旧seq>，prepend 头部）。
+  // 锚点保持：记触顶时最旧可见消息 id，prepend 完 scroll-into-view 回锚点
+  // （scroll-with-animation 常开会漂移，预取期间临时关动画，落锚后恢复）。
+  // 防重入：prefetching[conv] in-flight 直接 return；返回不足一屏 → noMoreHistory。
+  async onScrollTop() {
+    const conv = this.data.conv;
+    if (!conv) return;
+    this.noMoreHistory = this.noMoreHistory || {};
+    this.prefetching = this.prefetching || {};
+    if (this.noMoreHistory[conv] || this.prefetching[conv]) return;
+    const list = this.msgs[conv] || [];
+    if (!list.length || typeof list[0].seq !== 'number') return;   // 空窗/本地 pending 头部不预取
+    this.prefetching[conv] = true;
+    const anchorId = 'm' + list[0].seq;   // 锚点 = 触顶时窗口最旧一条
+    try {
+      const data = await api.request({
+        path: '/api/messages',
+        data: { conversation_id: conv, before_seq: list[0].seq, limit: cfg.MSG_WINDOW_INIT },
+      });
+      const batch = (data.messages || []).filter((m) => !m.msg_id || !this.seenIds[m.msg_id]);
+      if (!batch.length || batch.length < cfg.MSG_WINDOW_INIT) this.noMoreHistory[conv] = true;
+      if (batch.length) {
+        batch.forEach((m) => { if (m.msg_id) this.seenIds[m.msg_id] = 1; });
+        this.msgs[conv] = batch.map((m) => this.decorate(m)).concat(list);
+        batch.forEach((m) => this.indexMsg(conv, m));
+        this.trimWindow(conv);
+        if (conv === this.data.conv) {
+          const keepAnim = this._scrollAnim;   // 预取期间临时关动画防漂移
+          this._scrollAnim = false;
+          this._prefetchLock = true;           // 锁到锚点落地才解（setData 回调失败防死锁）
+          this.buildDisplay(() => {
+            this.setData({ scrollTo: '' }, () => this.setData({ scrollTo: anchorId }, () => {
+              this._scrollAnim = keepAnim !== false;
+              this._prefetchLock = false;
+              this.prefetching[conv] = false;
+            }));
+          });
+        }
+      }
+      // DEBUG-MPMSG1
+      console.log('[MPMSG1] prefetch conv=' + conv + ' got=' + batch.length +
+        ' noMore=' + !!this.noMoreHistory[conv]);
+    } catch (e) {
+      console.log('[MPMSG1] prefetch fail conv=' + conv + ': ' + (e && e.message));
+    } finally {
+      if (!this._prefetchLock) this.prefetching[conv] = false;
+    }
+  },
+
+  // MP-MSG1：MSG_MAX_KEEP 截断保留，但截断最旧 = 已预取历史被丢——同步重置
+  // noMoreHistory 允许重新预取（任务书口径：尾部追加与头部预取互不干扰）。
+  trimWindow(conv) {
+    const list = this.msgs[conv];
+    if (list && list.length > cfg.MSG_MAX_KEEP) {
+      const dropped = list.splice(0, list.length - cfg.MSG_MAX_KEEP);
+      dropped.forEach((m) => {
+        if (typeof m.seq === 'number' && this.seqIdx && this.seqIdx[conv]) delete this.seqIdx[conv][m.seq];
+        if (m.msg_id) delete this.seenIds[m.msg_id];
+      });
+      this.noMoreHistory = this.noMoreHistory || {};
+      this.noMoreHistory[conv] = false;
+    }
   },
 
   decorate(m) {
@@ -396,7 +494,7 @@ Page({
     const m = this.decorate(raw);
     this.msgs[conv].push(m);
     this.indexMsg(conv, m);
-    if (this.msgs[conv].length > cfg.MSG_MAX_KEEP) this.msgs[conv].shift();
+    this.trimWindow(conv);   // MP-MSG1：截断走统一出口（丢历史即重置 noMoreHistory）
 
     if (conv === this.data.conv) {
       this.buildDisplay();
@@ -795,10 +893,10 @@ Page({
     }
   },
 
-  // ---------- 下拉加载更早（R-1 未到位降级） ----------
+  // ---------- 下拉加载更早（MP-MSG1：改走 scrolltoupper 触顶预取） ----------
 
   onPullDownRefresh() {
-    wx.showToast({ title: '已加载全部历史', icon: 'none' });
+    wx.showToast({ title: '上滑到顶部自动加载更早消息', icon: 'none' });
     wx.stopPullDownRefresh();
   },
 });

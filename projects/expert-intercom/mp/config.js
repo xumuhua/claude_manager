@@ -68,5 +68,6 @@ module.exports = {
   POLL_INTERVAL_MS: 10000,           // WS 断开降级轮询 10s（D1 §4.2）
   MSG_PAGE_LIMIT: 500,               // 单次拉取上限（后端 limit 上限 500）
   MSG_MAX_KEEP: 800,                 // 内存最多保留消息数（超出截断最旧）
+  MSG_WINDOW_INIT: 30,               // MP-MSG1 滑窗：首屏最新 30 条 / 上滑触顶每屏预取 30 条
   LONG_BODY_FOLD: 2000,              // 单条超长折叠（D1 §6.1）
 };

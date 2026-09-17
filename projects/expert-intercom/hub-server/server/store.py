@@ -71,6 +71,29 @@ class Store:
             ).fetchall()
         return [self._row_to_msg(r) for r in rows]
 
+    # MP-MSG1：滑窗加载新能力（fetch_after_seq 旧行为逐字节兼容，bus client/
+    # supervisor 全依赖它，一行不动）。idx_messages_conv_seq 已有，DESC LIMIT
+    # 走索引回扫。
+    def fetch_before_seq(self, conversation_id: str, before_seq: int, limit: int) -> list:
+        """滑窗预取：(-∞, before_seq) 取最新 limit 条，返回仍按 seq 升序（前端省心）。"""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM messages WHERE conversation_id=? AND seq<? "
+                "ORDER BY seq DESC LIMIT ?",
+                (conversation_id, before_seq, limit),
+            ).fetchall()
+        return [self._row_to_msg(r) for r in reversed(rows)]
+
+    def fetch_latest(self, conversation_id: str, limit: int) -> list:
+        """滑窗首屏：取该会话最新 limit 条，返回按 seq 升序。"""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM messages WHERE conversation_id=? "
+                "ORDER BY seq DESC LIMIT ?",
+                (conversation_id, limit),
+            ).fetchall()
+        return [self._row_to_msg(r) for r in reversed(rows)]
+
     def fetch_range_visible(self, conversations: list, after_seq: int, limit: int) -> list:
         """断线补发（R6.4）：多个可见会话、全局 seq 区间，按 seq 升序。"""
         if not conversations:

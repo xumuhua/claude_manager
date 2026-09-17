@@ -30,9 +30,10 @@
   <view wx:if="{{!networkOk}}" class="banner-err">网络不可用，请检查网络</view>
   <view wx:elif="{{wsStatus === 'down'}}" class="banner-warn">实时连接已断开，10s 轮询中</view>
 
-  <!-- 消息流 -->
+  <!-- 消息流（MP-MSG1：+bindscrolltoupper 触顶预取上一屏，upper-threshold 80rpx 提前触发） -->
   <scroll-view scroll-y class="msgs" scroll-into-view="{{scrollTo}}" scroll-with-animation
-               bindscroll="onScroll" enhanced show-scrollbar="{{false}}">
+               bindscroll="onScroll" bindscrolltoupper="onScrollTop" upper-threshold="80"
+               enhanced show-scrollbar="{{false}}">
     <view id="summaryAnchor"></view>
     <ai-card wx:if="{{summary}}" title="未读速览"
              points="{{summary.points || []}}" mentions="{{summary.mentions || []}}"

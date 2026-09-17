@@ -510,6 +510,13 @@ class Hub:
                 from_ts = q.get("from_ts", "0000-01-01T00:00:00Z")
                 to_ts = q.get("to_ts", "9999-12-31T23:59:59Z")
                 msgs = self.store.fetch_by_ts(conv, from_ts, to_ts, limit)
+            elif "before_seq" in q:
+                # MP-MSG1：滑窗预取（seq < before_seq 最新 limit 条，升序返回）
+                before_seq = int(q["before_seq"])
+                msgs = self.store.fetch_before_seq(conv, before_seq, limit)
+            elif q.get("latest") == "1":
+                # MP-MSG1：滑窗首屏（该会话最新 limit 条，升序返回）
+                msgs = self.store.fetch_latest(conv, limit)
             else:
                 after_seq = int(q.get("after_seq", 0))
                 msgs = self.store.fetch_after_seq(conv, after_seq, limit)
