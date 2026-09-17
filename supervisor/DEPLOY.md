@@ -47,6 +47,41 @@ cd ~/supervisor-app && cp config.example.json config.json
 | `work_dir` | claude 干活目录，默认 `~` |
 | `claude.cmd` | 真 claude 路径（which claude 核实） |
 | `schedules` | SUPERVISOR-2 定时任务表（可省/空数组=不启用，见 §二之一） |
+| `responder.engine` | SUPERVISOR-4 应答引擎：`claude`（默认，五台现役不配此项行为不变）\|`codex`（gpt 机专用，见 §二之二） |
+
+### 二之二、responder.engine 双引擎（SUPERVISOR-4，gpt 机切 codex）
+
+哥哥 9/17 拍板：claude CLI 走 relay 调 ChatGPT 有协议指纹封号面，gpt 专家
+改走官方 codex CLI 直连。supervisor 点火处双引擎抽象：
+
+```json
+"responder": {"engine": "codex"},
+"codex": {
+  "cmd": "codex",
+  "args": ["exec", "--skip-git-repo-check",
+           "--output-last-message", "{outfile}", "-"],
+  "timeout": 3600,
+  "workdir": "~"
+}
+```
+
+要点：
+
+- **向后兼容红线**：不配 `responder` 或 `engine:"claude"` → 点火参数与
+  SUPERVISOR-4 前逐字节一致（cmd+args+prompt 在 argv、stdin 关闭、
+  cwd=work_dir），五台现役配置一行不改。
+- **codex 口径**：prompt 写 stdin（args 末尾 `"-"`），最终应答由 codex 落
+  `{outfile}`（supervisor 自动替换为 `expert_dir/codex_out/<时间戳>-<随机>.md`
+  唯一路径），读回作产出；`workdir` 为 codex 工作目录（独立于 claude 的
+  `work_dir`，二者不混）。
+- **失败判定**：codex 退出码非 0 → ❌ 档（同 claude）；退出码 0 但 outfile
+  空/未生成 → ⚠️ 档「codex 退出码0但应答文件为空/未生成」回执报障。
+- **codex.timeout 独立于 concurrency.job_timeout**：codex 块内的 timeout
+  优先生效（缺省 3600）。
+- **日志**：点火行带 `engine=claude|codex` 标注，启动行也有 engine= 字段。
+- gpt 机部署步骤：config.json 加 `responder.engine="codex"` + `codex` 块
+  （`cmd` 按 `which codex` 核实），其余项照旧；systemd 重启即切引擎，
+  回滚只需把 engine 改回 claude 或删掉 responder 块。
 
 ### 二之一、schedules 定时任务表（SUPERVISOR-2，替代退役 cron 的日报/周报）
 

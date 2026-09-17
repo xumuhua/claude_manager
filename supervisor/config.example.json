@@ -37,6 +37,21 @@
     "max_chars": 60000,
     "ctx_keep": 8
   },
+  "responder": {
+    "engine": "claude"
+  },
+  "codex": {
+    "cmd": "codex",
+    "args": [
+      "exec",
+      "--skip-git-repo-check",
+      "--output-last-message",
+      "{outfile}",
+      "-"
+    ],
+    "timeout": 3600,
+    "workdir": "~"
+  },
   "heartbeat_interval": 30,
   "session_idle_timeout": 600,
   "stop_cooldown": 60,

@@ -30,6 +30,13 @@ config trigger_filter=false 可单台热关回退。
 ②supervisor 发出的知会消息 mentions 一律清空：on_job_done 三档兜底回执、
 schedules 回执（24e0dbd 已空）、复盘摘要发群（review.md 引导 mentions 置空）。
 
+SUPERVISOR-4（哥哥 9/17 拍板，防 claude 协议指纹封号）：
+应答引擎双支持 claude|codex。config responder.engine 缺省 claude（五台现役
+配置零改动、行为逐字节不变）；gpt 机切 codex——官方 codex CLI 直连，指纹与
+官方一致，prompt 走 stdin（"-" 参数），应答落 outfile（--output-last-message），
+退出码 0 但 outfile 空视为失败（⚠️ 档回执）。超时/重试/回执/归档/[TASK_DONE]
+判定逻辑引擎无关，不动。
+
 落盘六件套（expert_dir/）：
   identity.md / state.yaml / history/YYYY-MM-DD.md / knowledge.md /
   dir_map.yaml / 冷存储 archive_dir
@@ -157,6 +164,13 @@ def load_config(path: Path) -> dict:
     # claude 工作目录（干活/归档都在这棵树里），默认 $HOME
     cfg["_work_dir"] = Path(cfg.get("work_dir", "~")).expanduser()
 
+    # SUPERVISOR-4 应答引擎开关：claude（默认，五台现役零改动）| codex（gpt 机）
+    resp = cfg.setdefault("responder", {})
+    engine = str(resp.setdefault("engine", "claude")).strip().lower()
+    if engine not in ("claude", "codex"):
+        raise SystemExit(f"responder.engine 非法: {engine}（仅 claude|codex）")
+    resp["engine"] = engine
+
     cfg.setdefault("conversations", [])
     cfg.setdefault("trigger_groups", ["grp_mp"])       # 任务消息群（可空=只跑复盘）
     cfg.setdefault("review_groups", ["grp_experts"])   # 复盘摘要回发群（可空=不发）
@@ -225,6 +239,14 @@ def load_config(path: Path) -> dict:
     # BUS-FIX1：长 prompt 截断（群史收缩 + 总长硬顶）
     cl.setdefault("max_chars", 60000)
     cl.setdefault("ctx_keep", 8)
+
+    # SUPERVISOR-4 codex 引擎参数（仅 responder.engine=codex 时点火用）
+    cx = cfg.setdefault("codex", {})
+    cx.setdefault("cmd", "codex")
+    cx.setdefault("args", ["exec", "--skip-git-repo-check",
+                           "--output-last-message", "{outfile}", "-"])
+    cx.setdefault("timeout", 3600)
+    cx.setdefault("workdir", "~")
     return cfg
 
 
@@ -348,22 +370,28 @@ def load_template(cfg: dict, key: str) -> str:
 
 # ---------- claude 启动器（BUS-FIX1 三件套） ----------
 
-def run_killpg(cmd: list, timeout: float, cwd: Path) -> "subprocess.CompletedProcess":
-    """同步执行 claude；start_new_session 独立成组，超时 SIGKILL 整组防孤儿。
+def run_killpg(cmd: list, timeout: float, cwd: Path,
+               stdin_text: "str | None" = None) -> "subprocess.CompletedProcess":
+    """同步执行引擎子进程；start_new_session 独立成组，超时 SIGKILL 整组防孤儿。
 
     （BUS-FIX1 原样口径：subprocess.run(timeout=) 只杀直接子进程，孙进程泄漏。）
     P0 变更：超时不抛异常，返回 CompletedProcess(returncode=-9, _timed_out=True)，
     让 on_job_done 按「退出码非0」统一出 ❌ 档回执，任务不悬空。
+    SUPERVISOR-4：stdin_text 非 None 时 prompt 经 stdin 喂（codex 口径 "-"），
+    None 则走 DEVNULL（prompt 在 argv，stdin 关闭防卡读）。
     """
     proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        cmd,
+        stdin=(subprocess.PIPE if stdin_text is not None
+               else subprocess.DEVNULL),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         start_new_session=True, cwd=str(cwd))
     try:
-        out, err = proc.communicate(timeout=timeout)
+        out, err = proc.communicate(input=stdin_text, timeout=timeout)
         return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
     except subprocess.TimeoutExpired:
         pgid = proc.pid  # start_new_session=True → 子进程即组长
-        log.error("claude 超时（%ss），SIGKILL 进程组 pgid=%d", timeout, pgid)
+        log.error("引擎超时（%ss），SIGKILL 进程组 pgid=%d", timeout, pgid)
         try:
             os.killpg(pgid, signal.SIGKILL)
         except ProcessLookupError:
@@ -379,6 +407,46 @@ def run_killpg(cmd: list, timeout: float, cwd: Path) -> "subprocess.CompletedPro
                                          f"已 SIGKILL 进程组 pgid={pgid}")
         cp._timed_out = True  # type: ignore[attr-defined]  # ❌ 档标注超时
         return cp
+
+
+def spawn_engine(cfg: dict, prompt: str, timeout: float,
+                 job_label: str = "") -> "subprocess.CompletedProcess":
+    """SUPERVISOR-4 双引擎点火：claude（默认）| codex。
+
+    - claude：现状原样——cmd+args+prompt 在 argv，cwd=_work_dir，stdout 即
+      应答；stdin 走 DEVNULL（prompt 全在 argv，子进程不需要 stdin；supervisor
+      进程常驻 stdin 常为 tty，DEVNULL 防子进程误读卡死，与真 claude CLI
+      非交互 `-p` 口径一致）。
+    - codex：prompt 写 stdin（args 末尾 "-" 参数），最终应答由 codex 落
+      outfile（args 里 {outfile} 占位符按 job 唯一路径替换），读回作 stdout
+      供上层 [TASK_DONE] 判定；退出码 0 但 outfile 空/缺 = 置 _empty_out=True，
+      on_job_done 按 ⚠️ 档回执。cwd=codex.workdir。
+    """
+    engine = cfg.get("responder", {}).get("engine", "claude")
+    if engine == "codex":
+        cx = cfg["codex"]
+        outdir = cfg["_expert_dir"] / "codex_out"
+        outdir.mkdir(parents=True, exist_ok=True)
+        outfile = outdir / f"{utcnow().replace(':', '')}-{uuid.uuid4().hex[:8]}.md"
+        args = [a.replace("{outfile}", str(outfile)) for a in cx["args"]]
+        cmd = [cx["cmd"], *args]
+        cwd = Path(cx.get("workdir", "~")).expanduser()
+        cp = run_killpg(cmd, float(cx.get("timeout", timeout)), cwd,
+                        stdin_text=prompt)
+        try:
+            cp.stdout = outfile.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            cp.stdout = ""
+        cp._outfile = str(outfile)  # type: ignore[attr-defined]
+        if cp.returncode == 0 and not cp.stdout.strip():
+            cp._empty_out = True  # type: ignore[attr-defined]  # ⚠️ 档：码0无产出
+            log.warning("codex 退出码0但 outfile 空/缺（%s），按 ⚠️ 档回执 %s",
+                        outfile, job_label)
+        return cp
+    # claude：默认路径，与 SUPERVISOR-4 前逐字节一致
+    cl = cfg["claude"]
+    cmd = [cl["cmd"], *cl["args"], prompt]
+    return run_killpg(cmd, timeout, cfg["_work_dir"])
 
 
 def cap_chars(text: str, budget: int, label: str) -> str:
@@ -458,18 +526,20 @@ class Gate:
         t0 = time.time()
         try:
             prompt, timeout = job["build_prompt"]()
-            log.info("点火 #%d kind=%s %s（prompt %d 字符，超时 %ds）",
-                     jid, kind, meta.get("label", ""), len(prompt), timeout)
-            cl = self.cfg["claude"]
-            cmd = [cl["cmd"], *cl["args"], prompt]
+            engine = self.cfg.get("responder", {}).get("engine", "claude")
+            log.info("点火 #%d kind=%s %s engine=%s（prompt %d 字符，超时 %ds）",
+                     jid, kind, meta.get("label", ""), engine,
+                     len(prompt), timeout)
             proc = await asyncio.get_running_loop().run_in_executor(
-                None, run_killpg, cmd, timeout, self.cfg["_work_dir"])
+                None, spawn_engine, self.cfg, prompt, timeout,
+                meta.get("label", ""))
             dur = int(time.time() - t0)
             if proc.returncode != 0:
                 log.error("#%d 退出码 %d（%ds）stderr: %s",
                           jid, proc.returncode, dur, proc.stderr[:300])
             else:
-                log.info("#%d 完成（%ds，输出 %d 字符）", jid, dur, len(proc.stdout))
+                log.info("#%d 完成（%ds，输出 %d 字符）", jid, dur,
+                         len(proc.stdout))
             await self.launcher.on_job_done(job, proc, dur)
         except Exception:
             log.exception("#%d 执行异常", jid)
@@ -523,7 +593,11 @@ class Launcher:
             return
         jid, rc = job["id"], proc.returncode
         m = TASK_DONE_LINE_RE.search(proc.stdout or "")
-        if rc == 0 and m:
+        if rc == 0 and getattr(proc, "_empty_out", False):
+            # SUPERVISOR-4 codex 特例：码0但 outfile 空/缺，按 ⚠️ 档报障
+            body = (f"⚠️ #{jid} codex 退出码0但应答文件为空/未生成（耗时{dur}s）："
+                    f"请人工看一眼")
+        elif rc == 0 and m:
             body = f"✅ #{jid} 完成（耗时{dur}s）产出：{m.group(1).strip()}"
         elif rc == 0:
             body = (f"⚠️ #{jid} 完成但未自报产出（耗时{dur}s）："
@@ -1026,9 +1100,10 @@ def main():
         except (NotImplementedError, RuntimeError):
             pass  # Windows 无 add_signal_handler
     log.info("supervisor 启动：expert=%s pid=%d 并发闸≤%d 复盘时点=%s "
-             "触发过滤=%s 落盘=%s 冷存储=%s",
+             "触发过滤=%s engine=%s 落盘=%s 冷存储=%s",
              cfg["agent_name"], os.getpid(), cfg["concurrency"]["max"],
              cfg["review_time"], "开" if cfg.get("trigger_filter", True) else "关",
+             cfg.get("responder", {}).get("engine", "claude"),
              cfg["_expert_dir"], cfg["_archive_dir"])
     tasks = [
         loop.create_task(sup.run()),

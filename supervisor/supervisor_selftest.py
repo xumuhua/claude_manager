@@ -12,6 +12,12 @@ SUPERVISOR-3 追加（场景 F/G）：
   stdout 留 [filter] 日志行；F5 任务书派单正常点火；F6 自然语言派单正常点火
 - G1 trigger_filter=false 热关回退：echo 消息恢复点火；G2 兜底回执 mentions 空
 
+SUPERVISOR-4 追加（场景 H）：
+- H1 claude 引擎 spawn 参数逐字节同现状（argv/cwd/stdin 继承）回归
+- H2 codex 参数构造（{outfile} 替换+args 末尾 '-'，prompt 走 stdin，cwd=workdir）
+- H3 全链路 engine=codex：mock codex stdin→outfile→✅回执含 [TASK_DONE] 产出
+- H4 codex 码0但 outfile 空 → ⚠️档回执；H5 点火日志带 engine=codex 标注
+
 假 claude 落调用日志（kind/prompt 摘要/起止时刻），全部经日志断言，不依赖 ps 全表
 （本环境 ps 全表与 Popen 子进程不同步，见 busfix1 教训）。
 """
@@ -660,6 +666,183 @@ def scenario_G(root: Path):
           f"posts={[(p['msg']['body'][:30], p['msg']['mentions']) for p in posts]}")
 
 
+def write_mock_codex(d: Path) -> Path:
+    """假 codex：codex exec --skip-git-repo-check --output-last-message <out> -
+    从 stdin 读 prompt，解析标记后把应答写进 --output-last-message 指定文件。
+    __CX_MARK__ → 应答含 [TASK_DONE] 标记；__CX_EMPTY__ → 码0但不写 outfile。"""
+    p = d / "mock_codex.sh"
+    p.write_text("""#!/bin/bash
+outfile=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "--output-last-message" ]; then outfile="$a"; fi
+  prev="$a"
+done
+prompt="$(cat)"
+echo "$outfile" >> "$FAKECODEX_OUTFILES"
+echo "$prompt" | grep -q "__CX7__" && { echo "FAKECODEX-ERROR boom" >&2; exit 7; }
+if echo "$prompt" | grep -q "__CX_EMPTY__"; then
+  echo "FAKECODEX-DONE empty" >&2; exit 0
+fi
+if [ -n "$outfile" ]; then
+  if echo "$prompt" | grep -q "__CX_MARK__"; then
+    printf '[TASK_DONE] 产出: codex自验产出 __CX_MARK__\\n' > "$outfile"
+  else
+    printf 'codex 应答无标记\\n' > "$outfile"
+  fi
+fi
+echo "FAKECODEX-DONE"
+""", encoding="utf-8")
+    p.chmod(0o755)
+    return p
+
+
+def scenario_H(root: Path):
+    """SUPERVISOR-4 应答引擎双支持：
+    H1 claude 引擎 spawn 参数构造逐字节同现状（cmd+args+prompt 在 argv、
+       cwd=_work_dir、无 stdin），回归零变化；
+    H2 codex 引擎参数构造正确（{outfile} 占位符替换+args 末尾 '-'，prompt 走 stdin）；
+    H3 全链路 engine=codex：@派单 → mock codex stdin→outfile → ✅回执含标记产出；
+    H4 codex 码0但 outfile 空 → ⚠️档回执；
+    H5 点火日志带 engine= 标注。"""
+    print("=== 场景H：SUPERVISOR-4 双引擎（claude 回归 + codex 通路） ===")
+    d = root / "H"; d.mkdir(parents=True)
+    sys.path.insert(0, str(BASE))
+    import supervisor as sup_mod
+
+    # H1/H2 白盒：直接调 spawn_engine 断言参数构造（cmd 指向 python dump 脚本
+    # 拦截 argv/cwd/stdin 落盘；stdin 为空串 = DEVNULL 口径，claude prompt 在 argv）
+    expert_dir = d / "expert"
+    expert_dir.mkdir(parents=True)
+    argv_log = d / "argv.jsonl"
+    dump_py = d / "argv_dump.py"
+    dump_py.write_text('''
+import json, os, sys
+data = {"argv": sys.argv[1:], "cwd": os.getcwd(),
+        "stdin": None if sys.stdin.isatty() else sys.stdin.read()}
+with open(os.environ["FAKEARGV"], "a", encoding="utf-8") as f:
+    f.write(json.dumps(data, ensure_ascii=False) + "\\n")
+''', encoding="utf-8")
+    os.environ["SUP_SELFTEST_TOKEN"] = TOKEN
+    os.environ["FAKEARGV"] = str(argv_log)  # Popen 默认继承父进程 env
+    os.environ.pop("FAKECODEX_OUTFILES", None)  # 防 H 白盒段泄漏到全链路 mock codex
+
+    cfg_h = {
+        "hub_url": f"http://127.0.0.1:{HUB_PORT}",
+        "hub_http_url": f"http://127.0.0.1:{HUB_PORT + 1}",
+        "token": "env:SUP_SELFTEST_TOKEN",
+        "agent_name": "coder",
+        "expert_dir": str(expert_dir),
+        "work_dir": str(d / "workdir_claude"),
+        "claude": {"cmd": PY, "args": [str(dump_py),
+                                       "--dangerously-skip-permissions", "-p"]},
+    }
+    (d / "workdir_claude").mkdir()
+    cfgp = d / "cfg_h1.json"
+    cfgp.write_text(json.dumps(cfg_h, ensure_ascii=False), encoding="utf-8")
+    cfg1 = sup_mod.load_config(cfgp)
+    cp = sup_mod.spawn_engine(cfg1, "PROMPT_H1_回归", 30, "h1")
+    rec = json.loads(argv_log.read_text(encoding="utf-8").splitlines()[-1])
+    # dump.py 记录 sys.argv[1:]（脚本名已剔），即完整 claude args+prompt
+    check("H1 claude 引擎参数逐字节同现状（cmd+args+prompt 在 argv，stdin 关闭）",
+          rec["argv"] == ["--dangerously-skip-permissions", "-p", "PROMPT_H1_回归"]
+          and rec["stdin"] == ""   # DEVNULL → 立即 EOF
+          and rec["cwd"] == str(d / "workdir_claude")
+          and cp.returncode == 0,
+          f"argv={rec['argv']} stdin={rec['stdin']!r} cwd={rec['cwd']}")
+
+    # H2 codex 参数构造：{outfile} 替换 + '-' 收尾 + stdin=prompt + cwd=codex.workdir
+    argv_log.unlink(missing_ok=True)
+    cfg_h["responder"] = {"engine": "codex"}
+    cfg_h["codex"] = {"cmd": PY,
+                      "args": [str(dump_py), "exec", "--skip-git-repo-check",
+                               "--output-last-message", "{outfile}", "-"],
+                      "timeout": 30, "workdir": str(d / "workdir_codex")}
+    (d / "workdir_codex").mkdir()
+    cfgp.write_text(json.dumps(cfg_h, ensure_ascii=False), encoding="utf-8")
+    cfg2 = sup_mod.load_config(cfgp)
+    cp2 = sup_mod.spawn_engine(cfg2, "PROMPT_H2_CODEX", 30, "h2")
+    rec2 = json.loads(argv_log.read_text(encoding="utf-8").splitlines()[-1])
+    a = rec2["argv"]  # dump.py 记录 sys.argv[1:]（脚本名已剔），即完整 codex args
+    check("H2 codex 参数构造：{outfile} 替换+args 末尾 '-'，prompt 走 stdin",
+          a[:3] == ["exec", "--skip-git-repo-check", "--output-last-message"]
+          and a[3].startswith(str(expert_dir / "codex_out"))
+          and a[3].endswith(".md")
+          and a[4] == "-"
+          and rec2["stdin"] == "PROMPT_H2_CODEX"
+          and rec2["cwd"] == str(d / "workdir_codex")
+          and (expert_dir / "codex_out").is_dir()
+          and getattr(cp2, "_empty_out", False) is True,  # 拦截器未写文件→空档
+          f"argv={a} cwd={rec2['cwd']} stdin={rec2['stdin']!r} "
+          f"empty_out={getattr(cp2, '_empty_out', None)}")
+
+    # H3/H4 全链路：engine=codex + mock codex，@派单两条（MARK→✅ / EMPTY→⚠️）
+    fake_codex = write_mock_codex(d)
+    fake_log = d / "fake_calls.jsonl"   # codex 不写此日志，仅占位
+    posts_log = d / "hub_posts.jsonl"
+    outfiles_log = d / "outfiles.log"
+    msgs = [
+        {"delay": 1.0, "msg": {"seq": 51, "ts": "2026-09-17T00:00:51Z",
+         "from": "yifei", "conversation_id": "grp_mp", "type": "text",
+         "body": "codex任务A __CX_MARK__", "mentions": ["coder"]}},
+        {"delay": 1.0, "msg": {"seq": 52, "ts": "2026-09-17T00:00:52Z",
+         "from": "yifei", "conversation_id": "grp_mp", "type": "text",
+         "body": "codex任务B __CX_EMPTY__", "mentions": ["coder"]}},
+    ]
+    spec = d / "msgs.json"; spec.write_text(json.dumps(msgs), encoding="utf-8")
+    rt = time.strftime("%H:%M", time.localtime(time.time() + 3600))
+    cfg_full = make_config(d, fake_codex, rt, max_conc=2,
+                           expert_dir=d / "expert_full",
+                           extra={
+                               "responder": {"engine": "codex"},
+                               "codex": {"cmd": str(fake_codex),
+                                         "args": ["exec", "--skip-git-repo-check",
+                                                  "--output-last-message",
+                                                  "{outfile}", "-"],
+                                         "timeout": 30, "workdir": str(d)},
+                           })
+    hub_env = dict(os.environ); hub_env["MOCK_HUB_POSTS"] = str(posts_log)
+    hub = subprocess.Popen([PY, str(BASE / "mock_hub.py"), str(HUB_PORT), str(spec)],
+                           env=hub_env,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(0.8)
+    sup = start_supervisor(cfg_full, fake_log,
+                           env_extra={"FAKECODEX_OUTFILES": str(outfiles_log)})
+    try:
+        t0 = time.time()
+        posts = []
+        while time.time() - t0 < 30:
+            if posts_log.exists():
+                posts = [json.loads(l) for l in
+                         posts_log.read_text(encoding="utf-8").splitlines()
+                         if l.strip()]
+                if len(posts) >= 2:
+                    break
+            time.sleep(0.3)
+    finally:
+        sup.terminate(); hub.terminate()
+        for p in (sup, hub):
+            try:
+                p.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                p.kill(); p.wait(timeout=5)
+
+    bodies = [p["msg"]["body"] for p in posts]
+    ok_b = next((b for b in bodies if b.startswith("✅")), None)
+    warn_b = next((b for b in bodies if b.startswith("⚠️")), None)
+    check("H3 codex 全链路：stdin→outfile→✅回执含 [TASK_DONE] 产出",
+          ok_b is not None and "codex自验产出" in ok_b and "__CX_MARK__" in ok_b,
+          f"✅={ok_b}")
+    check("H4 codex 码0但 outfile 空 → ⚠️档回执",
+          warn_b is not None and "应答文件为空" in warn_b,
+          f"⚠️={warn_b}")
+    stdout_log = (d / "supervisor_stdout.log").read_text(encoding="utf-8")
+    eng_lines = [l for l in stdout_log.splitlines()
+                 if "点火 #" in l and "engine=codex" in l]
+    check("H5 点火日志标注 engine=codex", len(eng_lines) >= 2,
+          f"engine=codex 行数={len(eng_lines)} 样例={eng_lines[0].strip() if eng_lines else '无'}")
+
+
 def main():
     root = Path(tempfile.mkdtemp(prefix="sup_selftest_"))
     print(f"自验工作目录: {root}")
@@ -671,6 +854,7 @@ def main():
         scenario_E(root)
         scenario_F(root)
         scenario_G(root)
+        scenario_H(root)
     finally:
         print(f"（保留现场供核查：{root}；确认后可 rm -rf）")
     print("=== 汇总 ===")
