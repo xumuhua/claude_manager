@@ -7,11 +7,17 @@
   复盘在跑+槽空 → 任务插队先于排队复盘点火
 - 六件套：骨架自动初始化 + 热读取集进 prompt 核对
 
+SUPERVISOR-3 追加（场景 F/G）：
+- F1-F4 知会消息不点火：echo 回执/兜底回执/schedule 回执/复盘摘要，且 supervisor
+  stdout 留 [filter] 日志行；F5 任务书派单正常点火；F6 自然语言派单正常点火
+- G1 trigger_filter=false 热关回退：echo 消息恢复点火；G2 兜底回执 mentions 空
+
 假 claude 落调用日志（kind/prompt 摘要/起止时刻），全部经日志断言，不依赖 ps 全表
 （本环境 ps 全表与 Popen 子进程不同步，见 busfix1 教训）。
 """
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -62,6 +68,9 @@ case "$prompt" in *"复盘七步"*) has_steps=yes ;; esac
 trig=""
 case "$prompt" in *"__TRIG1__"*) trig="__TRIG1__" ;; esac
 case "$prompt" in *"__SCHED1__"*) trig="__SCHED1__" ;; esac
+# 触发消息 body 原文回收（SUPERVISOR-3 F3：区分两条同批 job 的触发源）
+bodies=""
+case "$prompt" in *"__NLTEST__"*) bodies="__NLTEST__" ;; esac
 # P0 三档回执用例控制：__RC0_MARK__=退出0+自报标记；__RC0_NOMARK__=退出0无标记；
 # __RC7__=退出码7+stderr。标记行内容含场景标记供回执内容断言。
 mark=""
@@ -76,13 +85,13 @@ case "$prompt" in
 esac
 rc=0
 case "$prompt" in *"__RC7__"*) rc=7 ;; esac
-python3 - "$FAKECLAUDE_LOG" "$kind" "$start" "$end" "$has_read_set" "$has_group_log" "$has_archive" "$has_steps" "$trig" <<'EOF'
+python3 - "$FAKECLAUDE_LOG" "$kind" "$start" "$end" "$has_read_set" "$has_group_log" "$has_archive" "$has_steps" "$trig" "$bodies" <<'EOF'
 import json, sys
-log, kind, start, end, rs, gl, ar, st, trig = sys.argv[1:]
+log, kind, start, end, rs, gl, ar, st, trig, bodies = sys.argv[1:]
 with open(log, "a", encoding="utf-8") as f:
     f.write(json.dumps({"kind": kind, "start": float(start), "end": float(end),
                         "read_set": rs, "group_log": gl, "archive": ar,
-                        "steps": st, "trig": trig}) + "\\n")
+                        "steps": st, "trig": trig, "bodies": bodies}) + "\\n")
 EOF
 if [ "$rc" != "0" ]; then
   echo "FAKECLAUDE-ERROR boom __RC7__" >&2
@@ -138,6 +147,12 @@ def read_calls(fake_log: Path):
     if not fake_log.exists():
         return []
     return [json.loads(l) for l in fake_log.read_text(encoding="utf-8").splitlines() if l.strip()]
+
+
+def wait_seconds(fake_log: Path, n: int, seconds: float) -> list:
+    """固定窗口读点火记录（负向断言用：不能提前返回，必须等满窗口）。"""
+    time.sleep(seconds)
+    return read_calls(fake_log)
 
 
 def wait_calls(fake_log: Path, n: int, timeout: float) -> list:
@@ -390,10 +405,11 @@ def scenario_D(root: Path):
     # mentions 含触发者：✅(#1,seq21,yifei)/⚠️(#2,seq22,gege)/❌(#3,seq23,yifei)
     def mentions_of(prefix):
         p = next((p for p in posts if p["msg"]["body"].startswith(prefix)), None)
-        return p["msg"]["mentions"] if p else []
-    check("D8 mentions 含触发者",
-          mentions_of("✅") == ["yifei"] and mentions_of("⚠️") == ["gege"]
-          and mentions_of("❌") == ["yifei"],
+        return p["msg"]["mentions"] if p else None
+    # SUPERVISOR-3 修法②：三档兜底回执 mentions 一律清空（原为含触发者）
+    check("D8 mentions 一律清空（SUPERVISOR-3 修法②）",
+          mentions_of("✅") == [] and mentions_of("⚠️") == []
+          and mentions_of("❌") == [],
           f"✅→{mentions_of('✅')} ⚠️→{mentions_of('⚠️')} ❌→{mentions_of('❌')}")
 
 def scenario_E(root: Path):
@@ -501,6 +517,149 @@ def scenario_E(root: Path):
           f"当日到点未点项={[(s['label']) for s in s_due]}（期望空：日报E fired 已记，"
           f"永不点E weekdays 排除）")
 
+def scenario_F(root: Path):
+    """SUPERVISOR-3 修法①：闸二知会消息识别（哥哥 9/17 拍板，宁严勿宽）。
+    四条知会格式（echo/兜底回执/schedule 回执/复盘摘要）带 @coder → 不点火，
+    且 supervisor stdout 每条留 [filter] 日志；两条真派单（任务书/自然语言）
+    → 正常点火。"""
+    print("=== 场景F：SUPERVISOR-3 触发过滤（知会不点火/真派单点火） ===")
+    d = root / "F"; d.mkdir(parents=True)
+    fake = write_mock_claude(d)
+    fake_log = d / "fake_calls.jsonl"
+    expert_dir = d / "expert"
+
+    def m(seq, body, sender="aicorp", mention=True):
+        return {"delay": 0.6, "msg": {
+            "seq": seq, "ts": f"2026-09-17T00:00:{seq:02d}Z", "from": sender,
+            "conversation_id": "grp_mp", "type": "text",
+            "body": body, "mentions": (["coder"] if mention else [])}}
+    msgs = [
+        m(30, "（占位：防订阅握手竞态丢首条 deliver，此条无 @不触发）",
+          "yifei", mention=False),
+        m(31, "[echo:aicorp] 确认收讫（seq 30）"),                       # 知会·echo
+        m(32, "✅ #9 完成（耗时100s）产出：blabla"),                     # 知会·兜底✅
+        m(33, "⚠️ #10 完成但未自报产出（耗时42s）：请人工看一眼"),        # 知会·兜底⚠️
+        m(34, "❌ #11 异常（耗时5s）：退出码7"),                         # 知会·兜底❌
+        m(35, "[日报] ✅ #3 完成（耗时60s）产出：X"),                    # 知会·schedule
+        m(36, "【复盘 0917】今日三事……"),                                # 知会·复盘摘要
+        m(37, "【每日复盘 0917】今日三事……"),                            # 知会·每日复盘
+        m(38, "SUPERVISOR-9 任务书：修复 filter，自验后部署 __TRIG1__",
+          "yifei"),                                                     # 真派单·任务书
+        m(39, "哥哥让问问你昨天那个模块进展 __NLTEST__", "gege"),        # 真派单·自然语言
+    ]
+    spec = d / "msgs.json"; spec.write_text(json.dumps(msgs), encoding="utf-8")
+
+    rt = time.strftime("%H:%M", time.localtime(time.time() + 3600))  # 复盘不点火
+    cfg = make_config(d, fake, rt, max_conc=3, expert_dir=expert_dir)
+    hub = subprocess.Popen([PY, str(BASE / "mock_hub.py"), str(HUB_PORT), str(spec)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(0.8)
+    sup = start_supervisor(cfg, fake_log)
+    try:
+        # 9 条 × 0.6s deliver + job 收尾，留 15s 固定窗口（负向断言须等满）；
+        # 若 hub 在订阅握手前开闸会丢首条 deliver，等满后点火数不够则重跑一轮
+        for attempt in range(3):
+            calls = wait_seconds(fake_log, 2, seconds=15)
+            stdout_log = (d / "supervisor_stdout.log").read_text(encoding="utf-8")
+            if len(calls) >= 2:
+                break
+            if attempt < 2:
+                print(f"（F 场景首条 deliver 疑似丢失，重跑第 {attempt + 2} 轮）")
+                sup.terminate(); hub.terminate()
+                for p in (sup, hub):
+                    try:
+                        p.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        p.kill(); p.wait(timeout=5)
+                fake_log.unlink(missing_ok=True)
+                (d / "supervisor_stdout.log").unlink(missing_ok=True)
+                hub = subprocess.Popen(
+                    [PY, str(BASE / "mock_hub.py"), str(HUB_PORT), str(spec)],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                time.sleep(0.8)
+                sup = start_supervisor(cfg, fake_log)
+    finally:
+        sup.terminate(); hub.terminate()
+        for p in (sup, hub):
+            try:
+                p.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                p.kill(); p.wait(timeout=5)
+
+    jobs = [c for c in calls if c["kind"] == "job"]
+    check("F1 仅 2 次点火（四条知会全部拦下，两条真派单放行）",
+          len(calls) == 2 and len(jobs) == 2,
+          f"calls={len(calls)} kinds={sorted(c['kind'] for c in calls)}")
+    trigs = {c.get("trig") for c in jobs}
+    check("F2 任务书派单正常点火（__TRIG1__）", "__TRIG1__" in trigs,
+          f"trigs={trigs}")
+    # 自然语言派单：prompt 带触发消息 body 原文（__NLTEST__ 为独有标记）
+    nl_hit = any("__NLTEST__" in (c.get("bodies") or "") for c in jobs)
+    check("F3 自然语言派单正常点火（__NLTEST__ 进 prompt）", nl_hit,
+          f"jobs={[(c['kind'], c['trig'], (c.get('bodies') or '')[:20]) for c in jobs]}")
+    filter_lines = [l for l in stdout_log.splitlines() if "[filter]" in l]
+    hit_seqs = {int(re.search(r"seq=(\d+)", l).group(1))
+                for l in filter_lines if re.search(r"seq=(\d+)", l)}
+    check("F4 七条知会各有 [filter] 日志行（seq 31-37）",
+          hit_seqs == {31, 32, 33, 34, 35, 36, 37},
+          f"hit_seqs={sorted(hit_seqs)} 样例={filter_lines[0].strip() if filter_lines else '无'}")
+
+
+def scenario_G(root: Path):
+    """SUPERVISOR-3：G1 trigger_filter=false 热关回退（echo 恢复点火）；
+    G2 修法② on_job_done 兜底回执 mentions 清空。"""
+    print("=== 场景G：trigger_filter 热关 + 兜底回执 mentions 空 ===")
+    d = root / "G"; d.mkdir(parents=True)
+    fake = write_mock_claude(d)
+    fake_log = d / "fake_calls.jsonl"
+    posts_log = d / "hub_posts.jsonl"
+    expert_dir = d / "expert"
+
+    msgs = [
+        {"delay": 1.0, "msg": {"seq": 41, "ts": "2026-09-17T00:00:41Z",
+         "from": "aicorp", "conversation_id": "grp_mp", "type": "text",
+         "body": "[echo:aicorp] 确认收讫 __RC0_MARK__", "mentions": ["coder"]}},
+    ]
+    spec = d / "msgs.json"; spec.write_text(json.dumps(msgs), encoding="utf-8")
+
+    rt = time.strftime("%H:%M", time.localtime(time.time() + 3600))
+    cfg = make_config(d, fake, rt, max_conc=2, expert_dir=expert_dir,
+                      extra={"trigger_filter": False})  # 热关回退
+    hub_env = dict(os.environ); hub_env["MOCK_HUB_POSTS"] = str(posts_log)
+    hub = subprocess.Popen([PY, str(BASE / "mock_hub.py"), str(HUB_PORT), str(spec)],
+                           env=hub_env,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(0.8)
+    sup = start_supervisor(cfg, fake_log)
+    try:
+        calls = wait_calls(fake_log, 1, timeout=20)
+        t0 = time.time()
+        posts = []
+        while time.time() - t0 < 15:
+            if posts_log.exists():
+                posts = [json.loads(l) for l in
+                         posts_log.read_text(encoding="utf-8").splitlines()
+                         if l.strip()]
+                if len(posts) >= 1:
+                    break
+            time.sleep(0.3)
+    finally:
+        sup.terminate(); hub.terminate()
+        for p in (sup, hub):
+            try:
+                p.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                p.kill(); p.wait(timeout=5)
+
+    check("G1 trigger_filter=false 时 echo 消息恢复点火（热关回退生效）",
+          len(calls) == 1 and calls[0]["kind"] == "job",
+          f"calls={len(calls)} kinds={[c['kind'] for c in calls]}")
+    check("G2 on_job_done 兜底回执 mentions 清空（修法②）",
+          len(posts) == 1 and posts[0]["msg"]["mentions"] == []
+          and posts[0]["msg"]["body"].startswith("✅"),
+          f"posts={[(p['msg']['body'][:30], p['msg']['mentions']) for p in posts]}")
+
+
 def main():
     root = Path(tempfile.mkdtemp(prefix="sup_selftest_"))
     print(f"自验工作目录: {root}")
@@ -510,6 +669,8 @@ def main():
         scenario_C(root)
         scenario_D(root)
         scenario_E(root)
+        scenario_F(root)
+        scenario_G(root)
     finally:
         print(f"（保留现场供核查：{root}；确认后可 rm -rf）")
     print("=== 汇总 ===")

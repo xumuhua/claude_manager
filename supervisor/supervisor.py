@@ -22,6 +22,14 @@ prompt（读落盘→读群消息→干活），兜底回执发 target_group（m
 复盘 review_time 保留为 schedules 之外的独立项（kind=review 不兜底回执，
 逻辑不动）。无 schedules 字段时行为与 SUPERVISOR-1 首版完全一致。
 
+SUPERVISOR-3（哥哥 9/17 10:25 拍板，修乒乓链）：
+①should_trigger 两道闸——闸一 mentions 门槛保留，闸二知会消息识别
+（echo/supervisor 兜底回执/schedule 回执/复盘摘要，命中即不点火只留日志），
+兜底正则宁严勿宽（漏杀知会只空跑一个 claude，误杀真派单没人干活）。
+config trigger_filter=false 可单台热关回退。
+②supervisor 发出的知会消息 mentions 一律清空：on_job_done 三档兜底回执、
+schedules 回执（24e0dbd 已空）、复盘摘要发群（review.md 引导 mentions 置空）。
+
 落盘六件套（expert_dir/）：
   identity.md / state.yaml / history/YYYY-MM-DD.md / knowledge.md /
   dir_map.yaml / 冷存储 archive_dir
@@ -66,6 +74,12 @@ RECEIPT_STDERR_CAP = 500                  # ❌ 档 stderr 摘要预算
 RECEIPT_BODY_CAP = 800                    # 回执正文总长预算
 TASK_DONE_LINE_RE = re.compile(r"^\[TASK_DONE\][ \t]*产出[:：][ \t]*(.*)$",
                                re.MULTILINE)
+
+# SUPERVISOR-3 闸二·知会消息识别（命中即不点火；宁严勿宽，拿不准放行点火）
+FTR_ECHO_RE = re.compile(r"^\[echo:[^\[\]]*\]")            # bus client 自动回执（须闭合）
+FTR_RECEIPT_RE = re.compile(r"^(?:✅|⚠️|❌)[ \t]*#\d+")    # on_job_done 三档兜底回执
+FTR_SCHED_RE = re.compile(r"^\[[^\[\]]*\][ \t]*(?:✅|⚠️|❌)")  # schedules 的 [label] ✅ 回执
+FTR_REVIEW_RE = re.compile(r"^【(?:每日)?复盘")              # 复盘摘要
 
 
 def _parse_weekdays(spec: str) -> "set[int] | None":
@@ -156,6 +170,7 @@ def load_config(path: Path) -> dict:
     cfg.setdefault("stop_cooldown", 60)                # F1 §2.3
     cfg.setdefault("human_names", [])                  # R4.4 兜底启发式（默认空=不用）
     cfg.setdefault("context_lines", 20)
+    cfg.setdefault("trigger_filter", True)               # SUPERVISOR-3 闸二（可单台热关）
     cfg.setdefault("history_hot_days", 2)              # 近两日 history 为热
     cfg.setdefault("review_skill", "nightly-review")
     cfg.setdefault("history_max_chars", 40000)         # 近两日 history 进 prompt 预算
@@ -486,7 +501,7 @@ class Launcher:
     ②回执内容自检：job prompt 要求 claude 收场输出 `[TASK_DONE] 产出: <...>`，
       stdout 有标记=真完成，无=完成未自报
 
-    三档回执主动发向触发群、mentions 含触发者：
+    三档回执主动发向触发群，mentions 一律清空（SUPERVISOR-3 修法②，知会消息不 @人）：
     ✅ #N 完成（0+有标记）：耗时xs 产出<标记行内容>
     ⚠️ #N 完成但未自报产出（0 无标记）：耗时xs，请人工看一眼
     ❌ #N 异常（非0/超时）：退出码X stderr 摘要
@@ -501,8 +516,9 @@ class Launcher:
         if job["kind"] != "job":
             return  # 复盘摘要由 claude 自己发群，程序不兜底（防一结双发）
         meta = job["meta"]
-        conv, trig_from = meta.get("conv"), meta.get("trig_from")
-        if not conv or (not trig_from and not meta.get("sched_receipt")):
+        conv = meta.get("conv")
+        # SUPERVISOR-3：知会消息 mentions 一律清空，不再要求触发者字段
+        if not conv or (not meta.get("trig_from") and not meta.get("sched_receipt")):
             log.error("#%d 回执缺触发群/触发者 meta=%s，无法闭环", job["id"], meta)
             return
         jid, rc = job["id"], proc.returncode
@@ -530,7 +546,8 @@ class Launcher:
                               jid, conv, body[:120])
             return
         try:
-            await self.sup.send_group_message(conv, body, [trig_from])
+            # SUPERVISOR-3 修法②：兜底回执是知会消息，mentions 一律清空
+            await self.sup.send_group_message(conv, body, [])
         except Exception:
             log.exception("#%d 兜底回执发送失败（conv=%s），仅留日志：%s",
                           jid, conv, body[:120])
@@ -698,7 +715,18 @@ class Supervisor:
             log.info("会话 %s 处于 STOP 冷却期，不触发（seq %d）", conv, msg["seq"])
             return False
         mentions = msg.get("mentions") or []
-        return self.cfg["agent_name"] in mentions or "all" in mentions  # R3.3
+        if self.cfg["agent_name"] not in mentions and "all" not in mentions:
+            return False  # 闸一·mentions 门槛（R3.3）
+        # SUPERVISOR-3 闸二·知会消息识别（config trigger_filter=false 可单台热关）
+        if self.cfg.get("trigger_filter", True):
+            body = (msg.get("body") or "").lstrip()
+            hit = (FTR_ECHO_RE.match(body) or FTR_RECEIPT_RE.match(body)
+                   or FTR_SCHED_RE.match(body) or FTR_REVIEW_RE.match(body))
+            if hit:
+                log.info("[filter] seq=%s sender=%s 命中知会格式，不点火",
+                         msg.get("seq"), msg.get("from"))
+                return False
+        return True
 
     async def handle_message(self, msg: dict):
         try:
@@ -998,9 +1026,10 @@ def main():
         except (NotImplementedError, RuntimeError):
             pass  # Windows 无 add_signal_handler
     log.info("supervisor 启动：expert=%s pid=%d 并发闸≤%d 复盘时点=%s "
-             "落盘=%s 冷存储=%s",
+             "触发过滤=%s 落盘=%s 冷存储=%s",
              cfg["agent_name"], os.getpid(), cfg["concurrency"]["max"],
-             cfg["review_time"], cfg["_expert_dir"], cfg["_archive_dir"])
+             cfg["review_time"], "开" if cfg.get("trigger_filter", True) else "关",
+             cfg["_expert_dir"], cfg["_archive_dir"])
     tasks = [
         loop.create_task(sup.run()),
         loop.create_task(sup.review_timer()),

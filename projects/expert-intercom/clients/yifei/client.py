@@ -440,7 +440,9 @@ class IntercomClient:
                     "msg_id": str(uuid.uuid4()),
                     "conversation_id": msg["conversation_id"],
                     "from": self.cfg["agent_name"],  # hub 以 token 反查覆盖（F1 §2.2）
-                    "mentions": [msg["from"]],       # R3.6：原样带回触发方
+                    # SUPERVISOR-3 修法②：echo/自动回复是知会消息，mentions 置空，
+                    # 防各家 supervisor 被 echo 回执误点火（乒乓链根因之一）
+                    "mentions": [],
                     "type": "text",
                     "body": body,
                     "reply_to": msg["seq"],

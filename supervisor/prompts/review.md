@@ -18,7 +18,8 @@ cron 点火已全面退役，本次复盘由 supervisor 内置定时器触发。
    目录无残留 / 冷热无重复。校对不过重做到过。
 
 ## 收场
-写当日复盘摘要发群（{review_groups}，mentions 含 yifei）。
+写当日复盘摘要发群（{review_groups}，mentions 置空——复盘摘要是知会消息不 @人，
+防止各家 supervisor 被摘要误点火）。
 摘要含：今日干了什么 / 在途任务与下一步 / 卡点 / 冷热分离执行结果。
 
 ## 附：近两日 history（热数据，供上下文）
