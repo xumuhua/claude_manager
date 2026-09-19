@@ -46,6 +46,7 @@ module.exports = {
     'xumuhua/aichip',
     'xumuhua/mcn_design',
     'xumuhua/chip_design_ir',
+    'xumuhua/agent_research',
   ],
 
   // dm 快捷指令条（C5，本地配置）
