@@ -62,6 +62,58 @@ function setCardFold(key, folded) {
 const getTreeSort = () => (get(K.treeSort, 'name') === 'mtime' ? 'mtime' : 'name');
 const setTreeSort = (mode) => set(K.treeSort, mode === 'mtime' ? 'mtime' : 'name');
 
+// ---- MP-PERF2：tree 层缓存持久化（页面销毁/冷启动后仍可命中，TTL 30min）----
+// 只存 tree 列表与 mtime 图（不存文件内容）；LRU 体积上限 cfg.TREE_CACHE_MAX_BYTES，
+// 超限从最旧条目清起；任何一步失败静默降级（缓存语义，绝不影响请求主路径）。
+const K_TREE_LEVELS = 'tree_levels';  // { cacheKey: {ts, branch, tree} }
+const K_TREE_MTIMES = 'tree_mtimes';  // { cacheKey: {ts, map} }
+
+// 通用读：取整张表 → 剔除过期 → 回写瘦身后的表 → 返回命中条
+function _readCacheTable(storeKey, ttlMs) {
+  const all = get(storeKey, {});
+  const now = Date.now();
+  let dirty = false;
+  Object.keys(all).forEach((k) => {
+    if (!all[k] || !all[k].ts || now - all[k].ts > ttlMs) { delete all[k]; dirty = true; }
+  });
+  if (dirty) set(storeKey, all);
+  return all;
+}
+// 通用写：写条目 → 体积超限则按 ts 升序（最旧在前）逐条驱逐
+function _writeCacheTable(storeKey, table, maxBytes) {
+  let keys = Object.keys(table);
+  while (keys.length > 1) {
+    let size = 0;
+    try { size = JSON.stringify(table).length; } catch (e) { return; }
+    if (size <= maxBytes) break;
+    keys.sort((a, b) => (table[a].ts || 0) - (table[b].ts || 0));
+    delete table[keys[0]];
+    keys = Object.keys(table);
+  }
+  set(storeKey, table);
+}
+
+function getTreeLevels(ttlMs) { return _readCacheTable(K_TREE_LEVELS, ttlMs); }
+function putTreeLevel(cacheKey, entry, ttlMs, maxBytes) {
+  const all = _readCacheTable(K_TREE_LEVELS, ttlMs);
+  all[cacheKey] = entry;
+  _writeCacheTable(K_TREE_LEVELS, all, maxBytes);
+}
+function delTreeLevel(cacheKey) {
+  const all = get(K_TREE_LEVELS, {});
+  if (cacheKey in all) { delete all[cacheKey]; set(K_TREE_LEVELS, all); }
+}
+function getTreeMtimes(ttlMs) { return _readCacheTable(K_TREE_MTIMES, ttlMs); }
+function putTreeMtimes(cacheKey, entry, ttlMs, maxBytes) {
+  const all = _readCacheTable(K_TREE_MTIMES, ttlMs);
+  all[cacheKey] = entry;
+  _writeCacheTable(K_TREE_MTIMES, all, maxBytes);
+}
+function delTreeMtimes(cacheKey) {
+  const all = get(K_TREE_MTIMES, {});
+  if (cacheKey in all) { delete all[cacheKey]; set(K_TREE_MTIMES, all); }
+}
+
 // ---- 离线文档缓存（G4：LRU 20 篇 / 4MB）----
 function getDoc(key) {
   const v = get(K.doc(key), null);
@@ -95,5 +147,7 @@ module.exports = {
   getFavs, setFavs, getCustoms, addCustom,
   getSummary, setSummary, getCardFold, setCardFold,
   getTreeSort, setTreeSort,
+  getTreeLevels, putTreeLevel, delTreeLevel,
+  getTreeMtimes, putTreeMtimes, delTreeMtimes,
   getDoc, putDoc, listDocs, docKey,
 };

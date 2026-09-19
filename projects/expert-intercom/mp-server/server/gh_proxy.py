@@ -4,9 +4,14 @@
 默认匿名访问，404/403 原样上报；可选配置 github.token（值写 "env:GITHUB_RO_TOKEN"，
 只读 PAT，仅服务端 env 注入、端侧与小程序不接触）以解除私有仓匿名 404。
 未配置 / env 未设置 = 匿名，行为与旧版完全一致。
+
+MP-PERF2：进程内短 TTL 缓存——/branches 与 /tree（不含 with_mtime）按 key 缓存
+5 分钟（与前端 TREE_CACHE_MS 对齐前段），命中响应带 X-Cache: hit（miss 带 miss），
+方便验收比对 nginx 日志。with_mtime 不缓存（慢路径，防时间列 stale）。
 """
 import asyncio
 import re
+import time
 
 import aiohttp
 from aiohttp import web
@@ -14,6 +19,38 @@ from aiohttp import web
 # owner/repo/branch/path 白名单字符，防注入与路径穿越
 _RE_OWNER_REPO = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
 _RE_BRANCH = re.compile(r"^[A-Za-z0-9_./-]{1,200}$")
+
+# MP-PERF2：进程内缓存（单进程 aiohttp，模块级 dict 即可；重启即清）
+CACHE_TTL_S = 300          # 5 分钟
+_CACHE = {}                # {key: (expire_ts, payload_dict)}
+_CACHE_MAX_ENTRIES = 256   # 防内存膨胀：超限清最旧
+
+
+def _cache_get(key):
+    hit = _CACHE.get(key)
+    if not hit:
+        return None
+    exp, payload = hit
+    if time.monotonic() > exp:
+        _CACHE.pop(key, None)
+        return None
+    return payload
+
+
+def _cache_put(key, payload):
+    if len(_CACHE) >= _CACHE_MAX_ENTRIES:
+        oldest = min(_CACHE, key=lambda k: _CACHE[k][0])
+        _CACHE.pop(oldest, None)
+    _CACHE[key] = (time.monotonic() + CACHE_TTL_S, payload)
+
+
+def _cached_json(key, payload):
+    """统一出口：写缓存（payload 非 None 时）+ 带 X-Cache 头返回。"""
+    if payload is not None:
+        _cache_put(key, payload)
+        return web.json_response(payload, headers={"X-Cache": "miss"})
+    hit = _cache_get(key)
+    return web.json_response(hit, headers={"X-Cache": "hit"})
 
 # 仅放行文本类扩展名（markdown 为主，兼顾代码/配置文件阅读）
 TEXT_EXTS = {
@@ -56,11 +93,18 @@ def _is_text_path(path):
 
 
 async def gh_branches(cfg, request):
-    """GET /gh/<owner>/<repo>/branches — 列分支（小程序分支切换器用）。"""
+    """GET /gh/<owner>/<repo>/branches — 列分支（小程序分支切换器用）。
+
+    MP-PERF2：按 (owner,repo) 缓存 5 分钟；命中带 X-Cache: hit。
+    """
     owner = request.match_info["owner"]
     repo = request.match_info["repo"]
     if not (_valid_segment(owner, _RE_OWNER_REPO) and _valid_segment(repo, _RE_OWNER_REPO)):
         return _bad_request("BAD_REPO", "owner/repo 含非法字符")
+    cache_key = ("branches", owner, repo)
+    hit = _cache_get(cache_key)
+    if hit is not None:
+        return web.json_response(hit, headers={"X-Cache": "hit"})
     timeout = aiohttp.ClientTimeout(total=cfg["gh_timeout_s"])
     try:
         async with aiohttp.ClientSession(timeout=timeout,
@@ -83,8 +127,9 @@ async def gh_branches(cfg, request):
                     page += 1
     except (aiohttp.ClientError, TimeoutError) as e:
         return web.json_response({"code": "GH_UNREACHABLE", "message": f"GitHub 上游不可达: {e}"}, status=502)
-    return web.json_response({"owner": owner, "repo": repo,
-                              "default_branch": default_branch, "branches": names})
+    payload = {"owner": owner, "repo": repo,
+               "default_branch": default_branch, "branches": names}
+    return _cached_json(cache_key, payload)
 
 
 async def gh_tree(cfg, request):
@@ -114,6 +159,11 @@ async def gh_tree(cfg, request):
     if path and ".." in path.split("/"):
         return _bad_request("BAD_PATH", "path 非法")
 
+    # MP-PERF2：with_mtime 不缓存（慢路径、防时间列 stale）；其余按 key 缓存。
+    # branch 缺省时先解析默认分支再查缓存——保证 (owner,repo,branch,path) key 稳定。
+    cacheable = not with_mtime
+    cache_key = None
+
     timeout = aiohttp.ClientTimeout(total=cfg["gh_timeout_s"])
     try:
         async with aiohttp.ClientSession(timeout=timeout,
@@ -128,9 +178,18 @@ async def gh_tree(cfg, request):
                         return web.json_response(
                             {"code": "GH_ERROR", "message": f"GitHub API 返回 {r.status}"}, status=502)
                     branch = (await r.json()).get("default_branch", "main")
+            if cacheable:
+                if level_mode:
+                    cache_key = ("tree", owner, repo, branch, "level", path)
+                else:
+                    cache_key = ("tree", owner, repo, branch, "full", recursive)
+                hit = _cache_get(cache_key)
+                if hit is not None:
+                    return web.json_response(hit, headers={"X-Cache": "hit"})
             if level_mode:
                 # DEBUG-MPUX5：单层模式——contents API 只取当前层，不管仓多大都快
-                return await _gh_tree_level(s, base, owner, repo, branch, path, with_mtime)
+                return await _gh_tree_level(s, base, owner, repo, branch, path, with_mtime,
+                                            cache_key)
             ref = branch + ("?recursive=1" if recursive == "1" else "")
             url = f"{base}/repos/{owner}/{repo}/git/trees/{ref}"
             async with s.get(url) as r:
@@ -157,13 +216,15 @@ async def gh_tree(cfg, request):
             if mt:
                 item["mtime"] = mt
         tree.append(item)
-    return web.json_response({
-        "owner": owner, "repo": repo, "branch": branch,
-        "truncated": bool(data.get("truncated")), "tree": tree,
-    })
+    payload = {"owner": owner, "repo": repo, "branch": branch,
+               "truncated": bool(data.get("truncated")), "tree": tree}
+    if cache_key is not None:
+        return _cached_json(cache_key, payload)
+    return web.json_response(payload)
 
 
-async def _gh_tree_level(session, base, owner, repo, branch, path, with_mtime):
+async def _gh_tree_level(session, base, owner, repo, branch, path, with_mtime,
+                         cache_key=None):
     """MP-UX5：单层目录列表（contents API，不带 recursive）。
 
     返回该目录直接子级（dir/file），与全树模式同形 {owner,repo,branch,truncated,tree}。
@@ -215,10 +276,11 @@ async def _gh_tree_level(session, base, owner, repo, branch, path, with_mtime):
         for it, mt in zip(tree, results):
             if isinstance(mt, str) and mt:
                 it["mtime"] = mt
-    return web.json_response({
-        "owner": owner, "repo": repo, "branch": branch, "path": path,
-        "truncated": False, "tree": tree,
-    })
+    payload = {"owner": owner, "repo": repo, "branch": branch, "path": path,
+               "truncated": False, "tree": tree}
+    if cache_key is not None:
+        return _cached_json(cache_key, payload)
+    return web.json_response(payload)
 
 
 async def _fetch_mtimes(session, base, owner, repo, branch, entries):

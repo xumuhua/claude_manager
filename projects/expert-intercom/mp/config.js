@@ -70,4 +70,8 @@ module.exports = {
   MSG_MAX_KEEP: 800,                 // 内存最多保留消息数（超出截断最旧）
   MSG_WINDOW_INIT: 30,               // MP-MSG1 滑窗：首屏最新 30 条 / 上滑触顶每屏预取 30 条
   LONG_BODY_FOLD: 2000,              // 单条超长折叠（D1 §6.1）
+
+  // MP-PERF2：仓库树缓存——TTL 5min→30min（目录树低频变更），并落 storage 持久化
+  TREE_CACHE_MS: 30 * 60 * 1000,     // tree 页 LEVEL/MTIME 缓存有效期（内存+storage 同口径）
+  TREE_CACHE_MAX_BYTES: 2 * 1024 * 1024,  // storage 持久化体积上限（只存 tree 列表，超限清最旧）
 };

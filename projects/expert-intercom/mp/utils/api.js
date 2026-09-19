@@ -31,6 +31,27 @@ function request({ method = 'GET', path, data, timeout = 20000, responseType }) 
   });
 }
 
+// MP-PERF2：GET 去重——相同 method+path 的在途请求只发一次，后续调用共享同一 Promise。
+// 后台类 GET（目录树/分支/mtime 等幂等只读接口）调用方应优先走 getDedup；
+// 用户写操作与聊天页请求仍走裸 request，行为逐字节不变。
+// 锁的 key 由调用方给的完整 path（含 query，天然含 path+branch）+method 构成；
+// 首个请求 settle 即删键，不长期持有——页面销毁后共享 Promise 正常 resolve/reject，
+// 不阻塞不泄漏（MP-PERF1 白屏坑的规避点：本锁无互斥语义，纯扇出共享）。
+const _inflight = {};
+function getDedup(opts) {
+  const key = (opts.method || 'GET') + ' ' + opts.path;
+  const hit = _inflight[key];
+  if (hit) {
+    console.log('[PERF2] inflight dedup hit: ' + key);
+    return hit;
+  }
+  const p = request(opts);
+  _inflight[key] = p;
+  const clear = () => { if (_inflight[key] === p) delete _inflight[key]; };
+  p.then(clear, clear);
+  return p;
+}
+
 // C4 语音输入：multipart 上传 /ai/asr（音频即转即焚由后端保证，前端不持久化）
 function asr(filePath) {
   return new Promise((resolve, reject) => {
@@ -109,4 +130,4 @@ function aiToast(e) {
   wx.showToast({ title, icon: 'none' });
 }
 
-module.exports = { request, asr, tts, aiToast };
+module.exports = { request, getDedup, asr, tts, aiToast };

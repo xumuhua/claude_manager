@@ -1,20 +1,66 @@
 // pages/repo/tree — P3 目录浏览页（D1 §4.4：逐层 push 页面栈，导航栏=当前路径）
 // MP-UX5：目录级按需加载——每层一次请求、只拉当前层（后端 path 参数单层模式），
 //         废掉"一次 recursive 拉全树+前端过滤"（大仓 3.9MB/24s 超时根因）；
-//         每层独立缓存（owner/repo@branch:path，5 分钟）。
+//         每层独立缓存（owner/repo@branch:path）。
 // MP-UX4 沿用：两段加载——先无 mtime 秒出当前目录列表，mtime 后台异步补当前层；
 //              顶部排序栏（名称/时间，存 storage 记忆，吸顶不随列表滚动）。
+// MP-PERF2：①所有后台 GET 走 api.getDedup（同 URL 在途请求共享 Promise，nginx 日志
+//           实证同请求×2 的根因修复）；③LEVEL/MTIME 缓存 TTL 5min→30min 并落 storage
+//           （页面销毁/冷启动仍可命中），进页先渲快照后台静默刷新。
 const api = require('../../utils/api');
 const fmt = require('../../utils/fmt');
 const store = require('../../utils/store');
+const cfg = require('../../config');
 
-// MP-UX5：按层缓存——key 为 'owner/repo@branch:path'，各层独立 5 分钟有效
-const LEVEL_CACHE = {};  // { key: {ts, branch, tree} } 单层快树
-const MTIME_CACHE = {};  // { key: {ts, map: {path: mtime}} } 单层 mtime 图
+// MP-UX5：按层缓存——key 为 'owner/repo@branch:path'，各层独立
+// MP-PERF2③：内存层之上叠 storage 持久化（store.getTreeLevels/putTreeLevel），
+//            读写先写内存（热路径同步），异步/随手同步到 storage；TTL 统一 cfg.TREE_CACHE_MS
+const LEVEL_CACHE = {};  // { key: {ts, branch, tree} } 单层快树（内存热层）
+const MTIME_CACHE = {};  // { key: {ts, map: {path: mtime}} } 单层 mtime 图（内存热层）
 // MP-UX5B：下一层预取——in-flight 去重（防止同层重复渲染触发重复请求）
 const PREFETCH_INFLIGHT = {};  // { childKey: true }
 const PREFETCH_CONCURRENCY = 4;   // 预取并发上限（小请求、后台跑，不抢首屏）
 const PREFETCH_MAX_DIRS = 30;     // 每层最多预取的子目录数（防巨型目录打爆 GitHub 限流）
+
+// MP-PERF2③：TTL 统一入口（30min，内存与 storage 同口径）
+function treeTTL() { return cfg.TREE_CACHE_MS || 30 * 60 * 1000; }
+// 读：内存优先，miss 则查 storage 快照（命中即回填内存，本次即生效）
+function readLevel(key) {
+  const hit = LEVEL_CACHE[key];
+  if (hit && Date.now() - hit.ts <= treeTTL()) return hit;
+  try {
+    const snap = store.getTreeLevels(treeTTL())[key];
+    if (snap && snap.tree) { LEVEL_CACHE[key] = snap; return snap; }
+  } catch (e) { /* 缓存层失败静默降级 */ }
+  return null;
+}
+function writeLevel(key, entry) {
+  LEVEL_CACHE[key] = entry;
+  try { store.putTreeLevel(key, entry, treeTTL(), cfg.TREE_CACHE_MAX_BYTES); }
+  catch (e) { /* 缓存层失败静默降级 */ }
+}
+function dropLevel(key) {
+  delete LEVEL_CACHE[key];
+  try { store.delTreeLevel(key); } catch (e) { /* 忽略 */ }
+}
+function readMtimeMap(key) {
+  const hit = MTIME_CACHE[key];
+  if (hit && Date.now() - hit.ts <= treeTTL()) return hit.map;
+  try {
+    const snap = store.getTreeMtimes(treeTTL())[key];
+    if (snap && snap.map) { MTIME_CACHE[key] = snap; return snap.map; }
+  } catch (e) { /* 缓存层失败静默降级 */ }
+  return null;
+}
+function writeMtimeMap(key, entry) {
+  MTIME_CACHE[key] = entry;
+  try { store.putTreeMtimes(key, entry, treeTTL(), cfg.TREE_CACHE_MAX_BYTES); }
+  catch (e) { /* 缓存层失败静默降级 */ }
+}
+function dropMtimeMap(key) {
+  delete MTIME_CACHE[key];
+  try { store.delTreeMtimes(key); } catch (e) { /* 忽略 */ }
+}
 
 // 文本/markdown 扩展名（与后端白名单一致，决定能否进 P4）
 const TEXT_RE = /\.(md|markdown|mdown|txt|rst|py|js|ts|tsx|jsx|json|yaml|yml|toml|ini|cfg|sh|bash|c|h|cpp|hpp|go|rs|java|html|css|xml|sql|vue)$/i;
@@ -54,7 +100,8 @@ Page({
   async loadBranches() {
     const { owner, repo } = this.data;
     try {
-      const d = await api.request({ path: `/gh/${owner}/${repo}/branches`, timeout: 15000 });
+      // MP-PERF2①：getDedup——onLoad 链与并发入口的同 URL 请求共享一个 Promise
+      const d = await api.getDedup({ path: `/gh/${owner}/${repo}/branches`, timeout: 15000 });
       const branches = d.branches || [];
       const branch = this.data.branch || d.default_branch || branches[0] || 'main';
       this.setData({ branches, branch, branchIdx: Math.max(0, branches.indexOf(branch)) });
@@ -69,8 +116,8 @@ Page({
     // [MP-LOG1 诊断埋点⑥] 分支切换
     console.log('[tree] branchChange from=' + this.data.branch + ' to=' + branch);
     if (!branch || branch === this.data.branch) return;
-    delete LEVEL_CACHE[this.cacheKey()];
-    delete MTIME_CACHE[this.cacheKey()];
+    dropLevel(this.cacheKey());
+    dropMtimeMap(this.cacheKey());
     this.setData({ branch, branchIdx: idx });
     this.loadTree();
   },
@@ -100,8 +147,9 @@ Page({
     this.setData({ loading: true, error: '' });
     try {
       const cacheKey = this.cacheKey();
-      let lvl = LEVEL_CACHE[cacheKey];
-      const cacheHit = !!(lvl && Date.now() - lvl.ts <= 5 * 60 * 1000);
+      // MP-PERF2③：内存+storage 双层读（快照命中即秒渲，后台照常静默刷新）
+      let lvl = readLevel(cacheKey);
+      const cacheHit = !!lvl;
       // [MP-LOG1 诊断埋点②] 请求 URL 全串（含 branch/path 参数）+ cacheKey + 缓存命中情况
       const reqUrl = '/gh/' + owner + '/' + repo + '/tree?path=' + (path || '')
         + (this.data.branch ? '&branch=' + this.data.branch : '');
@@ -110,14 +158,15 @@ Page({
       if (!cacheHit) {
         const br = this.data.branch ? `&branch=${encodeURIComponent(this.data.branch)}` : '';
         // DEBUG-MPUX5：单层请求——只拉当前目录直接子级，不再 recursive 全树
-        const data = await api.request({
+        // MP-PERF2①：getDedup——onLoad 链/预取/重进同层共享一个在途请求
+        const data = await api.getDedup({
           path: `/gh/${owner}/${repo}/tree?path=${encodeURIComponent(path || '')}${br}`,
           timeout: 15000,
         });
         // [MP-LOG1 诊断埋点③] 返回后打 branch/条数/truncated
         console.log('[tree] loaded branch=' + data.branch + ' path=' + (path || '') + ' entries=' + (data.tree ? data.tree.length : 0) + ' truncated=' + !!data.truncated);
         lvl = { ts: Date.now(), branch: data.branch, tree: data.tree || [] };
-        LEVEL_CACHE[cacheKey] = lvl;
+        writeLevel(cacheKey, lvl);
       }
       this.levelTree = lvl;
       this.setData({ branch: lvl.branch });
@@ -135,8 +184,8 @@ Page({
   },
 
   getCachedMtimeMap(cacheKey) {
-    const hit = MTIME_CACHE[cacheKey];
-    return hit && Date.now() - hit.ts <= 5 * 60 * 1000 ? hit.map : null;
+    // MP-PERF2③：内存+storage 双层读（readMtimeMap 自带 TTL 判定）
+    return readMtimeMap(cacheKey);
   },
 
   // MP-UX5B：预取当前层各子目录的下一层（哥哥口径"索引当前层和下一层"）——
@@ -152,10 +201,8 @@ Page({
       .slice(0, PREFETCH_MAX_DIRS);
     if (!dirs.length) return;
     const br = branch ? `&branch=${encodeURIComponent(branch)}` : '';
-    const fresh = (k) => {
-      const c = LEVEL_CACHE[k];
-      return !!(c && Date.now() - c.ts <= 5 * 60 * 1000);
-    };
+    // MP-PERF2③：fresh 判定走统一入口（内存+storage 双层，TTL 30min）
+    const fresh = (k) => !!readLevel(k);
     const todo = dirs.map((d) => {
       const childKey = owner + '/' + repo + '@' + (branch || '') + ':' + d.path;
       return { path: d.path, childKey };
@@ -168,11 +215,12 @@ Page({
       if (idx >= todo.length) return Promise.resolve();
       const it = todo[idx++];
       PREFETCH_INFLIGHT[it.childKey] = true;
-      return api.request({
+      // MP-PERF2①：getDedup——预取与"用户点进该子层 onLoad"的同 URL 请求合并
+      return api.getDedup({
         path: `/gh/${owner}/${repo}/tree?path=${encodeURIComponent(it.path)}${br}`,
         timeout: 15000,
       }).then((data) => {
-        LEVEL_CACHE[it.childKey] = { ts: Date.now(), branch: data.branch, tree: data.tree || [] };
+        writeLevel(it.childKey, { ts: Date.now(), branch: data.branch, tree: data.tree || [] });
         done++;
       }).catch((e) => {
         // DEBUG-MPUX5B：单层预取失败静默降级（点进该子目录时回源站拉，行为同 MP-UX5）
@@ -200,13 +248,14 @@ Page({
     // DEBUG-MPUX5：第②段发起——只补当前层 mtime
     console.log('[MPUX5] fetchMtimes start key=' + cacheKey);
     try {
-      const data = await api.request({
+      // MP-PERF2①：getDedup——同层 with_mtime 在途请求合并（with_mtime 后端不缓存，去重收益最大）
+      const data = await api.getDedup({
         path: `/gh/${owner}/${repo}/tree?path=${encodeURIComponent(path || '')}&with_mtime=1${br}`,
         timeout: 60000,
       });
       const map = {};
       (data.tree || []).forEach((e) => { if (e.path && e.mtime) map[e.path] = e.mtime; });
-      MTIME_CACHE[cacheKey] = { ts: Date.now(), map };
+      writeMtimeMap(cacheKey, { ts: Date.now(), map });
       // DEBUG-MPUX5：mtime 图到达，触发合入
       console.log('[MPUX5] fetchMtimes done key=' + cacheKey + ' entries=' + Object.keys(map).length);
       // 防御：等待期间用户切了分支/目录，合入会错位——key 对不上直接丢弃
