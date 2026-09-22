@@ -19,11 +19,15 @@ description: 【通用】AI 情报分级与深研流程——L0-L4 五级判定�
 | L4 | 专题 | 重大拐点（GPT-5 级、新范式、供应链剧变）；**头部芯片厂商官宣新芯片/硬件规格直通 L4（哥哥 9/17 令）** | 升级专项任务书，@协作+亦菲上报哥哥 | 按专项 |
 ## 二、判定细则
 
-### 权威媒体信源（哥哥 9/13 立规加入扫描面）
-- **SemiAnalysis**（semianalysis.com，芯片/算力/供应链权威分析）——芯片线必扫，其报告可直接作一手级信源对待
-- 同级权威媒体参考谱：The Information、Bloomberg Tech、Reuters Tech、FT Tech（公司线）；Import AI、BAIR Blog、Distill 类（技术线）
-- 权威媒体深度报道可升 L3（视同"≥2 独立信源"档），但仍需按§三标注"媒体信源"与官方信源区分
-- 被墙源走 AWS web-relay 中转桥（docs/web-relay使用说明.md，~/.web_relay）
+### 权威媒体信源（哥哥 9/13 立规加入扫描面；9/22 哥哥拍板全量谱固化）
+
+**分级**：权威媒体深度报道可升 L3（视同"≥2 独立信源"档），但仍需按§三标注"媒体信源"与官方信源区分；被墙源走 AWS web-relay 中转桥（docs/web-relay使用说明.md，~/.web_relay）+ 撞墙绕行 skill（搜二手转述/翻译/官方引用，标【二手转述·原墙】分信度）。
+
+**公司线（aicorp）**：The Information、Bloomberg Tech、Reuters Tech、FT Tech、WSJ Tech
+**技术线（aitech）**：Import AI、BAIR Blog、Distill、The Gradient、MIT Technology Review
+**芯片线（aichip）**：**SemiAnalysis（必扫，报告可直接作一手级信源）**、AnandTech 传承（及其解散后骨干去向站）、Tom's Hardware、ServeTheHome（STH）、Chips and Cheese、EETimes、TrendForce、DIGITIMES
+
+**扫描要求**：SemiAnalysis 芯片线每日必扫；其余权威媒体按线纳入日常扫描面，命中深度报道按本节节首规则分级。
 
 ### 升 L3 硬条件（满足其一）
 - 官方一手来源（官博/财报/arXiv 原文/官方 GitHub）+ 核心玩家"首次/旗舰/范式"级
