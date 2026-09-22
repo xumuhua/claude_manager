@@ -122,11 +122,15 @@ Page({
       convIds.forEach((c) => this.ensureConv(c));
       // 探测各会话最新一条消息（limit=1）取热度 ts；403（成员制无权限）静默过滤
       // 不进菜单；其他错误保守保留在列表（网络抖动不该把会话弄丢）。
+      // MP-PERF1（hermes 收口，b7b5304 等价重建）：探测口径 after_seq:0 → latest=1。
+      // 新 hub 支持 latest（MP-MSG1 同口径）返回最近 1 条，够取热度 ts；旧 hub 忽略
+      // latest 按 after_seq=0 拉，会从头给 1 条旧消息（ts 偏老，排序沉底但不白屏，
+      // 下一轮 catchUp/onDeliver 的 refreshConvTs 会把它纠正回来）——保守可接受。
       const probes = await Promise.all(convIds.map(async (c) => {
         try {
           const md = await api.request({
             path: '/api/messages',
-            data: { conversation_id: c, after_seq: 0, limit: 1 },
+            data: { conversation_id: c, latest: 1, limit: 1 },
             timeout: 10000,
           });
           const arr = md.messages || [];
@@ -222,17 +226,28 @@ Page({
 
   async initConv(conv) {
     this.ensureConv(conv);
-    const entry = store.getLastRead(conv);
-    this.entryRead[conv] = entry;
-    this.unread[conv] = 0;
-    this.updateBadge();
-    await this.loadAll(conv);
-    // MP-UX1：buildDisplay 的 setData 是异步入队，直接同步调 scrollBottom 会让
-    // scroll-into-view 在 m<seq> 元素尚未渲染时静默失败（冷启动+消息多必现，
-    // hermes 9/10 实锤）。把 scroll 挂进 buildDisplay 的 setData 回调，保证打在
-    // displayItems 渲染完成之后。
-    this.buildDisplay(() => this.scrollBottom(false));
-    this.markRead(conv);
+    // MP-PERF1（hermes 收口，b7b5304 等价重建）：保守 in-flight 锁——同一 conv 的
+    // 加载在途时重入直接 return，防快速切页并发 loadAll 竞态把 msgs 写空造成白屏
+    // （9/19 卡壳根因）。锁带 finally 必解，无死锁；与 onScrollTop 的 prefetching
+    // 防重入同族但更保守（互斥语义，后者是防重入语义）。
+    this._initInflight = this._initInflight || {};
+    if (this._initInflight[conv]) return;
+    this._initInflight[conv] = true;
+    try {
+      const entry = store.getLastRead(conv);
+      this.entryRead[conv] = entry;
+      this.unread[conv] = 0;
+      this.updateBadge();
+      await this.loadAll(conv);
+      // MP-UX1：buildDisplay 的 setData 是异步入队，直接同步调 scrollBottom 会让
+      // scroll-into-view 在 m<seq> 元素尚未渲染时静默失败（冷启动+消息多必现，
+      // hermes 9/10 实锤）。把 scroll 挂进 buildDisplay 的 setData 回调，保证打在
+      // displayItems 渲染完成之后。
+      this.buildDisplay(() => this.scrollBottom(false));
+      this.markRead(conv);
+    } finally {
+      this._initInflight[conv] = false;
+    }
   },
 
   // MP-MSG1 滑窗首拉（哥哥 9/17 拍板）：不再 after_seq=0 全量翻页（grp_ai_research
