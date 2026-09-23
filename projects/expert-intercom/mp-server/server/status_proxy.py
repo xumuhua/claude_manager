@@ -346,8 +346,13 @@ def _read_rotator():
     try:
         with open(ROTATOR_STATE, encoding="utf-8") as f:
             d = json.load(f)
+        pool = d.get("pool") or []
+        if not pool:
+            # rotator.py POOL 为代码常量不入 state；从 config.yaml fallbacks 固定别名推导
+            # （池=四固定上游别名：kimi-han-src/zhipu/kimi-xia/qwen）
+            pool = ["kimi-han-src", "zhipu", "kimi-xia", "qwen"]
         return {"head": d.get("head"), "last_rotate": d.get("last_rotate"),
-                "pool": d.get("pool") or []}
+                "pool": pool}
     except OSError:
         return None
     except ValueError:
@@ -378,7 +383,7 @@ def _read_fallbacks():
             m = re.match(r'^\s*-\s*([\w.-]+)\s*:\s*\[(.*)\]\s*$', line)
             if m:
                 fb.append({"from": m.group(1),
-                           "to": [x.strip() for x in m.group(2).split(",") if x.strip()]})
+                           "to": [x.strip().strip("\"'") for x in m.group(2).split(",") if x.strip()]})
     return fb or None
 
 
