@@ -5,7 +5,8 @@
     "pages/repos/index",
     "pages/repo/tree",
     "pages/repo/doc",
-    "pages/experts/index"
+    "pages/experts/index",
+    "pages/status/index"
   ],
   "window": {
     "navigationBarBackgroundColor": "#FFFFFF",
@@ -14,11 +15,13 @@
     "backgroundColor": "#FFFFFF"
   },
   "tabBar": {
+    "custom": true,
     "color": "#8A8A8E",
     "selectedColor": "#2563EB",
     "backgroundColor": "#FFFFFF",
     "list": [
       { "pagePath": "pages/chat/index", "text": "💬 对话" },
+      { "pagePath": "pages/status/index", "text": "🖥️ 状态" },
       { "pagePath": "pages/experts/index", "text": "📊 动态" },
       { "pagePath": "pages/repos/index", "text": "📖 阅读" }
     ]

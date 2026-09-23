@@ -218,7 +218,11 @@ Page({
   toggleConvMenu() { this.setData({ menuOpen: !this.data.menuOpen }); },
   closeConvMenu() { if (this.data.menuOpen) this.setData({ menuOpen: false }); },
 
-  onShow() { ws.resume(); this.catchUp(); },
+  onShow() {
+    // MP-STAT1：custom tabBar 选中态同步（组件在低版本库缺失时 getTabBar() 为 undefined，静默跳过）
+    if (this.getTabBar && this.getTabBar()) this.getTabBar().setSelected('pages/chat/index');
+    ws.resume(); this.catchUp();
+  },
   onHide() { player.pause(); this.stopPolling(); },   // 切 tab/退后台：TTS 自动暂停（D1 §4.7）
   onUnload() { this.stopPolling(); },
 

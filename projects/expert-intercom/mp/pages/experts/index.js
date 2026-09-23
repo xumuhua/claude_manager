@@ -26,6 +26,11 @@ Page({
     this.load();
   },
 
+  onShow() {
+    // MP-STAT1：custom tabBar 选中态同步（低版本库组件缺失时静默跳过）
+    if (this.getTabBar && this.getTabBar()) this.getTabBar().setSelected('pages/experts/index');
+  },
+
   onPullDownRefresh() {
     this.load(() => wx.stopPullDownRefresh());
   },

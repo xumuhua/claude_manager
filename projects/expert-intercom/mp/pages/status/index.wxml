@@ -1,0 +1,114 @@
+<!-- pages/status — MP-STAT1 状态页：子页签接口驱动 + 三态机器卡片 + 模型区 -->
+<view class="page">
+
+  <!-- 子页签（sections 清单驱动；接口没有的 section 不渲染） -->
+  <view wx:if="{{sections.length}}" class="seg">
+    <view
+      wx:for="{{sections}}"
+      wx:key="key"
+      class="seg-item {{activeTab === item.key ? 'on' : ''}}"
+      data-tab="{{item.key}}"
+      bindtap="switchTab"
+    >{{item.title}}</view>
+  </view>
+
+  <view wx:if="{{loading}}" class="empty">加载中…</view>
+
+  <!-- ============ 服务器子页签 ============ -->
+  <block wx:elif="{{activeTab === 'servers'}}">
+    <view wx:if="{{error}}" class="banner-err">{{error}}</view>
+    <view wx:elif="{{servers.ts}}" class="meta-line">采集于 {{servers.ts}} · 下拉刷新</view>
+
+    <view wx:if="{{!error && !servers.cards.length && !loading}}" class="empty">暂无服务器数据</view>
+
+    <view wx:for="{{servers.cards}}" wx:key="host" class="card">
+      <view class="card-head">
+        <text class="fw-dot">{{item.freshIcon}}</text>
+        <text class="card-name">{{item.name}}</text>
+        <text class="card-host">{{item.host}}</text>
+        <text class="fw-label {{item.freshCls}}">{{item.freshLabel}}</text>
+      </view>
+
+      <view class="grid">
+        <view class="cell">
+          <text class="cell-k">CPU 负载</text>
+          <text class="cell-v">{{item.loadText}}</text>
+        </view>
+        <view class="cell">
+          <text class="cell-k">内存</text>
+          <text class="cell-v">{{item.memText}}</text>
+          <view wx:if="{{item.memPct}}" class="bar"><view class="bar-in" style="width: {{item.memPct}}%;"></view></view>
+          <text class="cell-pct">{{item.memPct}}%</text>
+        </view>
+        <view class="cell">
+          <text class="cell-k">存储</text>
+          <text class="cell-v">{{item.diskText}}</text>
+          <view wx:if="{{item.diskPct}}" class="bar"><view class="bar-in {{item.diskPct >= 85 ? 'hot' : ''}}" style="width: {{item.diskPct}}%;"></view></view>
+          <text class="cell-pct">{{item.diskPct}}%</text>
+        </view>
+        <view class="cell">
+          <text class="cell-k">运行时长</text>
+          <text class="cell-v">{{item.uptimeText}}</text>
+        </view>
+      </view>
+
+      <view class="foot">
+        <text class="foot-k">心跳</text><text class="foot-v">{{item.ts}}<text wx:if="{{item.ageText}}">（{{item.ageText}}）</text></text>
+        <text wx:if="{{item.claudeText}}" class="foot-k foot-k2">claude</text><text wx:if="{{item.claudeText}}" class="foot-v">{{item.claudeText}}</text>
+        <text class="foot-k foot-k2">来源</text><text class="foot-v">{{item.source}}</text>
+      </view>
+    </view>
+  </block>
+
+  <!-- ============ 模型服务子页签 ============ -->
+  <block wx:elif="{{activeTab === 'models'}}">
+    <view wx:if="{{models.error}}" class="banner-err">{{models.error}}</view>
+
+    <view class="card">
+      <view class="card-head">
+        <text class="fw-dot">{{models.alive === true ? '🟢' : (models.alive === false ? '🔴' : '⚪')}}</text>
+        <text class="card-name">中转站</text>
+        <text class="fw-label">{{models.aliveText}}</text>
+      </view>
+      <view class="row"><text class="row-k">当前链头</text><text class="row-v emph">{{models.head || '—'}}</text></view>
+      <view wx:if="{{models.pool.length}}" class="row">
+        <text class="row-k">轮转池</text>
+        <view class="row-v">
+          <text wx:for="{{models.pool}}" wx:for-item="p" wx:key="*this" class="chip {{p === models.head ? 'chip-on' : ''}}">{{p}}</text>
+        </view>
+      </view>
+      <view wx:if="{{models.fallbacks.length}}" class="row">
+        <text class="row-k">fallback</text>
+        <view class="row-v">
+          <text class="chain">{{models.fallbacks}}</text>
+        </view>
+      </view>
+      <view wx:if="{{models.rotatedAt}}" class="row"><text class="row-k">上次轮转</text><text class="row-v">{{models.rotatedAt}}</text></view>
+    </view>
+
+    <view wx:if="{{!models.stats_available}}" class="banner-warn">{{models.stats_note}}</view>
+
+    <view wx:for="{{models.models}}" wx:key="name" class="card">
+      <view class="card-head">
+        <text class="fw-dot">{{item.healthy ? '🟢' : (item.healthyText === '未知' ? '⚪' : '🔴')}}</text>
+        <text class="card-name">{{item.name}}</text>
+        <text class="card-host">{{item.upstream}}</text>
+        <text class="fw-label">{{item.healthyText}}</text>
+      </view>
+      <view wx:if="{{item.provider}}" class="row"><text class="row-k">上游</text><text class="row-v chain">{{item.provider}}</text></view>
+      <block wx:if="{{item.hasStats}}">
+        <view class="grid">
+          <view class="cell"><text class="cell-k">平均延迟</text><text class="cell-v">{{item.avgLatency}}</text></view>
+          <view class="cell"><text class="cell-k">输入 token</text><text class="cell-v">{{item.avgIn}}</text></view>
+          <view class="cell"><text class="cell-k">输出 token</text><text class="cell-v">{{item.avgOut}}</text></view>
+          <view class="cell"><text class="cell-k">请求/错误</text><text class="cell-v">{{item.reqCount}} / {{item.errCount}}</text></view>
+        </view>
+      </block>
+      <view wx:else class="empty-inline">统计待启用</view>
+    </view>
+
+    <view wx:if="{{!models.models.length && !models.error && !loading}}" class="empty">暂无模型数据</view>
+    <view wx:if="{{models.ts}}" class="meta-line">采集于 {{models.ts}}</view>
+  </block>
+
+</view>

@@ -1,0 +1,34 @@
+/* custom-tab-bar — MP-STAT1 动态页签样式
+   背景色由 js 注入实色 HEX（深浅双态），这里只管布局；
+   底部安全区：iPhone 系 home indicator 让位（env(safe-area-inset-bottom)），
+   老基础库不识别 env() 时 padding-bottom 退化 0，仍可用。 */
+.tab-bar {
+  display: flex;
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: calc(48px + env(safe-area-inset-bottom));
+  padding-bottom: env(safe-area-inset-bottom);
+  border-top: 1rpx solid #E5E5EA;
+  z-index: 9999;
+}
+.tab-item {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.tab-text {
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.tab-text.on {
+  font-weight: 600;
+}
+
+/* 深色态边框线（实色，不走 var） */
+@media (prefers-color-scheme: dark) {
+  .tab-bar { border-top-color: #2C2C2E; }
+}

@@ -10,6 +10,12 @@
   C5 dm 快捷指令条、C6 长按「听」单条 TTS 播报（手动点按，Q4）+ 迷你播放条
 - **阅读 tab（P2→P3→P4）**：默认 4 仓 + 收藏 + 自定义添加；目录逐层 push；markdown 渲染（自研零依赖解析器）；
   G1 ✦文档要点卡（点击跳章节）、G2 文档内搜索（高亮/计数/上下跳）、G3 大纲 TOC 抽屉、G4 离线缓存（LRU 20 篇/4MB）
+- **状态 tab（MP-STAT1，2026-09-23）**：custom tabBar 动态页签（页签清单由 `GET /api/status/tabs` 驱动，几枚渲染几枚，
+  后端未部署/接口失败时回退 app.json 静态 list）；状态页双 section（服务器/模型服务，接口 sections 清单驱动）——
+  机器卡片三态（fresh 绿/stale 橙/down 红，AWS 时戳归一在后端）、中转站链头+轮转池+fallback、per-model 统计
+  （SQLite 未落地时占位说明）。**兼容线：custom tabBar 需基础库 ≥ 2.6.2**（`getTabBar()` 首见版本）；
+  低版本库 custom 组件不生效时原生 tabBar 自动渲染 app.json 静态 list（含状态页占位，导航不丢），
+  各 tab 页 `onShow` 里 `getTabBar()` 判空静默跳过。深浅色双态照 theme.json 值写死实色（MP-UX7 病史）。
 - **二期占位**：P4 工具条「听(二期)」置灰；C7/C8/G5-G8 见 D1
 
 ## 开发态配置

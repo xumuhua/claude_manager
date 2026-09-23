@@ -10,7 +10,11 @@ Page({
     addInput: '',
   },
 
-  onShow() { this.reload(); },
+  onShow() {
+    // MP-STAT1：custom tabBar 选中态同步（低版本库组件缺失时静默跳过）
+    if (this.getTabBar && this.getTabBar()) this.getTabBar().setSelected('pages/repos/index');
+    this.reload();
+  },
 
   reload() {
     const favs = store.getFavs();

@@ -1,0 +1,12 @@
+<!-- custom-tab-bar — MP-STAT1 动态页签（数据驱动渲染，几枚显示几枚） -->
+<view class="tab-bar" style="background: {{bg}};">
+  <view
+    wx:for="{{list}}"
+    wx:key="pagePath"
+    class="tab-item"
+    data-idx="{{index}}"
+    bindtap="onTap"
+  >
+    <view class="tab-text {{index === selected ? 'on' : ''}}" style="color: {{index === selected ? selectedColor : color}};">{{item.text}}</view>
+  </view>
+</view>
