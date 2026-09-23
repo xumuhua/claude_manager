@@ -16,6 +16,7 @@ from aiohttp import web
 import config as cfg_mod
 import gh_proxy
 import ai_proxy
+import status_proxy
 from hub_bridge import HubError, HubWSBridge, hub_request
 
 log = logging.getLogger("mp-backend")
@@ -372,6 +373,10 @@ def main():
     app.router.add_get(r"/gh/{owner}/{repo}/blob/{branch}/{path:.*}", gh_blob_route)
     # MP-DASH1：专家动态面板（采集 JSON 由 manager 机 cron 10min 推送落盘）
     app.router.add_get("/api/experts", get_experts)
+    # MP-STAT1：状态页聚合（心跳四路 + LiteLLM 中转站；进程内短缓存）
+    app.router.add_get("/api/status/servers", require_agent(status_proxy.status_servers))
+    app.router.add_get("/api/status/models", require_agent(status_proxy.status_models))
+    app.router.add_get("/api/status/tabs", require_agent(status_proxy.status_tabs))
     # AI 中转（D1 v2 §9，哥哥 token 鉴权 + 频控 + 日限额熔断 + 即焚）
     app.router.add_post("/ai/summary", require_agent(ai_proxy.ai_summary))
     app.router.add_post("/ai/asr", require_agent(ai_proxy.ai_asr))
