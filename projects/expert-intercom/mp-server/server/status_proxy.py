@@ -191,7 +191,7 @@ def _local_card(now=None):
         st = os.statvfs("/data")
         total_b = st.f_blocks * st.f_frsize
         free_b = st.f_bavail * st.f_frsize
-        used_b = total_b - st.f_bfree
+        used_b = total_b - st.f_bfree * st.f_frsize
         if total_b:
             disk = (round(used_b / 1e9, 1), round(total_b / 1e9, 1),
                     int(used_b * 100 / total_b))
