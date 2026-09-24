@@ -405,11 +405,11 @@ def _endpoint_model(e):
 
 def _agg_stats(rows):
     """spend/logs 明细行 → per-model 聚合。行字段（LiteLLM spend 表）：
-    model / total_time / prompt_tokens / completion_tokens / status。
+    model / request_duration_ms / prompt_tokens / completion_tokens / status。
     延迟均值按全部样本摊（错误请求的延迟同样反映服务状态）。"""
     by = {}
     for r in rows or []:
-        model = r.get("model")
+        model = r.get("model_group") or r.get("model")  # model_group=别名与前端 models 名对齐
         if not model:
             continue
         s = by.setdefault(model, {"n": 0, "err": 0, "lat_ms": 0.0,
@@ -418,9 +418,9 @@ def _agg_stats(rows):
         st = (r.get("status") or "").lower()
         if st and st not in ("success", "200", "ok"):
             s["err"] += 1
-        tt = _to_float(r.get("total_time"))
+        tt = _to_float(r.get("request_duration_ms"))
         if tt is not None:
-            s["lat_ms"] += tt * 1000
+            s["lat_ms"] += tt  # 字段单位已是 ms
             s["lat_n"] += 1
         s["in_tok"] += int(_to_float(r.get("prompt_tokens")) or 0)
         s["out_tok"] += int(_to_float(r.get("completion_tokens")) or 0)
@@ -496,10 +496,10 @@ async def collect_models():
         spend, spend_err = await _relay_json(
             session, headers, "/spend/logs",
             params={"num_logs": 500, "include": "all"}, timeout_s=10)
-        if spend_err or not isinstance(spend, dict) or "data" not in spend:
+        if spend_err or not isinstance(spend, (dict, list)) or (isinstance(spend, dict) and "data" not in spend):
             payload["errors"]["spend_logs"] = spend_err or _DB_DOWN_MARK
         else:
-            rows = spend.get("data") or []
+            rows = spend if isinstance(spend, list) else (spend.get("data") or [])
             payload["stats_available"] = True
             payload["stats_note"] = None
             payload["stats"] = _agg_stats(rows)
