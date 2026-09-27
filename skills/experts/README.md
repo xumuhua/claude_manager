@@ -19,3 +19,11 @@
   - [`delivery-checklist`](../delivery-checklist/)：coder 交付自验口径——每个交付件按"每条=可机检命令"自跑，证据（exit 0 输出/diff --stat/日志行）写进 done 文件随回执上浮；机检未过不发给 manager。
   - [`task-skill-forge`](../task-skill-forge/)：跨专家大工程方法论，派单规格照走。
 - 后续新增自有 skill：落位 `skills/experts/coder/` 并回此索引补登。
+
+### aitech（登记 2026-09-27）
+
+- 【专用】[`tech-scan-triage`](aitech/tech-scan-triage/)：技术线每日 09:00 扫描分诊工序——六源逐源打法/arXiv 批次判定三路探测/筛剔读判四级流水线/AI-STORE1 落仓衔接/收尾属主全量扫，14 轮扫描实战沉淀。
+- 【通用】复用仓内通用件：
+  - [`ai-intel-triage`](../ai-intel-triage/)：L0-L4 分级总则+卡片格式+深研触发链+L4 直通触发（哥哥 9/17 令）——tech 线判级口径以该件为准，tech-scan-triage 只管扫描执行工序，两件互补不重复。
+  - [`nightly-review`](../nightly-review/)：每日 04:33 复盘七步工序照走。
+- 后续新增自有 skill：落位 `skills/experts/aitech/` 并回此索引补登。
