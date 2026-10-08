@@ -1,5 +1,9 @@
 /* P1 对话页样式（D1 §7/§8） */
-.page { display: flex; flex-direction: column; height: 100vh; }
+.page {
+  display: flex; flex-direction: column; height: 100vh;
+  /* MP-TABBAR-EMBED：全局 page 已垫 tabBar 48px+安全区（app.wxss 统一注入），
+     box-sizing:border-box 下 100vh 内容区自动压缩出 tabBar 位，tabBar 固定嵌入不悬浮 */
+}
 
 /* 顶栏 56pt */
 /* MP-UX2-FIX：顶栏 fixed 钉在屏顶，翻历史时不跟内容滚走（与底部 dock 同法） */
@@ -80,10 +84,10 @@
       scroll-view 失去滚动空间；置 0 后收缩权还给 scroll-view（hermes 真机实测根因）
    2. padding-top: 41px——topbar 改 fixed 后不再占文档流，预留顶栏高度
       （8+8 padding + 24px 行高 + 1px 边框）防第一条消息被遮挡 */
-/* MP-INPUTBAR-FIX（哥哥 10/8 真机实测输入框被 tabBar 遮挡）：custom tabBar
-   （app.json tabBar.custom:true）不占文档流高——底部须给「输入dock(≈56px起，多行可长高)
-   + tabBar(48px+安全区)」双让位；原 80px 系 MP-UX2 无 custom tabBar 时代的旧口径 */
-.msgs { flex: 1; min-height: 0; padding-top: 41px; padding-bottom: calc(152px + env(safe-area-inset-bottom)); box-sizing: border-box; }
+/* MP-TABBAR-EMBED（哥哥 10/8 令）：tabBar 固定嵌入——全局 page 垫底覆盖 tabBar 位，
+   此处只让位 dock（≈56px 起，多行输入自动长高 + 顶部余量）；原 152px 系 dock+tabBar
+   双让位口径（94d7d39），tabBar 让位已由 app.wxss 统一接管 */
+.msgs { flex: 1; min-height: 0; padding-top: 41px; padding-bottom: 110px; box-sizing: border-box; }
 .date-sep {
   text-align: center; font-size: 11px; color: var(--fg2); margin: 14px 0 6px;
 }
@@ -132,9 +136,9 @@
 .empty { text-align: center; color: var(--fg2); font-size: 13px; margin-top: 80px; }
 
 /* 新消息浮动提示（MP-UX2：dock 固定后抬高，避免与输入栏重叠；
-   MP-INPUTBAR-FIX：dock 抬到 tabBar 之上后同步抬高，避免与 dock 重叠） */
+   MP-TABBAR-EMBED：dock 归 bottom:0 贴 tabBar 上沿，此处同步回落） */
 .new-msg {
-  position: fixed; right: 16px; bottom: 210px; z-index: 110;
+  position: fixed; right: 16px; bottom: 160px; z-index: 110;
   background: var(--primary); color: #fff; font-size: 12px;
   border-radius: 14px; padding: 6px 14px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
@@ -142,15 +146,15 @@
 
 /* MP-UX2：底部固定区——mention 补全/快捷指令/STOP/输入栏整体钉在屏底，
    往下翻历史时不再跟着内容滚走 */
-/* MP-INPUTBAR-FIX（哥哥 10/8 真机实测输入框被 tabBar 遮挡复发）：
-   dock 原 bottom:0 系 MP-UX2 时代口径——彼时无 custom tabBar，dock 钉屏底即正确。
-   MP-STAT1（544a490）引入 custom tabBar 后，tabBar 组件是 fixed 浮层（高 48px+安全区，
-   不占文档流），dock bottom:0 与 tabBar 同坐标叠放、输入框被压在 tabBar 之下。
-   修=dock 抬到 tabBar 正上方（bottom=48px+安全区，与 custom-tab-bar 组件高同源）；
-   安全区 env() 不再重复垫（已含在抬升量里），多行输入自动长高自然向上顶。 */
+/* MP-TABBAR-EMBED（哥哥 10/8 令，亦菲 seq 2681）：tabBar 悬浮→固定嵌入——
+   全局 page 垫底（48px+安全区）把内容区压在 tabBar 之上，dock bottom:0 即贴
+   tabBar 上沿，不再叠压；键盘弹起时微信整体上移 dock（tabBar 属原生 chrome
+   不动），dock 贴键盘顶自然悬于 tabBar 之上，无叠压。
+   旧口径沿革：MP-UX2 bottom:0（无 custom tabBar）→ 94d7d39 抬 calc(48px+env)
+   （悬浮让位）→ 本次回归 bottom:0（固定嵌入，垫位移交 app.wxss 全局统一）。 */
 .dock {
   position: fixed; left: 0; right: 0;
-  bottom: calc(48px + env(safe-area-inset-bottom));
+  bottom: 0;
   z-index: 100;
   background: var(--bg);
 }

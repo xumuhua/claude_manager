@@ -1,7 +1,10 @@
 /* custom-tab-bar — MP-STAT1 动态页签样式
    背景色由 js 注入实色 HEX（深浅双态），这里只管布局；
    底部安全区：iPhone 系 home indicator 让位（env(safe-area-inset-bottom)），
-   老基础库不识别 env() 时 padding-bottom 退化 0，仍可用。 */
+   老基础库不识别 env() 时 padding-bottom 退化 0，仍可用。
+   MP-TABBAR-EMBED（哥哥 10/8 令）：app.json tabBar.custom:true 下组件只能 fixed
+   （微信强制形态），「嵌入」语义由 app.wxss 全局 page 垫底实现——内容区结构化
+   让位本组件高度（48px+安全区），本组件不再遮挡任何页面内容。 */
 .tab-bar {
   display: flex;
   position: fixed;

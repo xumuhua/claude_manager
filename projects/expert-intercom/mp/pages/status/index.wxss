@@ -1,7 +1,8 @@
 /* pages/status — MP-STAT1 状态页样式
    MP-UX7 教训红线：卡片/横幅背景一律实色 HEX + @media 双态，禁 var() 背景；
    文字色走 var 无妨。三态点由 emoji 自带色，不另配色。 */
-.page { min-height: 100vh; padding-bottom: calc(60px + env(safe-area-inset-bottom)); }
+/* MP-TABBAR-EMBED：tabBar 位由全局 page 垫底（app.wxss）统一覆盖，页内不再手写 */
+.page { min-height: 100vh; padding-bottom: 24px; }
 
 /* 子页签分段器（浅色底实色） */
 .seg {
