@@ -79,6 +79,10 @@ Page({
       console.log('[login] ok token_tail=' + data.token.slice(-4));          // 只打末4位
       cfg.setToken(data.token);   // storage + cfg.TOKEN 同步刷新，WS/HTTP 即刻走新 token
       wx.setStorageSync('display_name', data.display_name || data.agent_name || '');
+      // seq 2619：登录态凭证存 storage，api.js 随请求带 X-Login-User 头
+      // （多账号共用 agent token 时服务端据此区分 gege/nana 取展示名）
+      if (data.login_cred) wx.setStorageSync('login_cred', data.login_cred);
+      else wx.removeStorageSync('login_cred');   // 旧服务端无此字段时清残留防串号
       this.enterApp();
     } catch (e) {
       // F7.2：区分密码失败(401/AUTH_FAILED) vs 网络问题(code=NETWORK，errMsg 是 wx.request 原始错误)

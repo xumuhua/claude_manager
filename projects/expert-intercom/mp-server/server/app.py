@@ -5,6 +5,8 @@
 """
 import argparse
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -54,6 +56,18 @@ def require_agent(handler):
         if agent is None:
             return _unauthorized()
         request["agent"] = agent
+        # seq 2619：登录态 username 经签名凭证识别（X-Login-User: username:hmac_sha256，
+        # 登录响应下发 login_cred）——多账号共用 agent token 时（nana/gege 同 gege token）
+        # 展示名按登录 username 精确取不串号；凭证由 hub token 作密钥 HMAC 签名，
+        # 无法伪造；旁路 token（无凭证）不注入 login_user，展示名回退 agent name
+        cred = request.headers.get("X-Login-User", "")
+        if ":" in cred:
+            uname, sig = cred.split(":", 1)
+            expect = hmac.new(request.app["cfg"]["hub_token"].encode(),
+                              uname.encode(), hashlib.sha256).hexdigest()
+            if uname in (request.app["cfg"].get("users") or {}) \
+                    and hmac.compare_digest(sig, expect):
+                request["login_user"] = uname
         return await handler(request)
     return wrapper
 
@@ -116,10 +130,15 @@ async def login(request):
     del request.app["login_fails"][ip]  # 成功清零失败计数
     agent = cfg["agents"][user["agent"]]
     log.info("登录成功 user=%s ip=%s agent=%s", username, ip, agent["name"])
+    # 登录态凭证（seq 2619）：username:hmac_sha256(hub_token, username)，
+    # 前端存 storage 后随请求带 X-Login-User 头，服务端验签识别登录身份
+    # （多账号共用 agent token 时区分 gege/nana，私有群展示名不串号）
+    cred_sig = hmac.new(cfg["hub_token"].encode(), username.encode(), hashlib.sha256).hexdigest()
     return web.json_response({
         "token": agent["token"],
         "agent_name": agent["name"],
         "display_name": user["display_name"],
+        "login_cred": f"{username}:{cred_sig}",
     })
 
 

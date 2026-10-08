@@ -1,6 +1,16 @@
 // utils/api.js — HTTP/上传/下载封装：统一鉴权头、统一错误形态 {status, code, message}
 const cfg = require('../config');
 
+// seq 2619 登录态凭证：登录响应 login_cred 存 storage，随请求带 X-Login-User 头——
+// 多账号共用 agent token 时（nana/gege）服务端据此识别登录身份取展示名；
+// 凭证是 username:hmac 签名，只影响展示名不扩大权限（权限仍只看 Bearer token）
+function loginCredHeader() {
+  try {
+    const cred = wx.getStorageSync('login_cred');
+    return cred ? { 'X-Login-User': cred } : {};
+  } catch (e) { return {}; }
+}
+
 function request({ method = 'GET', path, data, timeout = 20000, responseType }) {
   return new Promise((resolve, reject) => {
     wx.request({
@@ -9,10 +19,10 @@ function request({ method = 'GET', path, data, timeout = 20000, responseType }) 
       data,
       timeout,
       responseType,
-      header: {
+      header: Object.assign({
         Authorization: 'Bearer ' + cfg.TOKEN,
         'content-type': responseType ? undefined : 'application/json',
-      },
+      }, loginCredHeader()),
       success(res) {
         if (res.statusCode >= 200 && res.statusCode < 300) {
           resolve(res.data);

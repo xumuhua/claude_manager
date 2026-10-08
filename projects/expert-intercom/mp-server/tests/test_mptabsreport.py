@@ -428,3 +428,63 @@ users:
     h = cfg_mod.make_password_hash("missyou")
     assert cfg_mod.verify_password(h, "missyou")
     assert not cfg_mod.verify_password(h, "wrong")
+
+
+# ---------- R7 登录态凭证注入（seq 2619：X-Login-User 签名凭证，app.py require_agent） ----------
+
+def test_r7_login_cred_injection():
+    """X-Login-User: username:hmac_sha256(hub_token, username) 验签通过才注入 login_user——
+    多账号共用 agent token（nana/gege 同 token）时精确区分不串号；伪造/错签/旁路一律不注入。"""
+    import hashlib
+    import hmac as hmac_mod
+    import app as app_mod
+
+    cfg = {
+        "hub_token": "hubtok_secret",
+        "agents": {"gege": {"name": "gege", "token": "tok_gege", "role": "gege", "scope": ["group", "dm"]}},
+        "users": {
+            "gege": {"agent": "gege", "display_name": "哥哥"},
+            "nana": {"agent": "gege", "display_name": "娜娜"},
+        },
+    }
+
+    def cred(uname, key="hubtok_secret"):
+        sig = hmac_mod.new(key.encode(), uname.encode(), hashlib.sha256).hexdigest()
+        return f"{uname}:{sig}"
+
+    class Req(dict):
+        def __init__(self, token, cred_hdr=None):
+            super().__init__()
+            self.query = {"token": token}
+            self.headers = {}
+            if cred_hdr:
+                self.headers["X-Login-User"] = cred_hdr
+            self.remote = "127.0.0.1"
+            self.app = {"cfg": cfg}
+
+    captured = {}
+
+    async def handler(request):
+        captured.clear()
+        captured.update(request)
+        return "ok"
+
+    wrapped = app_mod.require_agent(handler)
+    # ① nana 凭证 → login_user=nana（同 token 与 gege 精确区分）
+    assert asyncio.run(wrapped(Req("tok_gege", cred("nana")))) == "ok"
+    assert captured.get("login_user") == "nana"
+    # ② gege 凭证 → login_user=gege
+    assert asyncio.run(wrapped(Req("tok_gege", cred("gege")))) == "ok"
+    assert captured.get("login_user") == "gege"
+    # ③ 无凭证（旁路 token / 旧版前端）→ 不注入，展示名回退 agent name
+    assert asyncio.run(wrapped(Req("tok_gege"))) == "ok"
+    assert "login_user" not in captured
+    # ④ 错签伪造 → 不注入
+    assert asyncio.run(wrapped(Req("tok_gege", cred("nana", key="wrong_key")))) == "ok"
+    assert "login_user" not in captured
+    # ⑤ users 表外 username → 不注入
+    assert asyncio.run(wrapped(Req("tok_gege", cred("ghost")))) == "ok"
+    assert "login_user" not in captured
+    # ⑥ 畸形凭证（无冒号）→ 不注入不炸
+    assert asyncio.run(wrapped(Req("tok_gege", "nana"))) == "ok"
+    assert "login_user" not in captured

@@ -212,6 +212,17 @@ setImmediate(() => {
         ok('T4b.6 登出清 display_name', removedKeys.includes('display_name'));
         ok('T4b.7 登出 reLaunch 登录页', relaunchUrl === '/pages/login/index');
         ok('T4b.8 登出停轮询', rp._pollTimer === null);
+        ok('T4b.9 登出清 login_cred', removedKeys.includes('login_cred'));
+
+        // ③ api.js 登录态凭证头：storage 有 login_cred 时请求带 X-Login-User（nana↔gege 区分载体）
+        const apiSrc = fs.readFileSync(path.join(MP, 'utils/api.js'), 'utf8');
+        ok('T4b.10 api.js 带 X-Login-User 头',
+           /X-Login-User/.test(apiSrc) && /getStorageSync\('login_cred'\)/.test(apiSrc));
+        // 登录页存凭证 + 旧服务端无字段清残留
+        const loginSrc = fs.readFileSync(path.join(MP, 'pages/login/index.js'), 'utf8');
+        ok('T4b.11 登录页存 login_cred+无字段清残留',
+           /setStorageSync\('login_cred', data\.login_cred\)/.test(loginSrc) &&
+           /removeStorageSync\('login_cred'\)/.test(loginSrc));
 
         timers.forEach((t) => clearInterval(t));
         console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAIL`);

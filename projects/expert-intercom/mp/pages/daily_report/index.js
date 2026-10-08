@@ -144,6 +144,7 @@ Page({
     this.stopPoll();
     cfg.clearToken();
     try { wx.removeStorageSync('display_name'); } catch (e) { /* 忽略 */ }
+    try { wx.removeStorageSync('login_cred'); } catch (e) { /* 忽略 */ }
     wx.reLaunch({ url: '/pages/login/index' });
   },
 
