@@ -489,3 +489,29 @@ def test_r7_login_cred_injection():
     # ⑥ 畸形凭证（无冒号）→ 不注入不炸
     assert asyncio.run(wrapped(Req("tok_gege", "nana"))) == "ok"
     assert "login_user" not in captured
+
+
+# ---------- R8 pgroup 消息带作者 username（seq 2636 哥哥二令②：前端按它判自己的消息靠右） ----------
+
+def test_r8_pgroup_msg_username():
+    """登录态发言消息落库带 username=login_user（前端 mine 判定数据源）；
+    旁路 token 无 login_user → username=None，不串号。"""
+    app = _mk_app()
+    # 登录态 nana → username=nana
+    r = asyncio.run(report_proxy.pgroup_send(
+        FakeRequest(app, body={"body": "hi"},
+                    agent={"name": "nana_dev", "role": "gege", "scope": ["group", "dm"]},
+                    login_user="nana")))
+    msg = json.loads(r.text)["msg"]
+    assert msg["username"] == "nana" and msg["display"] == "娜娜"
+    # 旁路 token（无 login_user）→ username=None，display 回退 agent name
+    r2 = asyncio.run(report_proxy.pgroup_send(
+        FakeRequest(app, body={"body": "hi2"},
+                    agent={"name": "nana_dev", "role": "gege", "scope": ["group", "dm"]})))
+    msg2 = json.loads(r2.text)["msg"]
+    assert msg2["username"] is None and msg2["display"] == "nana_dev"
+    # list 拉取同样带 username 字段（前端轮询增量消费）
+    lst = asyncio.run(report_proxy.pgroup_list(
+        FakeRequest(app, query={"after_seq": "0"})))
+    msgs = json.loads(lst.text)["messages"]
+    assert all("username" in m for m in msgs) and msgs[0]["username"] == "nana"

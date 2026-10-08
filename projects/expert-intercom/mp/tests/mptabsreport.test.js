@@ -224,9 +224,63 @@ setImmediate(() => {
            /setStorageSync\('login_cred', data\.login_cred\)/.test(loginSrc) &&
            /removeStorageSync\('login_cred'\)/.test(loginSrc));
 
-        timers.forEach((t) => clearInterval(t));
-        console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAIL`);
-        process.exit(fail === 0 ? 0 : 1);
+        /* ---------- T4c 哥哥 10/8 二令（亦菲 seq 2636）追加三条 ---------- */
+        // ② 私有群布局：自己的消息靠右（含名字），别人的靠左
+        ok('T4c.1 私有群消息行按 mine 分侧（chat-row me 靠右）',
+           /class="chat-row \{\{item\.mine \? 'me' : ''\}\}"/.test(rpWxml));
+        ok('T4c.2 气泡容器 mine 类（名字随气泡靠右）',
+           /class="pg-msg \{\{item\.mine \? 'mine' : ''\}\}"/.test(rpWxml) &&
+           /\.pg-msg\.mine\s*\{[\s\S]*?align-items:\s*flex-end/.test(rpWxss));
+        ok('T4c.3 自己的气泡区分底色',
+           /\.pg-msg\.mine \.pg-body/.test(rpWxss));
+        // mine 判定口径：login_cred username === 消息 username（服务端落库 login_user）
+        const rpSrc = fs.readFileSync(path.join(MP, 'pages/daily_report/index.js'), 'utf8');
+        ok('T4c.4 mine 判定=login_cred username 对消息 username',
+           /m\.username === me/.test(rpSrc) && /login_cred/.test(rpSrc) &&
+           /split\(['"]:/.test(rpSrc));
+
+        // ③ 进入私有群自动滚到底部
+        ok('T4c.5 私有群消息区 scroll-view + scroll-into-view 锚点',
+           /<scroll-view[\s\S]*scroll-into-view="\{\{pAnchor\}\}"/.test(rpWxml));
+        ok('T4c.6 滚底锚点元素存在（pg-last 置消息列尾）',
+           /id="pg-last"/.test(rpWxml) &&
+           /wx:for="\{\{pMsgs\}\}"[\s\S]*id="pg-last"/.test(rpWxml));
+        ok('T4c.7 装载/发送后滚底（_scrollBottom 调用）',
+           (rpSrc.match(/_scrollBottom\(\)/g) || []).length >= 3);
+
+        // 行为级：mine 标记 + 滚底锚点（login_cred=gege → 自己的消息 mine=true）
+        global.wx.getStorageSync = (k) => (k === 'login_cred' ? 'gege:abc123' : (k === 'display_name' ? '哥哥' : ''));
+        rp.data.mode = 'pgroup';
+        rp.data.myUser = rp._myUsername();
+        ok('T4c.8 login_cred 解析 username', rp.data.myUser === 'gege');
+        apiHandler = (o) => Promise.resolve(o.method === 'POST'
+          ? { msg: { seq: 2, from: 'gege', display: '哥哥', username: 'gege', body: '我在右侧', ts: 2, msg_id: 'y' } }
+          : { messages: [
+              { seq: 1, from: 'gege', display: '娜娜', username: 'nana', body: '别人消息', ts: 1, msg_id: 'a' },
+              { seq: 2, from: 'gege', display: '哥哥', username: 'gege', body: '我在右侧', ts: 2, msg_id: 'y' },
+            ], latest_seq: 2 });
+        rp.loadPgroup(true);
+        setImmediate(() => {
+          ok('T4c.9 别人的消息 mine=false', rp.data.pMsgs[0].mine === false);
+          ok('T4c.10 自己的消息 mine=true', rp.data.pMsgs[1].mine === true);
+          ok('T4c.11 装载后锚点指向滚底', rp.data.pAnchor === 'pg-last');
+          // 发送后同样滚底+mine
+          rp.data.inputVal = '再发一条';
+          apiHandler = (o) => Promise.resolve(o.method === 'POST'
+            ? { msg: { seq: 3, from: 'gege', display: '哥哥', username: 'gege', body: '再发一条', ts: 3, msg_id: 'z' } }
+            : { messages: [], latest_seq: 3 });
+          rp.data.pAnchor = '';
+          rp.onSend();
+          setImmediate(() => {
+            ok('T4c.12 发送后新消息 mine=true+滚底',
+               rp.data.pMsgs[rp.data.pMsgs.length - 1].mine === true && rp.data.pAnchor === 'pg-last');
+            global.wx.getStorageSync = () => '';
+
+            timers.forEach((t) => clearInterval(t));
+            console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAIL`);
+            process.exit(fail === 0 ? 0 : 1);
+          });
+        });
       });
     });
   });

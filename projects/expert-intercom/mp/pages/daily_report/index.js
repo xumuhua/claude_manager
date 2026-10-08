@@ -3,6 +3,9 @@
 //         ②每日三报告概述卡片（GET /api/daily_report，点卡片展开内嵌 markdown 全文）
 //         ③暗号 2505 → 切私有用户聊天群视图（GET/POST /api/pgroup/messages），
 //           输入框上方「← 返回报告页」快速退回 + 「登出」整账号退出回登录页。
+// 哥哥 10/8 二令（seq 2636）：私有群自己的消息靠右（含名字）、别人的靠左——
+// 按 storage login_cred 的 username 与服务端记录的作者 username 判定归属；
+// 进入私有群自动滚到底部（scroll-into-view 锚末条，发送/收新消息也滚）。
 // 红线：暗号只在本页输入框生效；当日未产出显示占位不报错；AI 结果不入总线。
 const cfg = require('../../config');
 const api = require('../../utils/api');
@@ -31,10 +34,12 @@ Page({
     pMsgs: [],
     pLatestSeq: 0,
     pErr: '',
+    myUser: '',                  // login_cred 的 username（判定「自己的消息」靠右）
+    pAnchor: '',                 // scroll-into-view 锚点 id（滚底用）
   },
 
   onLoad() {
-    this.setData({ date: this.todayStr() });
+    this.setData({ date: this.todayStr(), myUser: this._myUsername() });
     this.loadReports();
   },
 
@@ -129,9 +134,37 @@ Page({
 
   // ---------- 私有群（暗号 2505） ----------
   enterPgroup() {
-    this.setData({ mode: MODE_PGROUP, pErr: '' });
+    this.setData({ mode: MODE_PGROUP, pErr: '', myUser: this._myUsername() });
     this.loadPgroup(true);
     this.startPoll();
+  },
+
+  // 登录态 username：login_cred = "username:hmac"，取冒号前缀（与服务端验签同源）
+  _myUsername() {
+    try {
+      const cred = wx.getStorageSync('login_cred');
+      if (cred && typeof cred === 'string' && cred.indexOf(':') > 0) return cred.split(':')[0];
+    } catch (e) { /* 忽略 */ }
+    return '';
+  },
+
+  // 私有群作者 username 归一：服务端落库记 login_user（或旁路回退 agent name）；
+  // 兼容早期消息只有 display 无 username 的场景——显示名与当前登录名相同也视为自己
+  _markMine(msgs) {
+    const me = this.data.myUser;
+    const dn = this._displayName();
+    return msgs.map((m) => Object.assign({}, m, {
+      mine: (me && m.username === me) || (dn && !m.username && m.display === dn),
+    }));
+  },
+
+  _displayName() {
+    try { return wx.getStorageSync('display_name') || ''; } catch (e) { return ''; }
+  },
+
+  _scrollBottom() {
+    this.setData({ pAnchor: '' });   // 重复锚同值不触发，先清再锚
+    this.setData({ pAnchor: 'pg-last' });
   },
 
   backToReport() {
@@ -165,10 +198,12 @@ Page({
         const inc = d.messages || [];
         const pMsgs = full ? inc : this.data.pMsgs.concat(inc);
         this.setData({
-          pMsgs: pMsgs.slice(-500),
+          pMsgs: this._markMine(pMsgs.slice(-500)),
           pLatestSeq: d.latest_seq || this.data.pLatestSeq,
           pErr: '',
         });
+        // 进私有群/收到新消息自动滚到底部（最新消息可见，哥哥 10/8 令③）
+        if (inc.length || full) this._scrollBottom();
         if (done) done();
       })
       .catch((e) => {
@@ -184,9 +219,10 @@ Page({
         const msg = d.msg;
         this.setData({
           sending: false,
-          pMsgs: this.data.pMsgs.concat([msg]).slice(-500),
+          pMsgs: this._markMine(this.data.pMsgs.concat([msg])).slice(-500),
           pLatestSeq: Math.max(this.data.pLatestSeq, (msg && msg.seq) || 0),
         });
+        this._scrollBottom();   // 自己发言后同样滚底
       })
       .catch((e) => {
         this.setData({ sending: false });

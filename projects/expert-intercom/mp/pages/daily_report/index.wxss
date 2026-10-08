@@ -75,15 +75,21 @@
   .pg-action-btn.danger { background: #7F1D1D; }
 }
 
+/* 私有群消息（哥哥 10/8 二令②：自己的消息靠右含名字，别人的靠左） */
+.pg-scroll { height: calc(100vh - 150px); box-sizing: border-box; }
+.pg-anchor { height: 1px; }
 .pg-msg { display: flex; flex-direction: column; max-width: 85%; }
+.pg-msg.mine { align-items: flex-end; }
 .pg-from { font-size: 11px; color: var(--fg2); margin-bottom: 2px; }
 .pg-body {
   font-size: 14px; line-height: 1.6; color: var(--fg);
   background: #F7F7F8; border-radius: 10px; padding: 8px 12px;
   white-space: pre-wrap; word-break: break-word;
 }
+.pg-msg.mine .pg-body { background: #E0ECFF; }
 @media (prefers-color-scheme: dark) {
   .pg-body { background: #1C1C1E; }
+  .pg-msg.mine .pg-body { background: #1E3A5F; }
 }
 
 /* 输入条（固定底部 tabBar 之上；实色背景；column 向容纳私有群操作钮行+输入行） */

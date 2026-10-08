@@ -35,12 +35,16 @@
   <block wx:else>
     <view wx:if="{{pErr}}" class="banner-err">{{pErr}}</view>
     <view wx:if="{{!pMsgs.length && !pErr}}" class="empty">还没有消息，说点什么吧</view>
-    <view wx:for="{{pMsgs}}" wx:key="msg_id" class="chat-row">
-      <view class="pg-msg">
-        <text class="pg-from">{{item.display || item.from}}</text>
-        <text class="pg-body">{{item.body}}</text>
+    <scroll-view scroll-y class="pg-scroll" scroll-into-view="{{pAnchor}}" scroll-with-animation>
+      <view wx:for="{{pMsgs}}" wx:key="msg_id" class="chat-row {{item.mine ? 'me' : ''}}">
+        <view class="pg-msg {{item.mine ? 'mine' : ''}}">
+          <text class="pg-from">{{item.display || item.from}}</text>
+          <text class="pg-body">{{item.body}}</text>
+        </view>
       </view>
-    </view>
+      <!-- 滚底锚点（scroll-into-view 锚末位） -->
+      <view id="pg-last" class="pg-anchor"></view>
+    </scroll-view>
   </block>
 
   <!-- 输入条（两视图共用；发送按 mode 分发） -->

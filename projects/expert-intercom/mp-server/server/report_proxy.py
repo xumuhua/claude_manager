@@ -342,9 +342,12 @@ class PGroupStore:
         self.seq = 0
         self.max_keep = max_keep
 
-    def append(self, sender, display, body):
+    def append(self, sender, display, body, username=None):
         self.seq += 1
+        # username=登录态作者（login_user；旁路 token 无）——前端按它判「自己的消息」靠右
+        # （seq 2636 哥哥二令②），与 display 展示名分轨不串号。
         msg = {"seq": self.seq, "from": sender, "display": display,
+               "username": username,
                "body": body, "ts": int(time.time()),
                "msg_id": str(uuid.uuid4())}
         self.msgs.append(msg)
@@ -399,5 +402,6 @@ async def pgroup_send(request):
         return web.json_response({"code": "TOO_LARGE",
                                   "message": f"单条 ≤{_MAX_MSG_LEN} 字"}, status=413)
     msg = request.app["pgroup"].append(request["agent"]["name"],
-                                       _display_name(request), text.strip())
+                                       _display_name(request), text.strip(),
+                                       username=request.get("login_user"))
     return web.json_response({"msg": msg})
