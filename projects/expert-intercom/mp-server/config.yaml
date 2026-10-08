@@ -64,3 +64,5 @@ agents:
 #     password_pbkdf2: "pbkdf2_sha256$200000$<salt_hex>$<hash_hex>"
 #     agent: gege                # 须引用上方 agents 已登记的 name，登录下发其 token
 #     display_name: 哥哥          # 可选，缺省取 agent name
+# 多账号同 agent 照登（2026-10-08 nana 实例：agent: gege + display_name: 娜娜），
+# 私有群消息展示名按登录 username 取各自 display_name（report_proxy._display_name）。
