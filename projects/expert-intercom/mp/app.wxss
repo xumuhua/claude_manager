@@ -8,9 +8,11 @@ page {
 
 /* MP-TABBAR-EMBED（哥哥 10/8 令，亦菲 seq 2681）：tabBar 悬浮→固定嵌入。
    custom tabBar 组件仍 fixed 钉底（app.json tabBar.custom:true 的微信强制形态），
-   但全局统一给 page 垫「tabBar 高（48px）+iPhone 安全区」——页面内容区结构化
-   让位、tabBar 永不遮挡内容，各页不再逐页手写 tabBar 垫底；
-   各页 fixed 底栏（chat dock / 报告页 input-bar）回归 bottom:0 即贴 tabBar 上沿。
+   全局统一给 page 垫「tabBar 高（48px）+iPhone 安全区」——页面内容区结构化
+   让位、tabBar 永不遮挡内容，各页不再逐页手写 tabBar 垫底。
+   MP-TABBAR-EMBED-FIX（亦菲 seq 2686）：本垫底只对文档流内容成立，
+   fixed 元素不吃 page padding——各页 fixed 底栏（chat dock / 报告页 input-bar）
+   必须各自 bottom:calc(48px+env) 抬到 tabBar 上沿（94d7d39 口径），双轨并存。
    非 tab 页（login/repo tree/doc/experts）多垫 48px+安全区无碍视觉，一并统一。 */
 page {
   padding-bottom: calc(48px + env(safe-area-inset-bottom));

@@ -78,10 +78,10 @@
 }
 
 /* 私有群消息（哥哥 10/8 二令②：自己的消息靠右含名字，别人的靠左） */
-/* MP-TABBAR-EMBED：tabBar 位已由全局 page 垫底覆盖，可视高度只扣
-   「input-bar 上限（操作钮行 52+输入行 48+padding 16≈116）+ 页头/呼吸区 ≈56」；
-   原 220px 系悬浮时代 tabBar(48+安全区)+input-bar 双扣口径（94d7d39） */
-.pg-scroll { height: calc(100vh - 172px); box-sizing: border-box; }
+/* MP-TABBAR-EMBED-FIX：fixed input-bar 不吃全局 page 垫底（68f7115 教训），
+   其抬升量=tabBar(48+env) 需计入可视高度扣除——回 94d7d39 口径 220px+env；
+   tabBar 位对文档流内容的让位仍由 app.wxss 全局垫底承担 */
+.pg-scroll { height: calc(100vh - 220px - env(safe-area-inset-bottom)); box-sizing: border-box; }
 .pg-anchor { height: 1px; }
 .pg-msg { display: flex; flex-direction: column; max-width: 85%; }
 .pg-msg.mine { align-items: flex-end; }
@@ -97,13 +97,15 @@
   .pg-msg.mine .pg-body { background: #1E3A5F; }
 }
 
-/* 输入条（固定底部贴 tabBar 上沿；实色背景；column 向容纳私有群操作钮行+输入行）
-   MP-TABBAR-EMBED：全局 page 垫底把内容区压在 tabBar 之上，bottom:0 即贴 tabBar
-   上沿；键盘弹起微信整体上移，贴键盘顶自然悬于 tabBar 之上 */
+/* 输入条（fixed 抬到 tabBar 上沿；实色背景；column 向容纳私有群操作钮行+输入行）
+   MP-TABBAR-EMBED-FIX（亦菲 seq 2686 定位）：fixed 元素不吃 page padding——
+   全局 page 垫底只防文档流内容被 tabBar 挡，本条 bottom 必须 calc(48px+env)
+   抬到 tabBar 上沿防自身被盖（哥哥真机实测输入框整个消失即此坑）；键盘弹起
+   微信整体上移、tabBar 不动，贴键盘顶自然悬于 tabBar 之上 */
 .input-bar {
   position: fixed;
   left: 0; right: 0;
-  bottom: 0;   /* MP-TABBAR-EMBED：贴 tabBar 上沿（垫位移交 app.wxss 全局统一） */
+  bottom: calc(48px + env(safe-area-inset-bottom));   /* fixed 底栏抬升口径=94d7d39 定型 */
   display: flex;
   flex-direction: column;
   padding: 8px 12px;
