@@ -10,12 +10,15 @@
 const cfg = require('../../config');
 const api = require('../../utils/api');
 const md = require('../../utils/md');
+const store = require('../../utils/store');
 
 const SECRET_CODE = '2505';
 const MODE_REPORT = 'report';
 const MODE_PGROUP = 'pgroup';
 const POLL_MS = 5000;              // 私有群轮询间隔（轻量实现：不挂 WS）
 const CHAT_KEEP = 40;              // 页内对话消息内存上限
+const IDLE_MS = 15000;             // MP-REPORT-UX②：无操作 15s 自动切报告页
+const DRAFT_KEY = 'daily_report';  // store 草稿键（按页面分轨）
 
 Page({
   data: {
@@ -41,15 +44,49 @@ Page({
   onLoad() {
     this.setData({ date: this.todayStr(), myUser: this._myUsername() });
     this.loadReports();
+    this.startIdleWatch();
   },
 
   onShow() {
     if (this.getTabBar && this.getTabBar()) this.getTabBar().setSelected('pages/daily_report/index');
-    if (this.data.mode === MODE_PGROUP) this.startPoll();
+    // MP-REPORT-UX①（亦菲 seq 2639，哥哥 10/8 令）：从其他页面切入本页时无条件
+    // 重置到报告列表视图——无论之前在详情/md 展开/私有群里都回列表。onLoad 后
+    // 首次 onShow 也走一遍（幂等，开销可忽略）。
+    this.resetToReportList();
+    this.touchIdle();
   },
 
-  onHide() { this.stopPoll(); },
-  onUnload() { this.stopPoll(); },
+  onHide() { this.stopPoll(); this.stopIdleWatch(); },
+  onUnload() { this.stopPoll(); this.stopIdleWatch(); },
+
+  // 重置内部视图状态到列表：mode=report、所有展开收起、停私有群轮询、清群错误。
+  // 草稿不动（inputVal 由输入条自持，切页回来恢复草稿的口径在聊天页，不在本页）。
+  resetToReportList() {
+    if (this.data.mode === MODE_PGROUP) this.stopPoll();
+    this.setData({ mode: MODE_REPORT, expanded: {}, pErr: '' });
+  },
+
+  // ---------- MP-REPORT-UX②：15s 无操作自动切报告页（草稿保留） ----------
+  // 触发动作：输入/点发送/入群/退群/操作钮/登出（任何 bindtap/bindinput 都视同活动）。
+  // 到点仅当还在 pgroup 视图才切回 report——报告视图 15s 无操作本就该停着不折腾。
+  // 草稿保 storage（store.setDraft），回 pgroup 时恢复（enterPgroup 读回）。
+  startIdleWatch() {
+    this.stopIdleWatch();
+    this._idleTimer = setInterval(() => this.checkIdle(), 1000);
+    this.touchIdle();
+  },
+  stopIdleWatch() {
+    if (this._idleTimer) { clearInterval(this._idleTimer); this._idleTimer = null; }
+  },
+  touchIdle() { this._idleLast = Date.now(); },
+  checkIdle() {
+    if (this.data.mode !== MODE_PGROUP) return;
+    if (Date.now() - (this._idleLast || 0) < IDLE_MS) return;
+    // 到点切回报告列表；草稿已随 onInput 实时存 storage，这里无需另存。
+    this.stopPoll();
+    this.setData({ mode: MODE_REPORT, expanded: {}, pErr: '' });
+    this.touchIdle();   // 防重复触发；下次入群由 enterPgroup 重新 touch
+  },
 
   onPullDownRefresh() {
     if (this.data.mode === MODE_PGROUP) {
@@ -95,7 +132,14 @@ Page({
   },
 
   // ---------- 对话框 ----------
-  onInput(e) { this.setData({ inputVal: e.detail.value }); },
+  onInput(e) {
+    const v = e.detail.value;
+    this.setData({ inputVal: v });
+    // MP-REPORT-UX②：实时存草稿（storage），15s 无操作切报告页后回来可恢复；
+    // 同时也是 idle 活动信号。
+    try { store.setDraft(DRAFT_KEY, v); } catch (e2) { /* 忽略 */ }
+    this.touchIdle();
+  },
 
   onSend() {
     const text = (this.data.inputVal || '').trim();
@@ -105,10 +149,13 @@ Page({
     // 暗号拦截（仅本页对话框生效）：入群视图，暗号本身不进对话记录
     if (text === SECRET_CODE) {
       this.setData({ inputVal: '' });
+      try { store.clearDraft(DRAFT_KEY); } catch (e) { /* 忽略 */ }
       return this.enterPgroup();
     }
     const msgs = this.data.chatMsgs.concat([{ role: 'user', text }]).slice(-CHAT_KEEP);
     this.setData({ chatMsgs: msgs, inputVal: '', sending: true });
+    try { store.clearDraft(DRAFT_KEY); } catch (e) { /* 忽略 */ }
+    this.touchIdle();
     const payload = {
       date: this.data.date,
       messages: msgs.map((m) => ({ role: m.role, content: m.text })),
@@ -134,9 +181,13 @@ Page({
 
   // ---------- 私有群（暗号 2505） ----------
   enterPgroup() {
-    this.setData({ mode: MODE_PGROUP, pErr: '', myUser: this._myUsername() });
+    // MP-REPORT-UX②：入群恢复草稿（15s 无操作切走时保下的）。
+    let draft = '';
+    try { draft = store.getDraft(DRAFT_KEY) || ''; } catch (e) { /* 忽略 */ }
+    this.setData({ mode: MODE_PGROUP, pErr: '', inputVal: draft, myUser: this._myUsername() });
     this.loadPgroup(true);
     this.startPoll();
+    this.touchIdle();
   },
 
   // 登录态 username：login_cred = "username:hmac"，取冒号前缀（与服务端验签同源）
@@ -170,11 +221,14 @@ Page({
   backToReport() {
     this.stopPoll();
     this.setData({ mode: MODE_REPORT });
+    this.touchIdle();
   },
 
   // 登出=登出整个账号返回登录页（哥哥 10/8 令）：清登录态 + reLaunch 收掉全部 tab 页栈
   onLogout() {
     this.stopPoll();
+    this.stopIdleWatch();
+    try { store.clearDraft(DRAFT_KEY); } catch (e) { /* 忽略 */ }
     cfg.clearToken();
     try { wx.removeStorageSync('display_name'); } catch (e) { /* 忽略 */ }
     try { wx.removeStorageSync('login_cred'); } catch (e) { /* 忽略 */ }
@@ -214,6 +268,8 @@ Page({
 
   sendPgroup(text) {
     this.setData({ inputVal: '', sending: true });
+    try { store.clearDraft(DRAFT_KEY); } catch (e) { /* 忽略 */ }
+    this.touchIdle();
     api.request({ method: 'POST', path: '/api/pgroup/messages', data: { body: text } })
       .then((d) => {
         const msg = d.msg;

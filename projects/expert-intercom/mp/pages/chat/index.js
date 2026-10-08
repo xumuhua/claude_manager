@@ -10,6 +10,9 @@ const md = require('../../utils/md');
 const ws = require('../../utils/ws');
 const player = require('../../utils/player');
 
+const IDLE_MS = 15000;             // MP-REPORT-UX②：无操作 15s 自动切报告页
+const DRAFT_KEY = 'chat';          // store 草稿键（按页面分轨）
+
 Page({
   data: {
     conv: cfg.CONV_GROUP,
@@ -215,16 +218,43 @@ Page({
   },
 
   // MP-UX6：下拉菜单开关——点标题切换、点遮罩/选中项收起
-  toggleConvMenu() { this.setData({ menuOpen: !this.data.menuOpen }); },
+  toggleConvMenu() { this.touchIdle(); this.setData({ menuOpen: !this.data.menuOpen }); },
   closeConvMenu() { if (this.data.menuOpen) this.setData({ menuOpen: false }); },
 
   onShow() {
     // MP-STAT1：custom tabBar 选中态同步（组件在低版本库缺失时 getTabBar() 为 undefined，静默跳过）
     if (this.getTabBar && this.getTabBar()) this.getTabBar().setSelected('pages/chat/index');
     ws.resume(); this.catchUp();
+    // MP-REPORT-UX②：从其他页（典型=报告页）切回聊天页恢复草稿
+    let draft = '';
+    try { draft = store.getDraft(DRAFT_KEY) || ''; } catch (e) { /* 忽略 */ }
+    if (draft && !this.data.inputText) {
+      this.setData({ inputText: draft, canSend: !!draft.trim() });
+    }
+    this.startIdleWatch();
   },
-  onHide() { player.pause(); this.stopPolling(); },   // 切 tab/退后台：TTS 自动暂停（D1 §4.7）
-  onUnload() { this.stopPolling(); },
+  onHide() { player.pause(); this.stopPolling(); this.stopIdleWatch(); },   // 切 tab/退后台：TTS 自动暂停（D1 §4.7）
+  onUnload() { this.stopPolling(); this.stopIdleWatch(); },
+
+  // ---------- MP-REPORT-UX②：15s 无操作自动切报告页（草稿保留） ----------
+  // 触发动作：输入/点发送/切会话/点菜单/点摘要/滚动/长按/录音/快捷指令等任何 bindtap/
+  // bindinput/bindscroll 都视同活动。到点 wx.switchTab 到日常报告页（tab 页正确切法，
+  // navigateTo 对 tab 页会 fail）。草稿已随 onInput 实时存 storage。
+  startIdleWatch() {
+    this.stopIdleWatch();
+    this.touchIdle();
+    this._idleTimer = setInterval(() => this.checkIdle(), 1000);
+  },
+  stopIdleWatch() {
+    if (this._idleTimer) { clearInterval(this._idleTimer); this._idleTimer = null; }
+  },
+  touchIdle() { this._idleLast = Date.now(); },
+  checkIdle() {
+    if (Date.now() - (this._idleLast || 0) < IDLE_MS) return;
+    this.stopIdleWatch();
+    this.touchIdle();   // 下次 onShow 重新起表
+    wx.switchTab({ url: '/pages/daily_report/index' });
+  },
 
   // ---------- 会话加载 ----------
 
@@ -550,6 +580,7 @@ Page({
     const h = e.detail.scrollHeight - e.detail.scrollTop;
     // 距底部 <200rpx≈100px 视为贴底（粗略，scroll-view 高度约屏高）
     this.atBottom = (scrollHeight - scrollTop) < 800;
+    this.touchIdle();   // MP-REPORT-UX②：滚动算活动
     // DEBUG-MPUX2：观察 scrollHeight 是否随内容增长（=0 说明 scroll-view 无高度）
     if (!this._dbgScrollN) this._dbgScrollN = 0;
     if (++this._dbgScrollN % 20 === 1) {
@@ -577,7 +608,7 @@ Page({
     });
   },
 
-  jumpBottom() { this.scrollBottom(true); },
+  jumpBottom() { this.touchIdle(); this.scrollBottom(true); },
 
   // 摘要来源跳转：点击要点定位到来源消息并高亮（D1 §4.5）
   scrollToSeq(seq) {
@@ -594,6 +625,7 @@ Page({
 
   async switchConv(e) {
     const conv = e.currentTarget.dataset.conv;
+    this.touchIdle();   // MP-REPORT-UX②
     this.setData({ menuOpen: false });   // MP-UX6：点选菜单项后收起
     this._convPending = false;           // MP-UX7：用户手动选了会话，默认 top1 不再抢
     if (conv === this.data.conv) return;
@@ -614,6 +646,7 @@ Page({
   // ---------- @我过滤（C2） ----------
 
   toggleAtMe() {
+    this.touchIdle();   // MP-REPORT-UX②
     this.setData({ atMeOnly: !this.data.atMeOnly, newMsgCount: 0 }, () => this.buildDisplay());
   },
 
@@ -622,6 +655,10 @@ Page({
   onInput(e) {
     const v = e.detail.value;
     this.setData({ inputText: v, canSend: !!v.trim() });
+    // MP-REPORT-UX②：实时存草稿（storage），15s 无操作切报告页后回来可恢复；
+    // 同时也是 idle 活动信号。
+    try { store.setDraft(DRAFT_KEY, v); } catch (e2) { /* 忽略 */ }
+    this.touchIdle();
     // 群态 @ 补全：列表来源 = 消息流中出现过的发送者 + all（D1 §4.3，R-4 未到位降级）
     const m = /@([A-Za-z0-9_-]*)$/.exec(v);
     if (m && this.data.conv.indexOf('grp_') === 0) {   // MP-UX4：任意群态都启用 @ 补全
@@ -641,6 +678,7 @@ Page({
   },
 
   onQuickPhrase(e) {  // C5
+    this.touchIdle();   // MP-REPORT-UX②
     this.setData({ inputText: e.currentTarget.dataset.text, canSend: true });
   },
 
@@ -655,6 +693,8 @@ Page({
   async onSend() {
     const text = (this.data.inputText || '').trim();
     if (!text) return;   // 空内容发送钮置灰（WXML disabled 样式 + 这里兜底）
+    this.touchIdle();   // MP-REPORT-UX②
+    try { store.clearDraft(DRAFT_KEY); } catch (e) { /* 忽略 */ }
     const conv = this.data.conv;
     const localId = 'local_' + Date.now();
     const pendingMsg = this.decorate({
@@ -859,6 +899,7 @@ Page({
 
   onMicStart(e) {
     if (this.data.recording) return;
+    this.touchIdle();   // MP-REPORT-UX②
     this.recCancelled = false;
     this.recStartY = e.touches[0].clientY;
     this.recorder.start({

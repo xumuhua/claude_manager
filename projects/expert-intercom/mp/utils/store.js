@@ -10,6 +10,7 @@ const K = {
   doc: (key) => 'doc_' + key,
   aiCardFold: 'ai_card_fold', // { key: bool }
   treeSort: 'tree_sort',      // MP-UX4：tree 列表排序记忆（'name' | 'mtime'）
+  draft: (page) => 'chat_draft_' + page,  // MP-REPORT-UX：聊天类页面输入框草稿（15s 无操作切页时保留）
 };
 
 function get(key, def) {
@@ -61,6 +62,11 @@ function setCardFold(key, folded) {
 // ---- MP-UX4：tree 列表排序记忆 ----
 const getTreeSort = () => (get(K.treeSort, 'name') === 'mtime' ? 'mtime' : 'name');
 const setTreeSort = (mode) => set(K.treeSort, mode === 'mtime' ? 'mtime' : 'name');
+
+// ---- MP-REPORT-UX：聊天类页面输入框草稿（15s 无操作自动切报告页时保住未发送文本）----
+const getDraft = (page) => get(K.draft(page), '');
+const setDraft = (page, text) => set(K.draft(page), text);
+const clearDraft = (page) => { try { wx.removeStorageSync(K.draft(page)); } catch (e) { /* 忽略 */ } };
 
 // ---- MP-PERF2：tree 层缓存持久化（页面销毁/冷启动后仍可命中，TTL 30min）----
 // 只存 tree 列表与 mtime 图（不存文件内容）；LRU 体积上限 cfg.TREE_CACHE_MAX_BYTES，
@@ -147,6 +153,7 @@ module.exports = {
   getFavs, setFavs, getCustoms, addCustom,
   getSummary, setSummary, getCardFold, setCardFold,
   getTreeSort, setTreeSort,
+  getDraft, setDraft, clearDraft,
   getTreeLevels, putTreeLevel, delTreeLevel,
   getTreeMtimes, putTreeMtimes, delTreeMtimes,
   getDoc, putDoc, listDocs, docKey,

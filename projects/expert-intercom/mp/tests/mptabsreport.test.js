@@ -105,7 +105,7 @@ global.wx = {
 const Module = require('module');
 const origResolve = Module._resolveFilename;
 Module._resolveFilename = function (request, ...rest) {
-  if (request === '../../utils/api' || request === '../../config') return request;
+  if (request === '../../utils/api' || request === '../../config' || request === '../../utils/store') return request;
   return origResolve.call(this, request, ...rest);
 };
 let apiHandler = null;
@@ -115,8 +115,16 @@ const apiStub = {
   aiToast: () => {},
 };
 const cfgStub = { clearTokenCalls: 0, clearToken() { this.clearTokenCalls++; } };
+// MP-REPORT-UX：store 草稿 stub（内存 map 模拟 storage）
+const _draftMap = {};
+const storeStub = {
+  getDraft: (k) => _draftMap[k] || '',
+  setDraft: (k, v) => { _draftMap[k] = v; },
+  clearDraft: (k) => { delete _draftMap[k]; },
+};
 require.cache['../../utils/api'] = { exports: apiStub };
 require.cache['../../config'] = { exports: cfgStub };
+require.cache['../../utils/store'] = { exports: storeStub };
 delete require.cache[require.resolve(path.join(MP, 'pages/daily_report/index.js'))];
 require(path.join(MP, 'pages/daily_report/index.js'));
 Module._resolveFilename = origResolve;
@@ -275,6 +283,77 @@ setImmediate(() => {
             ok('T4c.12 发送后新消息 mine=true+滚底',
                rp.data.pMsgs[rp.data.pMsgs.length - 1].mine === true && rp.data.pAnchor === 'pg-last');
             global.wx.getStorageSync = () => '';
+
+            /* ---------- T4d MP-REPORT-UX①（亦菲 seq 2639）：onShow 重置到列表 ---------- */
+            // 场景：先点开展开 + 切到 pgroup 视图，模拟从其他页切入
+            rp.data.mode = 'report';
+            rp.toggleReport({ currentTarget: { dataset: { key: 'aichip' } } });
+            ok('T4d.1 前置：展开态', rp.data.expanded.aichip === true);
+            rp.data.mode = 'pgroup';   // 直接改 mode 模拟已入群
+            rp.onShow();
+            ok('T4d.2 onShow 后回 report 视图', rp.data.mode === 'report');
+            ok('T4d.3 onShow 后展开清空', Object.keys(rp.data.expanded).length === 0);
+            ok('T4d.4 onShow 后 pErr 清空', rp.data.pErr === '');
+            ok('T4d.5 onShow 后私有群轮询停止', rp._pollTimer === null);
+
+            /* ---------- T4e MP-REPORT-UX②：15s 无操作切报告+草稿保留 ---------- */
+            // ① 草稿随输入实时存 storage
+            rp.data.mode = 'report';
+            rp.data.inputVal = '';
+            rp.onInput({ detail: { value: '还没写完的话' } });
+            ok('T4e.1 输入即存草稿', storeStub.getDraft('daily_report') === '还没写完的话');
+            ok('T4e.2 输入触发 idle 刷新', typeof rp._idleLast === 'number' && rp._idleLast > 0);
+            // ② 入群恢复草稿
+            rp.data.inputVal = '';
+            rp.enterPgroup();
+            ok('T4e.3 入群恢复草稿到输入框', rp.data.inputVal === '还没写完的话');
+            // ③ 发送后草稿清空
+            apiHandler = (o) => Promise.resolve(o.method === 'POST'
+              ? { msg: { seq: 99, from: 'gege_dev', display: '哥哥', body: 'hi', ts: 1, msg_id: 'y' } }
+              : { messages: [], latest_seq: 99 });
+            rp.data.inputVal = 'hi';
+            rp.sendPgroup('hi');
+            ok('T4e.4 发送后草稿清空', storeStub.getDraft('daily_report') === '');
+            // ④ idle 到点切回 report（pgroup 视图下 15s 无操作）
+            rp.data.mode = 'pgroup';
+            rp._idleLast = Date.now() - 16000;   // 假装 16s 无操作
+            rp.checkIdle();
+            ok('T4e.5 pgroup 15s 无操作切回 report', rp.data.mode === 'report');
+            ok('T4e.6 切回后 pErr 清空', rp.data.pErr === '');
+            // ⑤ report 视图下 idle 到点不折腾（幂等）
+            rp.data.mode = 'report';
+            rp._idleLast = Date.now() - 16000;
+            rp.checkIdle();
+            ok('T4e.7 report 视图 15s 无操作保持 report', rp.data.mode === 'report');
+            // ⑥ onHide/onUnload 停 idle 表
+            rp.startIdleWatch();
+            ok('T4e.8 startIdleWatch 起表', !!rp._idleTimer);
+            rp.onHide();
+            ok('T4e.9 onHide 停 idle 表', rp._idleTimer === null);
+
+            /* ---------- T4f chat 页同款：15s 无操作 switchTab 报告页+草稿 ---------- */
+            // chat 页结构较复杂，这里只做源码级断言（不必端到端构造）
+            const chatSrc = fs.readFileSync(path.join(MP, 'pages/chat/index.js'), 'utf8');
+            ok('T4f.1 chat 页挂 idle 常量', /IDLE_MS\s*=\s*15000/.test(chatSrc));
+            ok('T4f.2 chat 页 idle 到点走 switchTab 报告页',
+               /wx\.switchTab\(\{[^}]*url:\s*'\/pages\/daily_report\/index'/.test(chatSrc));
+            ok('T4f.3 chat 页 onInput 存草稿',
+               /onInput[\s\S]{0,800}store\.setDraft\(DRAFT_KEY/.test(chatSrc));
+            ok('T4f.4 chat 页 onShow 读草稿恢复',
+               /onShow[\s\S]{0,1200}store\.getDraft\(DRAFT_KEY\)/.test(chatSrc));
+            ok('T4f.5 chat 页 onHide 停 idle 表',
+               /onHide[\s\S]{0,200}stopIdleWatch\(\)/.test(chatSrc));
+            ok('T4f.6 chat 页发送清草稿',
+               /onSend[\s\S]{0,600}store\.clearDraft\(DRAFT_KEY\)/.test(chatSrc));
+            ok('T4f.7 chat 页滚动/切会话/发送均 touchIdle',
+               (chatSrc.match(/touchIdle\(\)/g) || []).length >= 8);
+
+            /* ---------- T4g store.getDraft/setDraft/clearDraft 接口登记 ---------- */
+            const storeSrc = fs.readFileSync(path.join(MP, 'utils/store.js'), 'utf8');
+            ok('T4g.1 store 草稿三接口导出',
+               /getDraft, setDraft, clearDraft/.test(storeSrc));
+            ok('T4g.2 草稿键带 chat_draft_ 前缀',
+               /'chat_draft_'/.test(storeSrc));
 
             timers.forEach((t) => clearInterval(t));
             console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAIL`);
