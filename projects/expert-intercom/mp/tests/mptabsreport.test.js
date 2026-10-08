@@ -105,7 +105,7 @@ global.wx = {
 const Module = require('module');
 const origResolve = Module._resolveFilename;
 Module._resolveFilename = function (request, ...rest) {
-  if (request === '../../utils/api') return request;
+  if (request === '../../utils/api' || request === '../../config') return request;
   return origResolve.call(this, request, ...rest);
 };
 let apiHandler = null;
@@ -114,7 +114,9 @@ const apiStub = {
   request: (o) => { apiCalls.push(o); return apiHandler(o); },
   aiToast: () => {},
 };
+const cfgStub = { clearTokenCalls: 0, clearToken() { this.clearTokenCalls++; } };
 require.cache['../../utils/api'] = { exports: apiStub };
+require.cache['../../config'] = { exports: cfgStub };
 delete require.cache[require.resolve(path.join(MP, 'pages/daily_report/index.js'))];
 require(path.join(MP, 'pages/daily_report/index.js'));
 Module._resolveFilename = origResolve;
@@ -180,6 +182,37 @@ setImmediate(() => {
       rp.onSend();
       setImmediate(() => {
         ok('T4.14 NO_REPORT 兜底文案', rp.data.chatMsgs[rp.data.chatMsgs.length - 1].text.includes('未产出'));
+
+        /* ---------- T4b 追加调整（亦菲 seq 2617，哥哥 10/8 令） ---------- */
+        // ①输入条底部安全区：input-bar 固定于 tabBar 之上（bottom=48px+safe-area），
+        //   页面 padding-bottom 盖住「输入条+tabBar」总高
+        const rpWxss = fs.readFileSync(path.join(MP, 'pages/daily_report/index.wxss'), 'utf8');
+        const mBottom = rpWxss.match(/\.input-bar\s*\{[\s\S]*?bottom:\s*calc\(([^)]+)\)/);
+        ok('T4b.1 输入条悬浮于 tabBar 上方',
+           !!mBottom && mBottom[1].includes('48px') && mBottom[1].includes('safe-area-inset-bottom'));
+        const mPad = rpWxss.match(/\.page\s*\{[\s\S]*?padding-bottom:\s*calc\((\d+)px/);
+        ok('T4b.2 页面底部让位 ≥ 输入条+tabBar（私有群含操作钮行）',
+           !!mPad && parseInt(mPad[1], 10) >= 150);
+
+        // ②私有群操作钮：返回/登出并排贴输入框上方，高度加大
+        const rpWxml = fs.readFileSync(path.join(MP, 'pages/daily_report/index.wxml'), 'utf8');
+        ok('T4b.3 操作钮行在 input-bar 内（贴输入框上方）',
+           /class="input-bar"[\s\S]*class="pg-actions"[\s\S]*bindtap="backToReport"[\s\S]*bindtap="onLogout"[\s\S]*class="input-row"/.test(rpWxml));
+        const mBtnH = rpWxss.match(/\.pg-action-btn\s*\{[\s\S]*?height:\s*(\d+)px/);
+        ok('T4b.4 按钮高度加大（≥40px）', !!mBtnH && parseInt(mBtnH[1], 10) >= 40);
+
+        // 登出行为：清 token+display_name → reLaunch 登录页
+        const removedKeys = [];
+        let relaunchUrl = '';
+        global.wx.removeStorageSync = (k) => removedKeys.push(k);
+        global.wx.reLaunch = (o) => { relaunchUrl = o.url; };
+        rp.data.mode = 'pgroup';
+        rp.onLogout();
+        ok('T4b.5 登出清 token', cfgStub.clearTokenCalls === 1);
+        ok('T4b.6 登出清 display_name', removedKeys.includes('display_name'));
+        ok('T4b.7 登出 reLaunch 登录页', relaunchUrl === '/pages/login/index');
+        ok('T4b.8 登出停轮询', rp._pollTimer === null);
+
         timers.forEach((t) => clearInterval(t));
         console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAIL`);
         process.exit(fail === 0 ? 0 : 1);

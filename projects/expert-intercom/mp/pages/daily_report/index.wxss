@@ -2,8 +2,8 @@
    MP-UX7 红线：卡片/横幅/输入条背景一律实色 HEX + @media 双态，禁 var() 背景。 */
 .page {
   min-height: 100vh;
-  /* 底部输入条 + custom tabBar 双让位（MP-UX2 滚底教训） */
-  padding-bottom: calc(116px + env(safe-area-inset-bottom));
+  /* 底部输入条（含私有群操作钮行）+ custom tabBar 双让位（MP-UX2 滚底教训） */
+  padding-bottom: calc(180px + env(safe-area-inset-bottom));
   box-sizing: border-box;
 }
 
@@ -48,23 +48,32 @@
   .chat-bubble.user { background: #1E3A5F; }
 }
 
-/* 私有群头（返回按钮在输入框上方区域之上，一眼可达） */
-.pg-head {
+/* 私有群操作钮行（返回/登出）：贴输入条上方，大按钮快速点击（哥哥 10/8 令） */
+.pg-actions {
+  display: flex;
+  gap: 10px;
+  padding: 0 0 8px;
+}
+.pg-action-btn {
+  flex: 1;
   display: flex;
   align-items: center;
-  margin: 10px 12px 4px;
-}
-.pg-back {
-  font-size: 12px;
+  justify-content: center;
+  height: 44px;
+  font-size: 14px;
+  font-weight: 600;
+  border-radius: 10px;
   color: var(--primary);
   background: #E0ECFF;
-  border-radius: 8px;
-  padding: 5px 10px;
+}
+.pg-action-btn.danger {
+  color: #FFFFFF;
+  background: #DC2626;
 }
 @media (prefers-color-scheme: dark) {
-  .pg-back { background: #1E3A5F; }
+  .pg-action-btn { background: #1E3A5F; }
+  .pg-action-btn.danger { background: #7F1D1D; }
 }
-.pg-title { flex: 1; text-align: center; font-size: 14px; font-weight: 600; color: var(--fg); margin-right: 64px; }
 
 .pg-msg { display: flex; flex-direction: column; max-width: 85%; }
 .pg-from { font-size: 11px; color: var(--fg2); margin-bottom: 2px; }
@@ -77,13 +86,13 @@
   .pg-body { background: #1C1C1E; }
 }
 
-/* 输入条（固定底部 tabBar 之上；实色背景） */
+/* 输入条（固定底部 tabBar 之上；实色背景；column 向容纳私有群操作钮行+输入行） */
 .input-bar {
   position: fixed;
   left: 0; right: 0;
-  bottom: calc(48px + env(safe-area-inset-bottom));   /* 让位 custom tabBar */
+  bottom: calc(48px + env(safe-area-inset-bottom));   /* 让位 custom tabBar（48px+安全区，与组件同口径） */
   display: flex;
-  align-items: center;
+  flex-direction: column;
   padding: 8px 12px;
   background: #FFFFFF;
   border-top: 1rpx solid #E5E5EA;
@@ -92,6 +101,7 @@
 @media (prefers-color-scheme: dark) {
   .input-bar { background: #1C1C1E; border-top-color: #2C2C2E; }
 }
+.input-row { display: flex; align-items: center; }
 .input {
   flex: 1;
   font-size: 14px;

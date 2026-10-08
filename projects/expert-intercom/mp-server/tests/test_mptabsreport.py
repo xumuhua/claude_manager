@@ -77,16 +77,22 @@ class FakeSession:
 
 
 class FakeRequest:
-    def __init__(self, app, query=None, body=None, agent=None):
+    def __init__(self, app, query=None, body=None, agent=None, login_user=None):
         self.app = app
         self.query = query or {}
         self._body = body
         self._agent = agent or {"name": "gege_dev", "role": "gege", "scope": ["group", "dm"]}
+        self._login_user = login_user
 
     def __getitem__(self, key):
         if key == "agent":
             return self._agent
         return self.app[key]
+
+    def get(self, key, default=None):
+        if key == "login_user":
+            return self._login_user
+        return default
 
     async def json(self):
         if self._body is None:
@@ -111,7 +117,8 @@ def _cfg():
             "rate_per_minute": 10,
             "timeout_s": 5,
         },
-        "users": {"g": {"agent": "gege_dev", "display_name": "哥哥"}},
+        "users": {"g": {"agent": "gege_dev", "display_name": "哥哥"},
+                  "nana": {"agent": "nana_dev", "display_name": "娜娜"}},
     }
 
 
@@ -332,7 +339,9 @@ def test_r4_daily_limit(monkeypatch):
 
 def test_r5_send_and_list():
     app = _mk_app()
-    r = asyncio.run(report_proxy.pgroup_send(FakeRequest(app, body={"body": "  大家好  "})))
+    # 登录态 g → display 取 users["g"].display_name（seq 2619 username 口径）
+    r = asyncio.run(report_proxy.pgroup_send(FakeRequest(app, body={"body": "  大家好  "},
+                                                         login_user="g")))
     assert r.status == 200
     msg = json.loads(r.text)["msg"]
     assert msg["seq"] == 1 and msg["body"] == "大家好" and msg["display"] == "哥哥"
@@ -366,3 +375,56 @@ def test_r5_ring_truncation():
     assert store.seq == 5
     msgs = store.list(0)
     assert len(msgs) == 3 and msgs[0]["body"] == "m2"
+
+
+def test_r5_display_name_by_login_user():
+    """seq 2619：展示名按登录 username 精确取 display_name——nana 发言显示「娜娜」，
+    非登录态（无 login_user，如 test_gege 旁路 token）回退 agent name 不串号。"""
+    app = _mk_app()
+    req = FakeRequest(app, body={"body": "hi"},
+                      agent={"name": "nana_dev", "role": "gege", "scope": ["group", "dm"]},
+                      login_user="nana")
+    r = asyncio.run(report_proxy.pgroup_send(req))
+    assert json.loads(r.text)["msg"]["display"] == "娜娜"
+    # 无 login_user（旁路 token）：回退 agent name，不会误吃 gege 的 display_name
+    req2 = FakeRequest(app, body={"body": "hi"},
+                       agent={"name": "nana_dev", "role": "gege", "scope": ["group", "dm"]})
+    r2 = asyncio.run(report_proxy.pgroup_send(req2))
+    assert json.loads(r2.text)["msg"]["display"] == "nana_dev"
+    # gege 登录态：仍显示「哥哥」（不回归）
+    r3 = asyncio.run(report_proxy.pgroup_send(
+        FakeRequest(app, body={"body": "hi"}, login_user="g")))
+    assert json.loads(r3.text)["msg"]["display"] == "哥哥"
+
+
+# ---------- R6 users 账号表解析（seq 2617/2619：nana 账号+display_name=娜娜） ----------
+
+def test_r6_users_parse_nana(tmp_path):
+    import config as cfg_mod
+    raw = """
+port: 8766
+hub: {url: "http://127.0.0.1:8765", token: "hubtok"}
+agents:
+  - {name: gege_dev, role: gege, token: "tok_gege", scope: [group, dm]}
+  - {name: nana_dev, role: gege, token: "tok_nana", scope: [group, dm]}
+users:
+  - username: gege
+    password_pbkdf2: "pbkdf2_sha256$200000$00$aabbcc"
+    agent: gege_dev
+    display_name: 哥哥
+  - username: nana
+    password_pbkdf2: "pbkdf2_sha256$200000$00$aabbcc"
+    agent: nana_dev
+    display_name: 娜娜
+"""
+    # 上面的 hash 段 hex 非法会拒启动——换合法 32 字节 hex
+    raw = raw.replace("00$aabbcc", "00" * 16 + "$" + "ab" * 32)
+    p = tmp_path / "c.yaml"
+    p.write_text(raw, encoding="utf-8")
+    cfg = cfg_mod.load_config(str(p))
+    assert cfg["users"]["nana"]["display_name"] == "娜娜"
+    assert cfg["users"]["nana"]["agent"] == "nana_dev"
+    # make_password_hash 产物能被自家 verify 闭环（nana 密码生成走它，不手算）
+    h = cfg_mod.make_password_hash("missyou")
+    assert cfg_mod.verify_password(h, "missyou")
+    assert not cfg_mod.verify_password(h, "wrong")

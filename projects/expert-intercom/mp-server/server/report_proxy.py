@@ -359,11 +359,13 @@ class PGroupStore:
 
 
 def _display_name(request):
-    """发送者展示名：登录态 display_name 优先，回退 agent name。
-    cfg["users"] 为 {username: user_dict}（config.py L114 起），勿按 list 遍历。"""
+    """发送者展示名：登录态优先按 username 精确取 display_name（nana→娜娜，seq 2619），
+    回退 agent name。cfg["users"] 为 {username: user_dict}（config.py L114 起），勿按 list 遍历。"""
     agent = request["agent"]
-    for u in (request.app["cfg"].get("users") or {}).values():
-        if u.get("agent") == agent.get("name"):
+    username = request.get("login_user")
+    if username:
+        u = (request.app["cfg"].get("users") or {}).get(username)
+        if u:
             return u.get("display_name") or agent["name"]
     return agent["name"]
 

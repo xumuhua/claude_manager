@@ -2,8 +2,9 @@
 // 三功能：①LLM 对话框（问报告细节，POST /ai/report_chat，上下文=当日报告全文）
 //         ②每日三报告概述卡片（GET /api/daily_report，点卡片展开内嵌 markdown 全文）
 //         ③暗号 2505 → 切私有用户聊天群视图（GET/POST /api/pgroup/messages），
-//           输入框上方「← 返回报告页」快速退回。
+//           输入框上方「← 返回报告页」快速退回 + 「登出」整账号退出回登录页。
 // 红线：暗号只在本页输入框生效；当日未产出显示占位不报错；AI 结果不入总线。
+const cfg = require('../../config');
 const api = require('../../utils/api');
 const md = require('../../utils/md');
 
@@ -136,6 +137,14 @@ Page({
   backToReport() {
     this.stopPoll();
     this.setData({ mode: MODE_REPORT });
+  },
+
+  // 登出=登出整个账号返回登录页（哥哥 10/8 令）：清登录态 + reLaunch 收掉全部 tab 页栈
+  onLogout() {
+    this.stopPoll();
+    cfg.clearToken();
+    try { wx.removeStorageSync('display_name'); } catch (e) { /* 忽略 */ }
+    wx.reLaunch({ url: '/pages/login/index' });
   },
 
   startPoll() {
