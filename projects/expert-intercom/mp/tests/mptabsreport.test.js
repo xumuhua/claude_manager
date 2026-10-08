@@ -23,9 +23,9 @@ function ok(name, cond, detail) {
 const app = JSON.parse(fs.readFileSync(path.join(MP, 'app.json'), 'utf8'));
 const tabPaths = app.tabBar.list.map((t) => t.pagePath);
 ok('T1.1 tabBar 四页', tabPaths.length === 4);
-ok('T1.2 顺序=对话/状态/日常报告/阅读',
-   tabPaths[0] === 'pages/chat/index' && tabPaths[1] === 'pages/status/index' &&
-   tabPaths[2] === 'pages/daily_report/index' && tabPaths[3] === 'pages/repos/index');
+ok('T1.2 顺序=日常报告/对话/状态/阅读（10/8 二令：报告放对话左边）',
+   tabPaths[0] === 'pages/daily_report/index' && tabPaths[1] === 'pages/chat/index' &&
+   tabPaths[2] === 'pages/status/index' && tabPaths[3] === 'pages/repos/index');
 ok('T1.3 动态页出 tabBar', !tabPaths.includes('pages/experts/index'));
 ok('T1.4 动态页保留 pages 注册（深链/复用）', app.pages.includes('pages/experts/index'));
 ok('T1.5 daily_report 已注册', app.pages.includes('pages/daily_report/index'));

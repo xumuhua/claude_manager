@@ -147,10 +147,11 @@ def _clean_quota_state():
 # ---------- R1 tabs ----------
 
 def test_r1_tabs_four_pages():
+    # 顺序（10/8 二令，亦菲 seq 2633）：日常报告/对话/状态/阅读——日常报告放对话左边
     tabs = status_proxy.STATUS_TABS
     paths = [t["page_path"] for t in tabs]
-    assert paths == ["pages/chat/index", "pages/status/index",
-                     "pages/daily_report/index", "pages/repos/index"]
+    assert paths == ["pages/daily_report/index", "pages/chat/index",
+                     "pages/status/index", "pages/repos/index"]
     assert "pages/experts/index" not in paths
 
 
