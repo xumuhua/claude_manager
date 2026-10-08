@@ -32,6 +32,7 @@ ai:
   tts_daily_chars: 200000             # 哥哥 Q5 拍板
   rate_per_minute: 10                 # 频控：每 token 每分钟 AI 请求上限
   timeout_s: 30
+  chat_timeout_s: 75                  # MP-TABS-REPORT 复测修复：报告问答长推理放宽（30s 贴线间歇 503）
   tts_max_chars: 2000                 # R-7：分段 ≤2000 字/次
   openspeech_appid: "env:DOUBAO_SPEECH_APPID"   # 可选，未配置=降级
   openspeech_token: "env:DOUBAO_SPEECH_TOKEN"

@@ -307,9 +307,12 @@ async def ai_report_chat(request):
         "content-type": "application/json",
     }
     payload_ai = {"model": ai["ark_model"], "max_tokens": 2048, "messages": conv}
+    # 长推理放宽超时（config chat_timeout_s，默认 75s）：报告全文上下文 17k+ 字
+    # 推理 20s+ 属常态，沿用 timeout_s=30 贴线间歇 503（2026-10-08 生产实测）
+    chat_timeout = ai.get("chat_timeout_s") or ai["timeout_s"]
     try:
         async with aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=ai["timeout_s"])) as s:
+                timeout=aiohttp.ClientTimeout(total=chat_timeout)) as s:
             async with s.post(url, json=payload_ai, headers=headers) as r:
                 data = await r.json(content_type=None)
                 if r.status != 200:
@@ -321,8 +324,11 @@ async def ai_report_chat(request):
     except AIUpstreamError as e:
         return web.json_response({"code": e.code, "message": e.message}, status=503)
     except (aiohttp.ClientError, TimeoutError) as e:
+        # 错误信息带异常类型：TimeoutError str 为空，不带类型排查时是「Ark 不可达: 」
+        # 空白（2026-10-08 生产复测教训）；repr 兜底保证非空
+        detail = f"{e.__class__.__name__}: {e}" if str(e) else e.__class__.__name__
         return web.json_response({"code": "AI_UNAVAILABLE",
-                                  "message": f"Ark 不可达: {e}"}, status=503)
+                                  "message": f"Ark 不可达: {detail}"}, status=503)
     return web.json_response({"reply": reply, "date": str(date)})
 
 

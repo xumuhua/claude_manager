@@ -132,7 +132,9 @@ async def _ark_messages(ai, prompt, max_tokens=2048):
                          if b.get("type") == "text"]
                 return "".join(parts)
     except (aiohttp.ClientError, TimeoutError) as e:
-        raise AIUpstreamError("AI_UNAVAILABLE", f"Ark 不可达: {e}")
+        # TimeoutError str 为空——错误信息须带异常类型，否则前端只见「Ark 不可达: 」空白
+        detail = f"{e.__class__.__name__}: {e}" if str(e) else e.__class__.__name__
+        raise AIUpstreamError("AI_UNAVAILABLE", f"Ark 不可达: {detail}")
 
 
 class AIUpstreamError(Exception):

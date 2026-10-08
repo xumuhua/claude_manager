@@ -287,7 +287,10 @@ async def collect_servers(now=None):
         "servers": cards,
         "heartbeat_dir": hb_dir or None,
         "generated_at": int(now),
-        "sections": ["servers"],  # 前端子页签清单数据驱动
+        # 前端子页签清单数据驱动（MP-TABS-REPORT 起三枚并列：agents 区数据走
+        # /api/experts，本接口不给 agents 数据只报名字；models 可达性前端另有补挂，
+        # 但此处声明全集保持语义自洽——后端三页签都算本页功能面）
+        "sections": ["servers", "models", "agents"],
     }
 
 

@@ -77,6 +77,10 @@ def load_config(path):
         "tts_daily_chars": int(ai.get("tts_daily_chars", 200000)),       # Q5 拍板
         "rate_per_minute": int(ai.get("rate_per_minute", 10)),
         "timeout_s": int(ai.get("timeout_s", 30)),
+        # MP-TABS-REPORT 复测修复：报告问答带当日报告全文（17k+ 字）推理 20s+ 属常态，
+        # 30s 贴线间歇 503（2026-10-08 生产实测 21s/29s 险过、30.6s 超时）；
+        # 长推理单独放宽到 75s（nginx 反代 proxy_read_timeout 90s 内留余量）。
+        "chat_timeout_s": int(ai.get("chat_timeout_s", 75)),
         "tts_max_chars": int(ai.get("tts_max_chars", 2000)),  # R-7：分段 ≤2000 字/次
         "asr_max_bytes": int(ai.get("asr_max_bytes", 5 * 1024 * 1024)),  # ≤60s 录音
         "openspeech_appid": _resolve_optional(ai.get("openspeech_appid")),

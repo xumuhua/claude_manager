@@ -106,6 +106,9 @@ def test_collect_servers_missing_dir(monkeypatch, tmp_path):
     local = [c for c in out["servers"] if c["source"] == "local"]
     assert local and local[0]["state"] == "fresh"
     assert out["heartbeat_dir"] is None
+    # MP-TABS-REPORT 修复：子页签三枚数据驱动（agents 区数据走 /api/experts，
+    # 本接口只报名字；单枚 sections=['servers'] 会把前端 agent 页签憋没）
+    assert out["sections"] == ["servers", "models", "agents"]
 
 
 def test_collect_servers_snapshot_dir(monkeypatch, tmp_path):
