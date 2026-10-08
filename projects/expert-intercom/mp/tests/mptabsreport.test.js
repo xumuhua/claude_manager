@@ -355,6 +355,28 @@ setImmediate(() => {
             ok('T4g.2 草稿键带 chat_draft_ 前缀',
                /'chat_draft_'/.test(storeSrc));
 
+            /* ---------- T4h MP-INPUTBAR-FIX（亦菲 seq 2646）：custom tabBar 不占文档流，
+               全 tab 页 fixed 底栏/垫底必须抬 48px+安全区 ---------- */
+            // chat 页 dock 抬到 tabBar 之上（原 bottom:0 与 tabBar 叠放=输入框被压根因）
+            const chatWxss = fs.readFileSync(path.join(MP, 'pages/chat/index.wxss'), 'utf8');
+            const mDock = chatWxss.match(/\.dock\s*\{[\s\S]*?bottom:\s*calc\(([^)]+)\)/);
+            ok('T4h.1 chat dock 悬浮于 tabBar 上方（bottom=48px+safe-area）',
+               !!mDock && mDock[1].includes('48px') && mDock[1].includes('safe-area-inset-bottom'));
+            ok('T4h.2 chat dock 不再贴屏底（bottom:0 旧口径清除）',
+               !/\.dock\s*\{[^}]*bottom:\s*0/.test(chatWxss));
+            // chat 消息流底部双让位（dock + tabBar）
+            const mMsgsPad = chatWxss.match(/\.msgs\s*\{[\s\S]*?padding-bottom:\s*calc\((\d+)px/);
+            ok('T4h.3 chat msgs 底部让位 ≥ dock+tabBar（≥150px）',
+               !!mMsgsPad && parseInt(mMsgsPad[1], 10) >= 150);
+            // daily_report 私有群消息区高度让位 tabBar
+            const rpWxss2 = fs.readFileSync(path.join(MP, 'pages/daily_report/index.wxss'), 'utf8');
+            ok('T4h.4 pg-scroll 高度扣除 tabBar+安全区',
+               /\.pg-scroll\s*\{[^}]*100vh\s*-\s*\d+px\s*-\s*env\(safe-area-inset-bottom\)/.test(rpWxss2));
+            // repos 页底部垫底（末行/添加表单不被 tabBar 压）
+            const reposWxss = fs.readFileSync(path.join(MP, 'pages/repos/index.wxss'), 'utf8');
+            ok('T4h.5 repos 页底部垫底 ≥48px+安全区',
+               /\.page\s*\{[^}]*padding-bottom:\s*calc\(60px\s*\+\s*env\(safe-area-inset-bottom\)\)/.test(reposWxss));
+
             timers.forEach((t) => clearInterval(t));
             console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAIL`);
             process.exit(fail === 0 ? 0 : 1);

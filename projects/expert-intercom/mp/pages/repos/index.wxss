@@ -1,4 +1,6 @@
-.page { min-height: 100vh; }
+/* MP-INPUTBAR-FIX：tabBar 页底部垫底——custom tabBar 是 fixed 浮层（48px+安全区）
+   不占文档流，末行 repo-row/添加表单滚到底会被 tabBar 压盖住 */
+.page { min-height: 100vh; padding-bottom: calc(60px + env(safe-area-inset-bottom)); box-sizing: border-box; }
 .sec-title { font-size: 12px; color: var(--fg2); margin: 16px 16px 6px; }
 .repo-list { margin: 0 16px; background: var(--bg2); border-radius: 8px; overflow: hidden; }
 .repo-row {

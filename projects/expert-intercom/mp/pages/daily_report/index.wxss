@@ -76,7 +76,10 @@
 }
 
 /* 私有群消息（哥哥 10/8 二令②：自己的消息靠右含名字，别人的靠左） */
-.pg-scroll { height: calc(100vh - 150px); box-sizing: border-box; }
+/* MP-INPUTBAR-FIX：高度原按 input-bar 钉屏底（无 tabBar）假设留出 150px；
+   tabBar 页 input-bar 实际抬在 tabBar 之上，可视高度须让位「tabBar(48px+安全区)+input-bar(≈100px)」，
+   否则消息列尾部沉到 input-bar/tabBar 之下 */
+.pg-scroll { height: calc(100vh - 220px - env(safe-area-inset-bottom)); box-sizing: border-box; }
 .pg-anchor { height: 1px; }
 .pg-msg { display: flex; flex-direction: column; max-width: 85%; }
 .pg-msg.mine { align-items: flex-end; }
