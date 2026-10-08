@@ -1,0 +1,63 @@
+<!-- pages/daily_report — MP-TABS-REPORT 日常报告页：报告区 / 私有群双视图 -->
+<view class="page">
+
+  <!-- ============ 报告视图 ============ -->
+  <block wx:if="{{mode === 'report'}}">
+
+    <!-- 报告概述卡片（当日三份；未产出/失败显示占位不报错） -->
+    <view class="sec-title">📋 {{date}} 每日报告</view>
+    <view wx:if="{{reportErr}}" class="banner-err">{{reportErr}}</view>
+    <view wx:if="{{!reports.length && !reportErr}}" class="empty">加载中…</view>
+
+    <view wx:for="{{reports}}" wx:key="key" class="card">
+      <view class="card-head" data-key="{{item.key}}" bindtap="toggleReport">
+        <text class="fw-dot">{{item.available ? '📄' : '⚪'}}</text>
+        <text class="card-name">{{item.title}}</text>
+        <text class="card-toggle">{{expanded[item.key] ? '收起 ▲' : (item.available ? '全文 ▼' : '')}}</text>
+      </view>
+      <view wx:if="{{item.available}}" class="rpt-summary">{{item.summary}}</view>
+      <view wx:else class="rpt-none">{{item.note || '当日未产出'}}</view>
+      <view wx:if="{{expanded[item.key] && mdBlocks[item.key]}}" class="rpt-md">
+        <md-block blocks="{{mdBlocks[item.key]}}" />
+      </view>
+    </view>
+
+    <!-- LLM 对话框（问报告细节；暗号 2505 切私有群） -->
+    <view class="sec-title">💬 问报告</view>
+    <view wx:if="{{!chatMsgs.length}}" class="chat-hint">基于今日三份报告提问，例如「量化日报今天主线是什么」。输入 2505 进入私有聊天群。</view>
+    <view wx:for="{{chatMsgs}}" wx:key="index" class="chat-row {{item.role === 'user' ? 'me' : ''}}">
+      <view class="chat-bubble {{item.role}}">{{item.text}}</view>
+    </view>
+    <view wx:if="{{sending}}" class="chat-hint">思考中…</view>
+  </block>
+
+  <!-- ============ 私有群视图（暗号 2505 进入） ============ -->
+  <block wx:else>
+    <view class="pg-head">
+      <view class="pg-back" bindtap="backToReport">← 返回报告页</view>
+      <text class="pg-title">私有聊天群</text>
+    </view>
+    <view wx:if="{{pErr}}" class="banner-err">{{pErr}}</view>
+    <view wx:if="{{!pMsgs.length && !pErr}}" class="empty">还没有消息，说点什么吧</view>
+    <view wx:for="{{pMsgs}}" wx:key="msg_id" class="chat-row">
+      <view class="pg-msg">
+        <text class="pg-from">{{item.display || item.from}}</text>
+        <text class="pg-body">{{item.body}}</text>
+      </view>
+    </view>
+  </block>
+
+  <!-- 输入条（两视图共用；发送按 mode 分发） -->
+  <view class="input-bar">
+    <input
+      class="input"
+      value="{{inputVal}}"
+      placeholder="{{mode === 'pgroup' ? '发到私有群…' : '问报告细节…'}}"
+      bindinput="onInput"
+      confirm-type="send"
+      bindconfirm="onSend"
+      disabled="{{sending}}"
+    />
+    <view class="send-btn {{sending ? 'off' : ''}}" bindtap="onSend">发送</view>
+  </view>
+</view>

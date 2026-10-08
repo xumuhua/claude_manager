@@ -17,6 +17,7 @@ import config as cfg_mod
 import gh_proxy
 import ai_proxy
 import status_proxy
+import report_proxy
 from hub_bridge import HubError, HubWSBridge, hub_request
 
 log = logging.getLogger("mp-backend")
@@ -353,6 +354,7 @@ def main():
     app["bridge"] = HubWSBridge(cfg, args.state)
     app["tts_cache"] = {}  # R-7 同文本短缓存（内存 LRU 32 条，D1 §6.2 允许）
     app["login_fails"] = {}  # F7 防爆破：ip -> [失败时间戳]（内存态，重启清零）
+    app["pgroup"] = report_proxy.PGroupStore()  # MP-TABS-REPORT 私有群内存消息（重启清零）
     ai_cfg = cfg["ai"]
     app["ai_quota"] = ai_proxy.AIQuota(args.ai_state, {
         "summary": ai_cfg["summary_daily_limit"],
@@ -377,6 +379,11 @@ def main():
     app.router.add_get("/api/status/servers", require_agent(status_proxy.status_servers))
     app.router.add_get("/api/status/models", require_agent(status_proxy.status_models))
     app.router.add_get("/api/status/tabs", require_agent(status_proxy.status_tabs))
+    # MP-TABS-REPORT：日常报告页（聚合+问答）+ 私有用户聊天群（暗号 2505 切页）
+    app.router.add_get("/api/daily_report", require_agent(report_proxy.daily_report))
+    app.router.add_post("/ai/report_chat", require_agent(report_proxy.ai_report_chat))
+    app.router.add_get("/api/pgroup/messages", require_agent(report_proxy.pgroup_list))
+    app.router.add_post("/api/pgroup/messages", require_agent(report_proxy.pgroup_send))
     # AI 中转（D1 v2 §9，哥哥 token 鉴权 + 频控 + 日限额熔断 + 即焚）
     app.router.add_post("/ai/summary", require_agent(ai_proxy.ai_summary))
     app.router.add_post("/ai/asr", require_agent(ai_proxy.ai_asr))

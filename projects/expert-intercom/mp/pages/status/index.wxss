@@ -122,3 +122,11 @@
 .meta-line { font-size: 11px; color: var(--fg2); padding: 4px 16px; text-align: center; }
 .empty { text-align: center; color: var(--fg2); font-size: 13px; padding: 32px; }
 .empty-inline { text-align: center; color: var(--fg2); font-size: 12px; padding: 8px 0 2px; }
+
+/* ---- agent 子页签（MP-TABS-REPORT：照搬 MP-DASH1 pages/experts 口径） ---- */
+.card-status { font-size: 14px; margin-right: 6px; }
+.card-stlabel { font-size: 12px; color: var(--fg2); flex: 1; }
+.card-today { font-size: 11px; color: var(--primary); }
+.row-note { color: var(--fg2); font-size: 12px; }
+.recent-line { color: var(--fg2); font-size: 12px; }
+.plan-line { font-size: 13px; }

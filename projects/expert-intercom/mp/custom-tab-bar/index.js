@@ -46,10 +46,11 @@ Component({
     },
     // 静态兜底清单：与 app.json tabBar.list 同源（低版本库 custom 失效时原生渲染的就是它）
     staticList() {
+      // MP-TABS-REPORT：动态页并入状态页 agent 子页签；新增日常报告页
       return [
         { pagePath: '/pages/chat/index', text: '💬 对话' },
         { pagePath: '/pages/status/index', text: '🖥️ 状态' },
-        { pagePath: '/pages/experts/index', text: '📊 动态' },
+        { pagePath: '/pages/daily_report/index', text: '📋 日常报告' },
         { pagePath: '/pages/repos/index', text: '📖 阅读' },
       ];
     },

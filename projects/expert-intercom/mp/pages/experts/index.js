@@ -2,6 +2,8 @@
 // 数据源：GET /api/experts（manager 机 cron 10min 采集 → scp 落 mp-backend 数据目录）。
 // 卡片五字段：状态灯 / 当前任务 / 最近动作 / 今日产出 / 计划工作（STATE.yaml + crontab 提炼）。
 // 哥哥 9/13 拍板 B 方案：小程序原生页直接上，含计划工作。
+// MP-TABS-REPORT（哥哥 10/8 令）：本页内容已并入 pages/status 的 agent 子页签，
+// 本页移出 tabBar；文件保留供深链/复用（装饰口径与 status 页 decorateAgent 同源）。
 const api = require('../../utils/api');
 const fmt = require('../../utils/fmt');
 

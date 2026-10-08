@@ -111,4 +111,43 @@
     <view wx:if="{{models.ts}}" class="meta-line">采集于 {{models.ts}}</view>
   </block>
 
+  <!-- ============ agent 子页签（MP-TABS-REPORT：原「动态」页内容并入） ============ -->
+  <block wx:elif="{{activeTab === 'agents'}}">
+    <view wx:if="{{agents.stale}}" class="banner-warn">采集数据超 15 分钟未更新（{{agents.collectedAt}}），采集链路可能异常</view>
+    <view wx:elif="{{agents.collectedAt}}" class="meta-line">采集于 {{agents.collectedAt}} · 下拉刷新</view>
+
+    <view wx:if="{{agents.error}}" class="empty">{{agents.error}}</view>
+    <view wx:elif="{{agents.loaded && !agents.cards.length}}" class="empty">暂无专家数据</view>
+
+    <view wx:for="{{agents.cards}}" wx:key="name" class="card">
+      <view class="card-head">
+        <text class="card-status {{item.statusClass}}">{{item.statusIcon}}</text>
+        <text class="card-name">{{item.name}}</text>
+        <text class="card-stlabel">{{item.statusLabel}}</text>
+        <text wx:if="{{item.todayCount}}" class="card-today">今日 {{item.todayCount}} 件</text>
+      </view>
+
+      <view wx:if="{{item.taskText}}" class="row">
+        <text class="row-k">当前</text>
+        <text class="row-v">{{item.taskText}}<text wx:if="{{item.taskNote}}" class="row-note">（{{item.taskNote}}）</text></text>
+      </view>
+
+      <view wx:if="{{item.recent.length}}" class="row">
+        <text class="row-k">最近</text>
+        <view class="row-v">
+          <view wx:for="{{item.recent}}" wx:for-item="r" wx:key="desc" class="recent-line">
+            {{r.ago}} · {{r.desc}}
+          </view>
+        </view>
+      </view>
+
+      <view wx:if="{{item.planned.length}}" class="row">
+        <text class="row-k">计划</text>
+        <view class="row-v">
+          <view wx:for="{{item.planned}}" wx:for-item="p" wx:key="*this" class="plan-line">· {{p}}</view>
+        </view>
+      </view>
+    </view>
+  </block>
+
 </view>

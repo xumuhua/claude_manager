@@ -1,0 +1,130 @@
+/* pages/daily_report — MP-TABS-REPORT 日常报告页样式
+   MP-UX7 红线：卡片/横幅/输入条背景一律实色 HEX + @media 双态，禁 var() 背景。 */
+.page {
+  min-height: 100vh;
+  /* 底部输入条 + custom tabBar 双让位（MP-UX2 滚底教训） */
+  padding-bottom: calc(116px + env(safe-area-inset-bottom));
+  box-sizing: border-box;
+}
+
+.sec-title { font-size: 13px; font-weight: 600; color: var(--fg2); margin: 14px 14px 2px; }
+
+/* 报告卡片（status/experts 同款骨架） */
+.card {
+  margin: 10px 12px;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #F7F7F8;
+}
+@media (prefers-color-scheme: dark) {
+  .card { background: #1C1C1E; }
+}
+.card-head { display: flex; align-items: center; margin-bottom: 4px; }
+.fw-dot { font-size: 13px; margin-right: 6px; }
+.card-name { font-size: 15px; font-weight: 600; margin-right: 8px; color: var(--fg); flex: 1; }
+.card-toggle { font-size: 11px; color: var(--primary); }
+.rpt-summary { font-size: 12px; color: var(--fg2); line-height: 1.7; white-space: pre-wrap; }
+.rpt-none { font-size: 12px; color: var(--fg2); padding: 4px 0; }
+.rpt-md { margin-top: 8px; border-top: 1rpx solid var(--divider); padding-top: 8px; }
+
+/* 对话框 */
+.chat-hint { font-size: 11px; color: var(--fg2); padding: 8px 16px; }
+.chat-row { display: flex; padding: 4px 12px; }
+.chat-row.me { justify-content: flex-end; }
+.chat-bubble {
+  max-width: 78%;
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #F7F7F8;
+  color: var(--fg);
+}
+.chat-bubble.user { background: #E0ECFF; }
+@media (prefers-color-scheme: dark) {
+  .chat-bubble { background: #1C1C1E; }
+  .chat-bubble.user { background: #1E3A5F; }
+}
+
+/* 私有群头（返回按钮在输入框上方区域之上，一眼可达） */
+.pg-head {
+  display: flex;
+  align-items: center;
+  margin: 10px 12px 4px;
+}
+.pg-back {
+  font-size: 12px;
+  color: var(--primary);
+  background: #E0ECFF;
+  border-radius: 8px;
+  padding: 5px 10px;
+}
+@media (prefers-color-scheme: dark) {
+  .pg-back { background: #1E3A5F; }
+}
+.pg-title { flex: 1; text-align: center; font-size: 14px; font-weight: 600; color: var(--fg); margin-right: 64px; }
+
+.pg-msg { display: flex; flex-direction: column; max-width: 85%; }
+.pg-from { font-size: 11px; color: var(--fg2); margin-bottom: 2px; }
+.pg-body {
+  font-size: 14px; line-height: 1.6; color: var(--fg);
+  background: #F7F7F8; border-radius: 10px; padding: 8px 12px;
+  white-space: pre-wrap; word-break: break-word;
+}
+@media (prefers-color-scheme: dark) {
+  .pg-body { background: #1C1C1E; }
+}
+
+/* 输入条（固定底部 tabBar 之上；实色背景） */
+.input-bar {
+  position: fixed;
+  left: 0; right: 0;
+  bottom: calc(48px + env(safe-area-inset-bottom));   /* 让位 custom tabBar */
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  background: #FFFFFF;
+  border-top: 1rpx solid #E5E5EA;
+  z-index: 9998;
+}
+@media (prefers-color-scheme: dark) {
+  .input-bar { background: #1C1C1E; border-top-color: #2C2C2E; }
+}
+.input {
+  flex: 1;
+  font-size: 14px;
+  background: #F7F7F8;
+  border-radius: 18px;
+  padding: 8px 14px;
+  color: var(--fg);
+}
+@media (prefers-color-scheme: dark) {
+  .input { background: #2C2C2E; }
+}
+.send-btn {
+  margin-left: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #FFFFFF;
+  background: #2563EB;
+  border-radius: 18px;
+  padding: 8px 16px;
+}
+.send-btn.off { opacity: 0.5; }
+
+/* 横幅（实色双态） */
+.banner-err {
+  margin: 8px 12px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  background: #FEE2E2;
+  color: var(--err);
+}
+@media (prefers-color-scheme: dark) {
+  .banner-err { background: #3B1517; }
+}
+
+.empty { text-align: center; color: var(--fg2); font-size: 13px; padding: 32px; }

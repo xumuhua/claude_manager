@@ -305,10 +305,11 @@ async def status_servers(request):
 # 静态登记：page_path → 文案。新页上线 = pages 注册 + 这里加一行，custom tabBar
 # 自动带出（custom-tab-bar 组件零改动）；下线 = 删行。低版本基础库 custom 失效时
 # 原生 tabBar 渲染 app.json 静态 list（两边同源兜底）。
+# MP-TABS-REPORT（哥哥 10/8 令）：动态页并入状态页 agent 子页签，新增日常报告页。
 STATUS_TABS = [
     {"page_path": "pages/chat/index", "text": "💬 对话"},
     {"page_path": "pages/status/index", "text": "🖥️ 状态"},
-    {"page_path": "pages/experts/index", "text": "📊 动态"},
+    {"page_path": "pages/daily_report/index", "text": "📋 日常报告"},
     {"page_path": "pages/repos/index", "text": "📖 阅读"},
 ]
 

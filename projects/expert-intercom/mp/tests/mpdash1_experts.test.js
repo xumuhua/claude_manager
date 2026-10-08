@@ -10,10 +10,10 @@ const MP = path.join(__dirname, '..');
 const js = fs.readFileSync(path.join(MP, 'pages/experts/index.js'), 'utf8');
 new Function(js);
 
-// 2) app.json 注册页面 + tabBar 入口
+// 2) app.json 注册页面；MP-TABS-REPORT（10/8）起动态页移出 tabBar 并入状态页 agent 子页签，
+//    页面保留注册供深链/复用
 const app = JSON.parse(fs.readFileSync(path.join(MP, 'app.json'), 'utf8'));
 assert(app.pages.includes('pages/experts/index'), 'app.json 缺 pages/experts/index');
-assert(app.tabBar.list.some(t => t.pagePath === 'pages/experts/index'), 'tabBar 缺专家动态入口');
 
 // 3) index.json 下拉刷新开启
 const pj = JSON.parse(fs.readFileSync(path.join(MP, 'pages/experts/index.json'), 'utf8'));

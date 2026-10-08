@@ -167,7 +167,9 @@ function statusPage() {
   ok('T7.1 接口给 1 个 section + models 可达补挂', inst.data.sections.length === 2 && inst.data.sections[0].title === '服务器');
   inst.data.servers.sections = null;
   page.applySections.call(inst);
-  ok('T7.2 缺省兜底两枚', inst.data.sections.length === 2 && inst.data.sections[1].key === 'models');
+  ok('T7.2 缺省兜底三枚（MP-TABS-REPORT 起含 agent）',
+     inst.data.sections.length === 3 && inst.data.sections[1].key === 'models' &&
+     inst.data.sections[2].key === 'agents');
   inst.data.activeTab = 'gone';
   inst.data.servers.sections = null;
   page.applySections.call(inst);

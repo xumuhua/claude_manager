@@ -1,0 +1,7 @@
+{
+  "navigationBarTitleText": "日常报告",
+  "enablePullDownRefresh": true,
+  "usingComponents": {
+    "md-block": "/components/md-block/index"
+  }
+}
