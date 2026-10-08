@@ -7,6 +7,7 @@
   R4 report_chat：多轮 messages 组包（system 并入首条 user）；NO_REPORT 404；
      非哥哥 403；限额/频控生效
   R5 pgroup：登录可读；非哥哥写 403；seq 自增+after_seq 增量；超长 413；环形截断
+  R9 pgroup 落盘持久化：append 落 jsonl；重启加载历史 seq 接续；内存环形热窗与落盘全量分轨；坏行跳过
 用法：pytest tests/test_mptabsreport.py（venv 见 /tmp/mpmsg1_venv）
 """
 import asyncio
@@ -515,3 +516,71 @@ def test_r8_pgroup_msg_username():
         FakeRequest(app, query={"after_seq": "0"})))
     msgs = json.loads(lst.text)["messages"]
     assert all("username" in m for m in msgs) and msgs[0]["username"] == "nana"
+
+
+# ---------- R9 pgroup 落盘持久化（MP-PERSIST1，哥哥 10/8 拍板，亦菲 seq 2648 派单） ----------
+
+def test_r9_persist_write_and_reload(tmp_path):
+    """append 落盘 jsonl 一行一消息（字段齐全）；新实例重启加载历史——
+    消息仍在、seq 接续不复用、after_seq/limit 契约不变。"""
+    p = str(tmp_path / "pgroup_messages.jsonl")
+    s1 = report_proxy.PGroupStore(persist_path=p)
+    m1 = s1.append("gege_dev", "哥哥", "第一条", username="g")
+    m2 = s1.append("nana_dev", "娜娜", "第二条", username="nana")
+    # 落盘实证：两行 JSON、六字段齐全
+    lines = open(p, encoding="utf-8").read().strip().split("\n")
+    assert len(lines) == 2
+    rec = json.loads(lines[0])
+    for k in ("seq", "from", "display", "username", "body", "ts", "msg_id"):
+        assert k in rec
+    assert rec["seq"] == 1 and rec["username"] == "g"
+    # 重启加载（模拟新进程）：历史仍在 + seq 接续 + 新发言不覆盖
+    s2 = report_proxy.PGroupStore(persist_path=p)
+    assert s2.seq == 2 and len(s2.msgs) == 2
+    assert s2.msgs[0]["body"] == "第一条" and s2.msgs[1]["username"] == "nana"
+    m3 = s2.append("gege_dev", "哥哥", "第三条", username="g")
+    assert m3["seq"] == 3
+    # 契约不变：after_seq 增量 + latest_seq 水位
+    assert [m["seq"] for m in s2.list(after_seq=1)] == [2, 3]
+    assert s2.list(after_seq=0, limit=2)[-1]["seq"] == 3
+    assert len(open(p, encoding="utf-8").read().strip().split("\n")) == 3
+    _ = (m1, m2)
+
+
+def test_r9_persist_ring_window_seq_kept(tmp_path):
+    """全量远大于内存环形：内存只装尾部 max_keep 条热读，seq 仍取全量最大值，
+    落盘文件保留全量历史。"""
+    p = str(tmp_path / "pg.jsonl")
+    s1 = report_proxy.PGroupStore(max_keep=3, persist_path=p)
+    for i in range(10):
+        s1.append("gege_dev", "哥哥", f"m{i}", username="g")
+    assert len(s1.msgs) == 3 and s1.seq == 10
+    s2 = report_proxy.PGroupStore(max_keep=3, persist_path=p)
+    assert s2.seq == 10                      # seq 取全量最大值，不复用
+    assert len(s2.msgs) == 3                 # 内存只装尾部热窗
+    assert [m["seq"] for m in s2.msgs] == [8, 9, 10]
+    assert len(open(p, encoding="utf-8").read().strip().split("\n")) == 10  # 落盘全量
+
+
+def test_r9_persist_bad_lines_skipped(tmp_path):
+    """坏行（截断/损坏 JSON/缺 seq）跳过不炸启动；空文件/无文件=全新群。"""
+    p = str(tmp_path / "pg.jsonl")
+    with open(p, "w", encoding="utf-8") as f:
+        f.write('{"seq": 1, "from": "g", "display": "哥", "username": "g", "body": "ok", "ts": 1, "msg_id": "a"}\n')
+        f.write('{"seq": 2, "from": "g", "displ\n')   # 截断坏行
+        f.write('not json at all\n')                    # 非 JSON
+        f.write('{"body": "no seq"}\n')                 # 缺 seq
+        f.write('\n')                                   # 空行
+    s = report_proxy.PGroupStore(persist_path=p)
+    assert s.seq == 1 and len(s.msgs) == 1 and s.msgs[0]["body"] == "ok"
+    # 无文件=全新群
+    s2 = report_proxy.PGroupStore(persist_path=str(tmp_path / "nonexist.jsonl"))
+    assert s2.seq == 0 and s2.msgs == []
+
+
+def test_r9_persist_disabled_by_default():
+    """persist_path=None 保持纯内存行为（测试/旁路兼容，旧调用签名不炸）。"""
+    s = report_proxy.PGroupStore()
+    assert s.persist_path is None
+    s.append("gege_dev", "哥哥", "x", username="g")
+    assert s.seq == 1

@@ -361,6 +361,9 @@ def main():
                         help="last_seq 持久化文件")
     parser.add_argument("--ai-state", default="/data/workspace/expert-intercom/mp-backend/ai_usage.state",
                         help="AI 日限额用量持久化文件")
+    parser.add_argument("--pgroup-state",
+                        default="/data/workspace/expert-intercom/mp-backend/state/pgroup_messages.jsonl",
+                        help="私有群消息 jsonl 落盘文件（MP-PERSIST1，重启加载历史）")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO,
@@ -373,7 +376,7 @@ def main():
     app["bridge"] = HubWSBridge(cfg, args.state)
     app["tts_cache"] = {}  # R-7 同文本短缓存（内存 LRU 32 条，D1 §6.2 允许）
     app["login_fails"] = {}  # F7 防爆破：ip -> [失败时间戳]（内存态，重启清零）
-    app["pgroup"] = report_proxy.PGroupStore()  # MP-TABS-REPORT 私有群内存消息（重启清零）
+    app["pgroup"] = report_proxy.PGroupStore(persist_path=args.pgroup_state)  # MP-PERSIST1 私有群落盘持久化
     ai_cfg = cfg["ai"]
     app["ai_quota"] = ai_proxy.AIQuota(args.ai_state, {
         "summary": ai_cfg["summary_daily_limit"],

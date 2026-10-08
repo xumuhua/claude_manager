@@ -15,11 +15,14 @@ Anthropic 兼容端点（复用 ai_proxy._ark_messages），计入 summary 日�
 
 私有群聊天（暗号 2505 触发页切换，前端管暗号，本层只管消息）：
 GET/POST /api/pgroup/messages——登录 token 即可读（require_agent 已保证），
-写须 role==gege。内存环形存储（重启清零，任务书允许轻量实现）。
+写须 role==gege。**jsonl 追加落盘持久化**（MP-PERSIST1，哥哥 10/8 拍板，亦菲 seq 2648
+派单）：重启自动加载历史，读取接口契约（after_seq/limit）不变；内存环形 500 条保留做
+热读，落盘文件即全量历史。重启自清作废。
 """
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -61,7 +64,7 @@ REPORT_CACHE_TTL_S = 600          # 报告聚合 10min 进程内缓存（报告�
 _MAX_MD_BYTES = 512 * 1024        # 单份报告体积上限（F5 规范同源 1MB 内从严）
 _MAX_CHAT_CTX_CHARS = 40000       # 问答上下文总量上限（字符）
 _MAX_MSG_LEN = 2000               # 私有群单条正文上限
-_PGROUP_MAX_KEEP = 500            # 私有群内存环形容量
+_PGROUP_MAX_KEEP = 500            # 私有群内存环形容量（热读窗口；落盘文件才是全量历史）
 
 _CACHE = {}                       # {"report:<date>": (expire, payload)}
 
@@ -332,15 +335,66 @@ async def ai_report_chat(request):
     return web.json_response({"reply": reply, "date": str(date)})
 
 
-# ---------- 私有用户聊天群（暗号 2505 切页；本层轻量内存实现） ----------
+# ---------- 私有用户聊天群（暗号 2505 切页；jsonl 落盘持久化，MP-PERSIST1） ----------
 
 class PGroupStore:
-    """内存环形消息存储：重启清零（任务书允许）。seq 单调自增。"""
+    """私有群消息存储：jsonl 追加落盘（全量历史）+ 内存环形 max_keep 条（热读窗口）。
 
-    def __init__(self, max_keep=_PGROUP_MAX_KEEP):
+    MP-PERSIST1（哥哥 10/8 拍板，亦菲 seq 2648 派单）：重启自清作废——
+    - persist_path 非 None 时：append 先落盘（flush+fsync）再入内存；构造时自动加载历史，
+      内存只装尾部 max_keep 条热读，seq 恢复到全量最大值（防重启后 seq 复用）。
+    - 落盘行 = 消息 dict 单行 JSON（字段 seq/from/display/username/body/ts/msg_id）。
+    - 坏行（截断/损坏 JSON）跳过不炸启动；无落盘文件=全新群从零开始。
+    - 容量策略：jsonl 无限追加（10 万条级 ~几十 MB 量级可接受）；如需截断另行轮换，
+      读取接口契约（after_seq/limit）只认内存热窗与 seq 水位，与落盘文件大小无关。
+    """
+
+    def __init__(self, max_keep=_PGROUP_MAX_KEEP, persist_path=None):
         self.msgs = []
         self.seq = 0
         self.max_keep = max_keep
+        self.persist_path = persist_path
+        if persist_path:
+            self._load()
+
+    def _load(self):
+        """启动加载历史：内存装尾部 max_keep 条，seq 取全量最大值。坏行跳过。"""
+        try:
+            with open(self.persist_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except FileNotFoundError:
+            return
+        except OSError as e:
+            log.error("[pgroup] 历史加载失败 %s: %s（按空群启动）", self.persist_path, e)
+            return
+        loaded, bad = [], 0
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                m = json.loads(line)
+                if not isinstance(m, dict) or not isinstance(m.get("seq"), int):
+                    raise ValueError("bad shape")
+                loaded.append(m)
+            except (ValueError, TypeError):
+                bad += 1
+        if loaded:
+            self.seq = max(m["seq"] for m in loaded)
+            self.msgs = loaded[-self.max_keep:]
+        log.info("[pgroup] 历史加载完成：全量 %d 条（坏行 %d 跳过），seq=%d，内存热窗 %d 条",
+                 len(loaded), bad, self.seq, len(self.msgs))
+
+    def _persist(self, msg):
+        """追加落盘一行（flush+fsync 崩溃不丢）；落盘失败只记日志不阻断发言。"""
+        try:
+            with open(self.persist_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+        except OSError as e:
+            log.error("[pgroup] 落盘失败 seq=%s: %s（内存已留，重启后该条丢失）",
+                      msg.get("seq"), e)
 
     def append(self, sender, display, body, username=None):
         self.seq += 1
@@ -350,6 +404,8 @@ class PGroupStore:
                "username": username,
                "body": body, "ts": int(time.time()),
                "msg_id": str(uuid.uuid4())}
+        if self.persist_path:
+            self._persist(msg)
         self.msgs.append(msg)
         if len(self.msgs) > self.max_keep:
             self.msgs = self.msgs[-self.max_keep:]
