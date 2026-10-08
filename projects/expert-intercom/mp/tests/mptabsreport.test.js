@@ -192,11 +192,11 @@ setImmediate(() => {
         ok('T4.14 NO_REPORT 兜底文案', rp.data.chatMsgs[rp.data.chatMsgs.length - 1].text.includes('未产出'));
 
         /* ---------- T4b 追加调整（亦菲 seq 2617，哥哥 10/8 令） ---------- */
-        // ①输入条抬到 tabBar 上沿（MP-TABBAR-EMBED-FIX：fixed 元素不吃 page
-        //   垫底，bottom 必须 calc(48px+env)=94d7d39 口径）；页面 padding-bottom 让位输入条
+        // ①输入条贴屏幕底（MP-TABBAR-TOP：tabBar 钉顶后底部零叠压，
+        //   bottom 仅让 iPhone home indicator 安全区）；页面 padding-bottom 让位输入条
         const rpWxss = fs.readFileSync(path.join(MP, 'pages/daily_report/index.wxss'), 'utf8');
-        const mBottom = rpWxss.match(/\.input-bar\s*\{[\s\S]*?bottom:\s*calc\(48px\s*\+\s*env\(safe-area-inset-bottom\)\)/);
-        ok('T4b.1 输入条抬到 tabBar 上沿（bottom=calc(48px+env)）', !!mBottom);
+        const mBottom = rpWxss.match(/\.input-bar\s*\{[\s\S]*?bottom:\s*env\(safe-area-inset-bottom\)/);
+        ok('T4b.1 输入条贴屏幕底（bottom=env(safe-area-inset-bottom)，tabBar 已钉顶）', !!mBottom);
         const mPad = rpWxss.match(/\.page\s*\{[\s\S]*?padding-bottom:\s*(\d+)px/);
         ok('T4b.2 页面底部让位 ≥ 输入条常态高（私有群含操作钮行）',
            !!mPad && parseInt(mPad[1], 10) >= 56);
@@ -354,41 +354,53 @@ setImmediate(() => {
             ok('T4g.2 草稿键带 chat_draft_ 前缀',
                /'chat_draft_'/.test(storeSrc));
 
-            /* ---------- T4h MP-TABBAR-EMBED（亦菲 seq 2681）+MP-TABBAR-EMBED-FIX
-               （亦菲 seq 2686，哥哥真机输入框消失）：双轨定型——
-               ①app.wxss 全局 page 垫底（48px+安全区）防文档流内容被 tabBar 挡；
-               ②fixed 元素不吃 page padding——各页 fixed 底栏（chat dock /
-               daily_report input-bar）必须 bottom:calc(48px+env) 抬到 tabBar
-               上沿防自身被盖（94d7d39 口径回归，68f7115 的 bottom:0 系误诊） ---------- */
-            // ⓪ 全局垫底唯一入口：app.wxss page padding-bottom=48px+安全区
+            /* ---------- T4h MP-TABBAR-TOP（哥哥 10/9 令，亦菲 seq 2692）：
+               tabBar 底部→顶部——bottom 遮挡反复修不好（94d7d39→68f7115→c1eff02
+               三连），哥哥拍板从根上消灭底部叠压。定型口径——
+               ①custom-tab-bar position:fixed top:0 钉顶（含状态栏安全区）；
+               ②app.wxss 全局 page 垫顶（48px+env(safe-area-inset-top)）防内容被
+               顶部 tabBar 挡；
+               ③各页 fixed 底栏（chat dock / daily_report input-bar）回
+               bottom:env(safe-area-inset-bottom) 贴屏幕底——底部从此零叠压 ---------- */
+            // ⓪ 全局垫顶唯一入口：app.wxss page padding-top=48px+状态栏安全区，且旧垫底已撤
             const appWxss = fs.readFileSync(path.join(MP, 'app.wxss'), 'utf8');
-            ok('T4h.0 app.wxss 全局 page 垫底=tabBar 高+安全区（统一注入）',
-               /page\s*\{[^}]*padding-bottom:\s*calc\(48px\s*\+\s*env\(safe-area-inset-bottom\)\)/.test(appWxss));
-            // chat 页 dock 抬到 tabBar 上沿（fixed 不吃垫底，必须显式抬升）
+            ok('T4h.0 app.wxss 全局 page 垫顶=tabBar 高+状态栏安全区（统一注入）',
+               /page\s*\{[^}]*padding-top:\s*calc\(48px\s*\+\s*env\(safe-area-inset-top\)\)/.test(appWxss)
+               && !/page\s*\{[^}]*padding-bottom:\s*calc\(48px/.test(appWxss));
+            // ⓪b tabBar 组件本体钉顶（top:0+状态栏安全区，禁 bottom 钉底口径）
+            const tabbarWxss = fs.readFileSync(path.join(MP, 'custom-tab-bar/index.wxss'), 'utf8');
+            ok('T4h.0b custom-tab-bar 钉顶（top:0+env(safe-area-inset-top)，无 bottom:0）',
+               /\.tab-bar\s*\{[^}]*top:\s*0[;\s]/.test(tabbarWxss)
+               && /\.tab-bar\s*\{[^}]*env\(safe-area-inset-top\)/.test(tabbarWxss)
+               && !/\.tab-bar\s*\{[^}]*bottom:\s*0/.test(tabbarWxss));
+            // chat 页 dock 回贴屏幕底（tabBar 在顶，底部零叠压）
             const chatWxss = fs.readFileSync(path.join(MP, 'pages/chat/index.wxss'), 'utf8');
-            ok('T4h.1 chat dock bottom=calc(48px+env) 抬到 tabBar 上沿',
-               /\.dock\s*\{[^}]*bottom:\s*calc\(48px\s*\+\s*env\(safe-area-inset-bottom\)\)/.test(chatWxss));
-            ok('T4h.2 chat dock 无 bottom:0 裸贴屏底口径（fixed 必被 tabBar 盖）',
-               !/\.dock\s*\{[^}]*bottom:\s*0[;\s]/.test(chatWxss));
-            // chat 消息流底部让位=dock+tabBar 双段（与 dock 上沿齐平）
+            ok('T4h.1 chat dock bottom=env(safe-area-inset-bottom) 贴屏幕底',
+               /\.dock\s*\{[^}]*bottom:\s*env\(safe-area-inset-bottom\)/.test(chatWxss));
+            ok('T4h.2 chat dock 无 calc(48px+env) 抬升旧口径（tabBar 已钉顶勿再抬）',
+               !/\.dock\s*\{[^}]*bottom:\s*calc\(48px/.test(chatWxss));
+            // chat 顶栏抬到 tabBar 下沿（防被钉顶 tabBar 盖住）
+            ok('T4h.3 chat topbar 抬到 tabBar 下沿（top=calc(48px+env-top)）',
+               /\.topbar\s*\{[^}]*top:\s*calc\(48px\s*\+\s*env\(safe-area-inset-top\)\)/.test(chatWxss));
+            // chat 消息流底部让位回归单段口径（只盖 dock，不再为 tabBar 预留）
             const mMsgsPad2 = chatWxss.match(/\.msgs\s*\{[\s\S]*?padding-bottom:\s*(\d+)px/);
-            ok('T4h.3b chat msgs 底部让位 ≥ dock+tabBar 双段高（≥104px）',
-               !!mMsgsPad2 && parseInt(mMsgsPad2[1], 10) >= 104);
-            // daily_report 私有群消息区高度扣 input-bar+tabBar 抬升量+页头
+            ok('T4h.3b chat msgs 底部让位 ≥ dock 高且 < 双段（104~150px）',
+               !!mMsgsPad2 && parseInt(mMsgsPad2[1], 10) >= 104 && parseInt(mMsgsPad2[1], 10) < 150);
+            // daily_report 私有群消息区高度回归不扣 tabBar 抬升量
             const rpWxss2 = fs.readFileSync(path.join(MP, 'pages/daily_report/index.wxss'), 'utf8');
-            ok('T4h.4 pg-scroll 高度扣 input-bar+tabBar 安全区（220px+env）',
-               /\.pg-scroll\s*\{[^}]*100vh\s*-\s*220px\s*-\s*env\(safe-area-inset-bottom\)/.test(rpWxss2));
-            // repos/status 页不再手写 tabBar 垫底（全局统一接管）
+            ok('T4h.4 pg-scroll 高度扣 input-bar+页头（172px 不扣安全区）',
+               /\.pg-scroll\s*\{[^}]*100vh\s*-\s*172px/.test(rpWxss2));
+            // repos/status 页不手写 tabBar 垫顶（全局统一接管）
             const reposWxss = fs.readFileSync(path.join(MP, 'pages/repos/index.wxss'), 'utf8');
             const statusWxss = fs.readFileSync(path.join(MP, 'pages/status/index.wxss'), 'utf8');
-            ok('T4h.5 repos 页不再手写 tabBar 垫底（无 60px+env 旧口径）',
-               !/padding-bottom:\s*calc\(60px\s*\+\s*env/.test(reposWxss));
-            ok('T4h.6 status 页不再手写 tabBar 垫底（无 60px+env 旧口径）',
-               !/padding-bottom:\s*calc\(60px\s*\+\s*env/.test(statusWxss));
-            // daily_report input-bar 抬到 tabBar 上沿（fixed 必须显式抬升）
-            ok('T4h.7 daily_report input-bar bottom=calc(48px+env) 抬到 tabBar 上沿',
-               /\.input-bar\s*\{[\s\S]*?bottom:\s*calc\(48px\s*\+\s*env\(safe-area-inset-bottom\)\)/.test(rpWxss2)
-               && !/\.input-bar\s*\{[\s\S]*?bottom:\s*0[;\s]/.test(rpWxss2));
+            ok('T4h.5 repos 页无手写 tabBar 垫顶/垫底口径',
+               !/padding-(top|bottom):\s*calc\(\d+px\s*\+\s*env/.test(reposWxss));
+            ok('T4h.6 status 页无手写 tabBar 垫顶/垫底口径',
+               !/padding-(top|bottom):\s*calc\(\d+px\s*\+\s*env/.test(statusWxss));
+            // daily_report input-bar 回贴屏幕底（底部零叠压）
+            ok('T4h.7 daily_report input-bar bottom=env(safe-area-inset-bottom) 贴屏幕底且禁抬升口径',
+               /\.input-bar\s*\{[\s\S]*?bottom:\s*env\(safe-area-inset-bottom\)/.test(rpWxss2)
+               && !/\.input-bar\s*\{[\s\S]*?bottom:\s*calc\(48px/.test(rpWxss2));
 
             timers.forEach((t) => clearInterval(t));
             console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAIL`);

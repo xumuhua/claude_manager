@@ -1,14 +1,17 @@
 /* P1 对话页样式（D1 §7/§8） */
 .page {
   display: flex; flex-direction: column; height: 100vh;
-  /* MP-TABBAR-EMBED：全局 page 已垫 tabBar 48px+安全区（app.wxss 统一注入），
-     box-sizing:border-box 下 100vh 内容区自动压缩出 tabBar 位，tabBar 固定嵌入不悬浮 */
+  /* MP-TABBAR-TOP：全局 page 已垫顶 tabBar 48px+状态栏安全区（app.wxss 统一注入），
+     box-sizing:border-box 下 100vh 内容区自动压缩出 tabBar 位，tabBar 钉顶不遮内容 */
 }
 
 /* 顶栏 56pt */
-/* MP-UX2-FIX：顶栏 fixed 钉在屏顶，翻历史时不跟内容滚走（与底部 dock 同法） */
+/* MP-UX2-FIX：顶栏 fixed 钉在内容区顶（翻历史时不跟内容滚走，与底部 dock 同法）；
+   MP-TABBAR-TOP：tabBar 钉屏顶后，本栏抬到 tabBar 下沿（48px+状态栏安全区） */
 .topbar {
-  position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+  position: fixed;
+  top: calc(48px + env(safe-area-inset-top));
+  left: 0; right: 0; z-index: 100;
   background: var(--bg);
   display: flex; align-items: center; padding: 8px 16px;
   border-bottom: 1px solid var(--divider); flex-shrink: 0;
@@ -30,8 +33,10 @@
 .conv-pick .seg-badge { margin-left: 6px; }
 
 .menu-mask { position: fixed; inset: 0; z-index: 200; background: rgba(0, 0, 0, 0.35); }
+/* MP-TABBAR-TOP：浮层挂顶栏下沿——顶栏已抬到 tabBar（48px+env-top）之下，
+   42px 顶栏高随顶栏整体上移 */
 .conv-menu {
-  position: fixed; top: 42px; left: 12px; z-index: 201;
+  position: fixed; top: calc(90px + env(safe-area-inset-top)); left: 12px; z-index: 201;
   min-width: 200px; max-width: 70vw; max-height: 60vh; overflow-y: auto;
   background: #FFFFFF; border: 1px solid var(--divider); border-radius: 10px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
@@ -84,9 +89,10 @@
       scroll-view 失去滚动空间；置 0 后收缩权还给 scroll-view（hermes 真机实测根因）
    2. padding-top: 41px——topbar 改 fixed 后不再占文档流，预留顶栏高度
       （8+8 padding + 24px 行高 + 1px 边框）防第一条消息被遮挡 */
-/* MP-TABBAR-EMBED-FIX：dock 抬回 calc(48px+env) 贴 tabBar 上沿，
-   消息流让位=dock(≈56px)+tabBar(48px)+余量，与 dock 上沿齐平 */
-.msgs { flex: 1; min-height: 0; padding-top: 41px; padding-bottom: 152px; box-sizing: border-box; }
+/* MP-TABBAR-TOP：tabBar 钉顶、dock 回贴屏幕底（底部零叠压）——
+   消息流让位回归单段口径：padding-bottom 只盖 dock（≈56px+余量=104px），
+   不再为 tabBar 预留；顶部 41px 仅盖 topbar（tabBar 垫顶由全局 page 承担） */
+.msgs { flex: 1; min-height: 0; padding-top: 41px; padding-bottom: 104px; box-sizing: border-box; }
 .date-sep {
   text-align: center; font-size: 11px; color: var(--fg2); margin: 14px 0 6px;
 }
@@ -135,9 +141,9 @@
 .empty { text-align: center; color: var(--fg2); font-size: 13px; margin-top: 80px; }
 
 /* 新消息浮动提示（MP-UX2：dock 固定后抬高，避免与输入栏重叠；
-   MP-TABBAR-EMBED-FIX：dock 抬回 tabBar 上沿，此处同步回 210px） */
+   MP-TABBAR-TOP：dock 回贴屏底，此处同步回 110px=dock 高+余量） */
 .new-msg {
-  position: fixed; right: 16px; bottom: 210px; z-index: 110;
+  position: fixed; right: 16px; bottom: 110px; z-index: 110;
   background: var(--primary); color: #fff; font-size: 12px;
   border-radius: 14px; padding: 6px 14px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
@@ -145,17 +151,16 @@
 
 /* MP-UX2：底部固定区——mention 补全/快捷指令/STOP/输入栏整体钉在屏底，
    往下翻历史时不再跟着内容滚走 */
-/* MP-TABBAR-EMBED-FIX（哥哥 10/8 真机实测输入框消失，亦菲 seq 2686 定位）：
-   fixed 元素不吃 page padding——68f7115「垫底移交全局 page」只对文档流内容成立，
-   dock bottom:0 会被 48px tabBar 整个盖住。正解=双轨并存：
-   ①app.wxss 全局 page 垫底防文档流内容被 tabBar 挡；
-   ②fixed 底栏 bottom:calc(48px+env) 抬到 tabBar 上沿防自身被挡（=94d7d39 口径回归）。
-   键盘弹起微信整体上移 dock、tabBar 原生 chrome 不动，dock 贴键盘顶悬于 tabBar 之上。
+/* MP-TABBAR-TOP（哥哥 10/9 令，亦菲 seq 2692）：tabBar 钉顶后底部零叠压，
+   dock 回贴屏幕底（bottom 仅让 iPhone home indicator 安全区）——底部遮挡
+   从根上消灭：底部从此只有 dock 一个 fixed 元素；键盘弹起微信整体上移
+   dock 贴键盘顶正常。
    旧口径沿革：MP-UX2 bottom:0（无 custom tabBar）→ 94d7d39 抬 calc(48px+env)
-   → 68f7115 误回 bottom:0（fixed 不吃垫底）→ 本次回 calc(48px+env) 定性。 */
+   → 68f7115 误回 bottom:0（fixed 不吃垫底）→ c1eff02 再抬 calc(48px+env)
+   → 本单 tabBar 挪顶，dock 最终回家贴屏底。 */
 .dock {
   position: fixed; left: 0; right: 0;
-  bottom: calc(48px + env(safe-area-inset-bottom));
+  bottom: env(safe-area-inset-bottom);
   z-index: 100;
   background: var(--bg);
 }
