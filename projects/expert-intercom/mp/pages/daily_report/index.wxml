@@ -51,10 +51,16 @@
   </block>
 
   <!-- ============ 私有群视图（暗号 2505 进入） ============ -->
+  <!-- MP-PGBG1（哥哥 10/9 给图，亦菲 seq 2795）：聊天背景 assets/pgroup_bg.jpg。
+       小程序 wxss background-image 不支持本地路径（真机不显示）——用 image 组件
+       铺底（aspectFill=cover 语义）；背景层放 scroll-view 外层容器（滚动时
+       背景不动=不撕裂）；仅本视图引用，报告视图/LLM 问答区零背景 -->
   <block wx:else>
-    <view wx:if="{{pErr}}" class="banner-err">{{pErr}}</view>
-    <view wx:if="{{!pMsgs.length && !pErr}}" class="empty">还没有消息，说点什么吧</view>
-    <scroll-view scroll-y class="pg-scroll" scroll-into-view="{{pAnchor}}" scroll-with-animation>
+    <view class="pg-bg-wrap">
+      <image class="pg-bg" src="/assets/pgroup_bg.jpg" mode="aspectFill" />
+      <view wx:if="{{pErr}}" class="banner-err">{{pErr}}</view>
+      <view wx:if="{{!pMsgs.length && !pErr}}" class="empty">还没有消息，说点什么吧</view>
+      <scroll-view scroll-y class="pg-scroll" scroll-into-view="{{pAnchor}}" scroll-with-animation>
       <view wx:for="{{pMsgs}}" wx:key="msg_id" class="chat-row {{item.mine ? 'me' : ''}}">
         <view class="pg-msg {{item.mine ? 'mine' : ''}}">
           <text class="pg-from">{{item.display || item.from}}</text>
@@ -64,6 +70,7 @@
       <!-- 滚底锚点（scroll-into-view 锚末位） -->
       <view id="pg-last" class="pg-anchor"></view>
     </scroll-view>
+    </view>  <!-- /pg-bg-wrap（MP-PGBG1 背景容器） -->
   </block>
 
   <!-- 输入条（两视图共用；发送按 mode 分发） -->

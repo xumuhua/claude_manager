@@ -116,9 +116,25 @@
 }
 
 /* 私有群消息（哥哥 10/8 二令②：自己的消息靠右含名字，别人的靠左） */
-/* MP-TABBAR-TOP：tabBar 钉顶、input-bar 回贴屏幕底（底部零叠压）——
-   可视高度只扣 input-bar+页头/底垫（172px），不再扣 tabBar 抬升量与环境安全区 */
-.pg-scroll { height: calc(100vh - 172px); box-sizing: border-box; }
+/* MP-PGBG1（哥哥 10/9 给图，亦菲 seq 2795）：pg-scroll 消息区铺聊天背景
+   assets/pgroup_bg.jpg。wxss background-image 不支持本地路径（真机不显示），
+   用 image 组件铺底；背景层在 scroll-view 外层容器内（滚动时背景不动=不撕裂）。
+   容器高度沿用 172px 扣减口径（MP-TABBAR-TOP 定型），scroll-view flex:1 撑满容器
+   （min-height:0 防 flex 子项撑穿容器，MP-UX2 min-height:0 教训同源）。 */
+.pg-bg-wrap {
+  position: relative;
+  height: calc(100vh - 172px);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+.pg-bg {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  width: 100%; height: 100%;
+  z-index: 0;
+}
+.pg-scroll { flex: 1; min-height: 0; }
 .pg-anchor { height: 1px; }
 .pg-msg { display: flex; flex-direction: column; max-width: 85%; }
 .pg-msg.mine { align-items: flex-end; }
@@ -133,6 +149,9 @@
   .pg-body { background: #1C1C1E; }
   .pg-msg.mine .pg-body { background: #1E3A5F; }
 }
+/* MP-PGBG1：背景图上浅色气泡边界模糊（浅奶油黄底 vs #F7F7F8 近白），加轻阴影
+   撑出气泡轮廓（颜色不动=照亦菲口径②气泡底色保持现有实色） */
+.pg-msg .pg-body { box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18); }
 
 /* 输入条（fixed 贴屏幕底；实色背景；column 向容纳私有群操作钮行+输入行）
    MP-TABBAR-TOP（哥哥 10/9 令，亦菲 seq 2692）：tabBar 钉顶后底部零叠压，

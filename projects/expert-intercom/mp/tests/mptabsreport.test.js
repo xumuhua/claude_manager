@@ -425,8 +425,11 @@ setImmediate(() => {
                !!mMsgsPad2 && parseInt(mMsgsPad2[1], 10) >= 104 && parseInt(mMsgsPad2[1], 10) < 150);
             // daily_report 私有群消息区高度回归不扣 tabBar 抬升量
             const rpWxss2 = fs.readFileSync(path.join(MP, 'pages/daily_report/index.wxss'), 'utf8');
-            ok('T4h.4 pg-scroll 高度扣 input-bar+页头（172px 不扣安全区）',
-               /\.pg-scroll\s*\{[^}]*100vh\s*-\s*172px/.test(rpWxss2));
+            // MP-PGBG1：172px 扣减口径由 .pg-scroll 挪到背景容器 .pg-bg-wrap 承载
+            ok('T4h.4 私有群消息区高度扣 input-bar+页头（容器 172px 不扣安全区）',
+               /\.pg-bg-wrap\s*\{[^}]*100vh\s*-\s*172px/.test(rpWxss2)
+               && /\.pg-scroll\s*\{[^}]*flex:\s*1/.test(rpWxss2)
+               && !/\.pg-scroll\s*\{[^}]*100vh/.test(rpWxss2));
             // repos/status 页不手写 tabBar 垫顶（全局统一接管）
             const reposWxss = fs.readFileSync(path.join(MP, 'pages/repos/index.wxss'), 'utf8');
             const statusWxss = fs.readFileSync(path.join(MP, 'pages/status/index.wxss'), 'utf8');
@@ -755,6 +758,39 @@ setImmediate(() => {
                     ok('T4n.5 chat .new-msg 同款实色化（fixed+var(--primary) 组合清零防复发）',
                        /\.new-msg\s*\{[^}]*position:\s*fixed[^}]*background:\s*#2563EB/.test(chatWxssSrc)
                        && /@media \(prefers-color-scheme: dark\)\s*\{[\s\S]*?\.new-msg[\s\S]*?#60A5FA/.test(chatWxssSrc));
+
+                    /* ---------- MP-PGBG1 2505 私聊聊天背景（哥哥 10/9 给图，亦菲 seq 2795）----------
+                       要求四条：①cover 铺满滚动不撕裂 ②气泡实色（MP-UX7 红线）③仅 pgroup 视图
+                       ④引用 assets/pgroup_bg.jpg。实现口径：wxss background-image 不支持本地
+                       路径（真机不显示）→ image 组件 aspectFill 铺底；背景层放 scroll-view
+                       外层容器（滚动时背景不动=不撕裂）；浅奶油黄底上浅色气泡边界模糊→
+                       气泡底色不动（照②）加轻阴影撑轮廓 ---------- */
+                    const rpWxmlPbg = fs.readFileSync(path.join(MP, 'pages/daily_report/index.wxml'), 'utf8');
+                    const rpWxssPbg = rpWxss2;
+                    // 私有群块 = <block wx:else>（行首）起；报告块 = <block wx:if mode report> 起至 wx:else 块前
+                    // （裸 split('wx:else') 会命中 .rpt-none 的三元 wx:else，须锚 <block）
+                    const pgStart = rpWxmlPbg.indexOf('<block wx:else>');
+                    const pgBlock = rpWxmlPbg.slice(pgStart);
+                    const rptBlock = rpWxmlPbg.slice(0, pgStart);
+                    ok('T4p.1 私有群视图铺背景图（image 组件 aspectFill=cover 语义）',
+                       /<image class="pg-bg" src="\/assets\/pgroup_bg\.jpg" mode="aspectFill"/.test(pgBlock)
+                       && !rptBlock.includes('pg-bg'));
+                    ok('T4p.2 背景层在 scroll-view 外层容器（滚动不撕裂）+绝对定位铺满',
+                       /\.pg-bg\s*\{[^}]*position:\s*absolute/.test(rpWxssPbg)
+                       && pgBlock.indexOf('pg-bg" src') < pgBlock.indexOf('class="pg-scroll"')
+                       && /class="pg-bg-wrap"[\s\S]*?<scroll-view/.test(pgBlock));
+                    ok('T4p.3 容器 172px 扣减承载高度+scroll-view flex:1+min-height:0（防撑穿）',
+                       /\.pg-bg-wrap\s*\{[^}]*100vh\s*-\s*172px/.test(rpWxssPbg)
+                       && /\.pg-scroll\s*\{[^}]*flex:\s*1[^}]*min-height:\s*0/.test(rpWxssPbg));
+                    ok('T4p.4 背景资产在仓（assets/pgroup_bg.jpg）',
+                       fs.existsSync(path.join(MP, 'assets/pgroup_bg.jpg')));
+                    ok('T4p.5 气泡底色保持现有实色（background 零 var()=MP-UX7 红线，未因加背景退化）',
+                       /\.pg-body\s*\{[^}]*background:\s*#F7F7F8/.test(rpWxssPbg)
+                       && !/\.pg-body\s*\{[^}]*background:\s*var\(/.test(rpWxssPbg)
+                       && /\.pg-msg\.mine \.pg-body\s*\{[^}]*background:\s*#E0ECFF/.test(rpWxssPbg));
+                    ok('T4p.6 浅色气泡轻阴影撑轮廓（浅黄底可读性补强）+ 深色态实色兜底在位',
+                       /\.pg-msg \.pg-body\s*\{[^}]*box-shadow/.test(rpWxssPbg)
+                       && /@media \(prefers-color-scheme: dark\)\s*\{[\s\S]*?\.pg-body\s*\{[^}]*#1C1C1E/.test(rpWxssPbg));
 
                     timers.forEach((t) => clearInterval(t));
                     console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAIL`);
