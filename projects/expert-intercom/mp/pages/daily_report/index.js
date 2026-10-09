@@ -39,6 +39,7 @@ Page({
     pErr: '',
     myUser: '',                  // login_cred 的 username（判定「自己的消息」靠右）
     pAnchor: '',                 // scroll-into-view 锚点 id（滚底用）
+    kbHeight: 0,                 // MP-KB1：键盘弹起高度（>0 时 input-bar 手动抬到键盘顶，login 悬浮钮同款）
   },
 
   onLoad() {
@@ -138,6 +139,14 @@ Page({
     // MP-REPORT-UX②：实时存草稿（storage），15s 无操作切报告页后回来可恢复；
     // 同时也是 idle 活动信号。
     try { store.setDraft(DRAFT_KEY, v); } catch (e2) { /* 忽略 */ }
+    this.touchIdle();
+  },
+
+  // MP-KB1（哥哥 10/9 真机实测，亦菲 seq 2719）：键盘弹起手动抬 input-bar 到键盘顶——
+  // adjust-position 只推 page 文档流，fixed 底栏不一定跟随，双轨保险与 login 悬浮钮同款；
+  // 键盘收起本事件以 height=0 回调，input-bar 回贴屏底。
+  onKeyboardHeight(e) {
+    this.setData({ kbHeight: (e.detail && e.detail.height) || 0 });
     this.touchIdle();
   },
 

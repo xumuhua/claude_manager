@@ -402,6 +402,29 @@ setImmediate(() => {
                /\.input-bar\s*\{[\s\S]*?bottom:\s*env\(safe-area-inset-bottom\)/.test(rpWxss2)
                && !/\.input-bar\s*\{[\s\S]*?bottom:\s*calc\(48px/.test(rpWxss2));
 
+            /* ---------- MP-KB1 键盘避让（哥哥 10/9 真机实测「键盘弹起挡住输入框」，
+               亦菲 seq 2719）：chat textarea / daily_report input 须 adjust-position+
+               cursor-spacing+bindkeyboardheightchange；dock/input-bar 内联 bottom=kbHeight
+               手动抬（login 悬浮钮同款先例），收起回贴屏底 ---------- */
+            const chatWxml = fs.readFileSync(path.join(MP, 'pages/chat/index.wxml'), 'utf8');
+            const rpWxml = fs.readFileSync(path.join(MP, 'pages/daily_report/index.wxml'), 'utf8');
+            const chatJs = fs.readFileSync(path.join(MP, 'pages/chat/index.js'), 'utf8');
+            const rpJs = fs.readFileSync(path.join(MP, 'pages/daily_report/index.js'), 'utf8');
+            ok('T4h.8 chat textarea 键盘避让三件套（adjust-position+cursor-spacing+bindkeyboardheightchange）',
+               /<textarea[\s\S]*?adjust-position="\{\{true\}\}"/.test(chatWxml)
+               && /<textarea[\s\S]*?cursor-spacing="1[0-9]"/.test(chatWxml)
+               && /<textarea[\s\S]*?bindkeyboardheightchange="onKeyboardHeight"/.test(chatWxml));
+            ok('T4h.9 daily_report input 键盘避让三件套（同上）',
+               /<input[\s\S]*?adjust-position="\{\{true\}\}"/.test(rpWxml)
+               && /<input[\s\S]*?cursor-spacing="1[0-9]"/.test(rpWxml)
+               && /<input[\s\S]*?bindkeyboardheightchange="onKeyboardHeight"/.test(rpWxml));
+            ok('T4h.10 chat dock 内联 bottom=kbHeight 手动抬（fixed 底栏不吃 adjust-position 的 page 上推）',
+               /class="dock"\s+style="\{\{kbHeight \? 'bottom:' \+ kbHeight \+ 'px' : ''\}\}"/.test(chatWxml)
+               && /onKeyboardHeight\(e\)\s*\{[\s\S]*?kbHeight/.test(chatJs));
+            ok('T4h.11 daily_report input-bar 内联 bottom=kbHeight 手动抬（同款）',
+               /class="input-bar"\s+style="\{\{kbHeight \? 'bottom:' \+ kbHeight \+ 'px' : ''\}\}"/.test(rpWxml)
+               && /onKeyboardHeight\(e\)\s*\{[\s\S]*?kbHeight/.test(rpJs));
+
             timers.forEach((t) => clearInterval(t));
             console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAIL`);
             process.exit(fail === 0 ? 0 : 1);

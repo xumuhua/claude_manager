@@ -76,7 +76,7 @@
   <view wx:if="{{newMsgCount}}" class="new-msg" bindtap="jumpBottom">↓ {{newMsgCount}} 条新消息</view>
 
   <!-- MP-UX2：底部固定区（mention 补全 + 快捷指令 + STOP + 输入栏），不跟内容滚 -->
-  <view class="dock">
+  <view class="dock" style="{{kbHeight ? 'bottom:' + kbHeight + 'px' : ''}}">
     <!-- 群态 @ 补全 -->
     <view wx:if="{{mentionPopup.length}}" class="mention-pop">
       <text wx:for="{{mentionPopup}}" wx:key="name" class="mention-item"
@@ -103,7 +103,9 @@
             bindtouchend="onMicEnd" bindtouchcancel="onMicCancel">🎤</view>
       <textarea class="input" value="{{inputText}}" bindinput="onInput" auto-height
                 maxlength="-1" confirm-type="send" bindconfirm="onSend"
-                placeholder="输入消息…" placeholder-class="ph" />
+                placeholder="输入消息…" placeholder-class="ph"
+                adjust-position="{{true}}" cursor-spacing="12"
+                bindkeyboardheightchange="onKeyboardHeight" />
       <view class="send {{canSend ? '' : 'disabled'}}" bindtap="onSend">发送</view>
     </view>
   </view>

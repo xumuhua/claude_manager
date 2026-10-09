@@ -28,6 +28,7 @@ Page({
     atMeOnly: false,
     displayItems: [],
     inputText: '',
+    kbHeight: 0,              // MP-KB1：键盘弹起高度（>0 时 dock 手动抬到键盘顶，login 悬浮钮同款）
     scrollTo: '',
     newMsgCount: 0,
     summary: null,           // {points, mentions, collapsed, loading, error}
@@ -648,6 +649,14 @@ Page({
   toggleAtMe() {
     this.touchIdle();   // MP-REPORT-UX②
     this.setData({ atMeOnly: !this.data.atMeOnly, newMsgCount: 0 }, () => this.buildDisplay());
+  },
+
+  // MP-KB1（哥哥 10/9 真机实测，亦菲 seq 2719）：键盘弹起手动抬 dock 到键盘顶——
+  // adjust-position 只推 page 文档流，fixed 底栏不一定跟随（custom tabBar 页尤甚），
+  // 双轨保险与 login 悬浮钮同款；键盘收起本事件以 height=0 回调，dock 回贴屏底。
+  onKeyboardHeight(e) {
+    this.setData({ kbHeight: (e.detail && e.detail.height) || 0 });
+    this.touchIdle();
   },
 
   // ---------- 发送（Q2：显式发送钮） ----------
