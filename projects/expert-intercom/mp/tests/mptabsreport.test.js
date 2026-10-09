@@ -732,6 +732,30 @@ setImmediate(() => {
                     ok('T4m.3 切日期清 mdBlocks（key 跨日期复用，防旧日期全文污染）',
                        /pickDate[\s\S]*?mdBlocks:\s*\{\}/.test(rpJs));
 
+                    /* ---------- MP-BTN1 登录按钮「消失」（哥哥 10/9 实测，亦菲 seq 2790）----------
+                       根因=login-btn background var(--primary)（theme.json 变量）撞 MP-UX7 红线：
+                       var() 背景+position:fixed 组合在真机深色/部分机型下背景渲染丢失
+                       （哥哥实测时点=键盘弹起按钮转 float/fixed 态，白底白字看似消失）。
+                       修=照 chat 顶栏 M3 先例实色 HEX 双态直写（浅 #2563EB/深 #60A5FA
+                       =theme.json 两态 --primary 值）+@media 深色兜底；chat .new-msg
+                       同款 fixed+var(--primary) 组合同步实色化防复发 ---------- */
+                    const lgWxss = fs.readFileSync(path.join(MP, 'pages/login/index.wxss'), 'utf8');
+                    const lgBtnBlock = lgWxss.match(/\.login-btn\s*\{[\s\S]*?\n\}/);
+                    ok('T4n.1 login-btn 基态实色 HEX（禁 var() 背景）',
+                       !!lgBtnBlock && /background:\s*#2563EB/.test(lgBtnBlock[0])
+                       && !/background:\s*var\(/.test(lgBtnBlock[0]));
+                    ok('T4n.2 disabled 态同实色（覆盖微信灰底，禁 var()）',
+                       /\.login-btn\[disabled\]\s*\{[^}]*background:\s*#2563EB/.test(lgWxss)
+                       && !/\.login-btn\[disabled\]\s*\{[^}]*var\(/.test(lgWxss));
+                    ok('T4n.3 深色态 @media 兜底（实色 #60A5FA，不依赖 var 解析）',
+                       /@media \(prefers-color-scheme: dark\)\s*\{[\s\S]*?\.login-btn[\s\S]*?background:\s*#60A5FA/.test(lgWxss));
+                    ok('T4n.4 login 页零 var() 背景残留（fixed 红线全清）',
+                       !/background:\s*var\(--primary\)/.test(lgWxss));
+                    const chatWxssSrc = fs.readFileSync(path.join(MP, 'pages/chat/index.wxss'), 'utf8');
+                    ok('T4n.5 chat .new-msg 同款实色化（fixed+var(--primary) 组合清零防复发）',
+                       /\.new-msg\s*\{[^}]*position:\s*fixed[^}]*background:\s*#2563EB/.test(chatWxssSrc)
+                       && /@media \(prefers-color-scheme: dark\)\s*\{[\s\S]*?\.new-msg[\s\S]*?#60A5FA/.test(chatWxssSrc));
+
                     timers.forEach((t) => clearInterval(t));
                     console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAIL`);
                     process.exit(fail === 0 ? 0 : 1);

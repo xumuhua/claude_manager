@@ -141,12 +141,18 @@
 .empty { text-align: center; color: var(--fg2); font-size: 13px; margin-top: 80px; }
 
 /* 新消息浮动提示（MP-UX2：dock 固定后抬高，避免与输入栏重叠；
-   MP-TABBAR-TOP：dock 回贴屏底，此处同步回 110px=dock 高+余量） */
+   MP-TABBAR-TOP：dock 回贴屏底，此处同步回 110px=dock 高+余量）。
+   MP-BTN1（哥哥 10/9 实测登录按钮消失）：fixed 元素背景不走 var(--primary)
+   ——真机深色/部分机型下 var() 背景渲染丢失（MP-UX7 红线），实色 HEX 直写，
+   深色态 @media 兜底（与 login-btn 同口径，防同病复发） */
 .new-msg {
   position: fixed; right: 16px; bottom: 110px; z-index: 110;
-  background: var(--primary); color: #fff; font-size: 12px;
+  background: #2563EB; color: #fff; font-size: 12px;
   border-radius: 14px; padding: 6px 14px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+@media (prefers-color-scheme: dark) {
+  .new-msg { background: #60A5FA; }
 }
 
 /* MP-UX2：底部固定区——mention 补全/快捷指令/STOP/输入栏整体钉在屏底，
