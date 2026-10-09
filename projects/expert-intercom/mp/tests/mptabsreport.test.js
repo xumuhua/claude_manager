@@ -94,11 +94,15 @@ ok('T4.3 md-block 组件登记', !!(rpJson.usingComponents && rpJson.usingCompon
 
 let reportPageDef = null;
 global.Page = (def) => { reportPageDef = def; };
-// 桩 wx：计时器/toast/storage
+// 桩 wx：计时器/toast/storage（内存 map 模拟，MP-HIST1③ 对话持久化断言消费）
+const _wxStorage = {};
 const timers = [];
 global.wx = {
   stopPullDownRefresh: () => {},
   showToast: () => {},
+  getStorageSync: (k) => (k in _wxStorage ? _wxStorage[k] : ''),
+  setStorageSync: (k, v) => { _wxStorage[k] = v; },
+  removeStorageSync: (k) => { delete _wxStorage[k]; },
   setInterval: (fn, ms) => { const t = setInterval(fn, ms); timers.push(t); return t; },
   clearInterval: (t) => clearInterval(t),
 };
@@ -201,23 +205,30 @@ setImmediate(() => {
         ok('T4b.2 页面底部让位 ≥ 输入条常态高（私有群含操作钮行）',
            !!mPad && parseInt(mPad[1], 10) >= 56);
 
-        // ②私有群操作钮：返回/登出并排贴输入框上方，高度加大
+        // ②私有群操作钮：登出小胶囊居左灰底（MP-HIST1① 哥哥 10/9 令）+返回报告页在右
         const rpWxml = fs.readFileSync(path.join(MP, 'pages/daily_report/index.wxml'), 'utf8');
-        ok('T4b.3 操作钮行在 input-bar 内（贴输入框上方）',
-           /class="input-bar"[\s\S]*class="pg-actions"[\s\S]*bindtap="backToReport"[\s\S]*bindtap="onLogout"[\s\S]*class="input-row"/.test(rpWxml));
+        ok('T4b.3 操作钮行在 input-bar 内（登出小胶囊居左、返回在右，贴输入框上方）',
+           /class="input-bar"[\s\S]*class="pg-actions"[\s\S]*pg-action-mini[\s\S]*bindtap="onLogout"[\s\S]*bindtap="backToReport"[\s\S]*class="input-row"/.test(rpWxml));
         const mBtnH = rpWxss.match(/\.pg-action-btn\s*\{[\s\S]*?height:\s*(\d+)px/);
-        ok('T4b.4 按钮高度加大（≥40px）', !!mBtnH && parseInt(mBtnH[1], 10) >= 40);
+        ok('T4b.4 返回按钮高度加大（≥40px）', !!mBtnH && parseInt(mBtnH[1], 10) >= 40);
+        const mMini = rpWxss.match(/\.pg-action-mini\s*\{[\s\S]*?height:\s*(\d+)px/);
+        ok('T4b.4b 登出钮小胶囊（≤32px 灰底非 danger 红）',
+           !!mMini && parseInt(mMini[1], 10) <= 32
+           && /\.pg-action-mini\s*\{[\s\S]*?#E5E7EB/.test(rpWxss)
+           && !/\.pg-action-btn\.danger/.test(rpWxss));
 
         // 登出行为：清 token+display_name → reLaunch 登录页
         const removedKeys = [];
         let relaunchUrl = '';
-        global.wx.removeStorageSync = (k) => removedKeys.push(k);
+        const _origRemove = global.wx.removeStorageSync;
+        global.wx.removeStorageSync = (k) => { removedKeys.push(k); _origRemove(k); };
         global.wx.reLaunch = (o) => { relaunchUrl = o.url; };
         rp.data.mode = 'pgroup';
         rp.onLogout();
         ok('T4b.5 登出清 token', cfgStub.clearTokenCalls === 1);
         ok('T4b.6 登出清 display_name', removedKeys.includes('display_name'));
         ok('T4b.7 登出 reLaunch 登录页', relaunchUrl === '/pages/login/index');
+        global.wx.removeStorageSync = _origRemove;
         ok('T4b.8 登出停轮询', rp._pollTimer === null);
         ok('T4b.9 登出清 login_cred', removedKeys.includes('login_cred'));
 
@@ -256,7 +267,7 @@ setImmediate(() => {
            (rpSrc.match(/_scrollBottom\(\)/g) || []).length >= 3);
 
         // 行为级：mine 标记 + 滚底锚点（login_cred=gege → 自己的消息 mine=true）
-        global.wx.getStorageSync = (k) => (k === 'login_cred' ? 'gege:abc123' : (k === 'display_name' ? '哥哥' : ''));
+        global.wx.getStorageSync = (k) => (k === 'login_cred' ? 'gege:abc123' : (k === 'display_name' ? '哥哥' : (k in _wxStorage ? _wxStorage[k] : '')));
         rp.data.mode = 'pgroup';
         rp.data.myUser = rp._myUsername();
         ok('T4c.8 login_cred 解析 username', rp.data.myUser === 'gege');
@@ -281,7 +292,7 @@ setImmediate(() => {
           setImmediate(() => {
             ok('T4c.12 发送后新消息 mine=true+滚底',
                rp.data.pMsgs[rp.data.pMsgs.length - 1].mine === true && rp.data.pAnchor === 'pg-last');
-            global.wx.getStorageSync = () => '';
+            global.wx.getStorageSync = (k) => (k in _wxStorage ? _wxStorage[k] : '');
 
             /* ---------- T4d MP-REPORT-UX①（亦菲 seq 2639）：onShow 重置到列表 ---------- */
             // 场景：先点开展开 + 切到 pgroup 视图，模拟从其他页切入
@@ -422,9 +433,102 @@ setImmediate(() => {
             ok('T4h.11 手动抬轨整轨撤出——两页 js 无 onKeyboardHeight/kbHeight 残留',
                !/onKeyboardHeight|kbHeight/.test(chatJs) && !/onKeyboardHeight|kbHeight/.test(rpJs));
 
-            timers.forEach((t) => clearInterval(t));
-            console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAIL`);
-            process.exit(fail === 0 ? 0 : 1);
+            /* ---------- T4i MP-HIST1 调整单×3（亦菲 seq 2744/2746，哥哥 10/9 原话）：
+               ②报告页含历史日期（控制单次刷新条目：首屏 7 天+「更早 7 天」续加+30 天封顶，
+               前端逐日请求复用单日接口缓存，后端零改动）；
+               ③报告问答对话持久化（前端 storage 按日期分键，退出/杀进程回来历史还在）；
+               ①登出钮小胶囊居左灰底的断言在 T4b.3/T4b.4b。 ---------- */
+            // ②历史日期列表——结构级
+            ok('T4i.1 历史日期横滚条在报告卡片之前（date-strip+pickDate）',
+               /class="date-strip"[\s\S]*date-chip[\s\S]*bindtap="pickDate"/.test(rpWxml)
+               && rpWxml.indexOf('date-strip') < rpWxml.indexOf('每日报告'));
+            ok('T4i.2 「更早 7 天」加载更多钮+30 天封顶常量',
+               /loadMoreHistory/.test(rpWxml)
+               && /HISTORY_PAGE_DAYS\s*=\s*7/.test(rpJs) && /HISTORY_MAX_DAYS\s*=\s*30/.test(rpJs));
+            ok('T4i.3 选中态高亮+出报告绿点标记',
+               /date-chip \{\{item\.date === date \? 'cur' : ''\}\}/.test(rpWxml)
+               && /\.date-chip\.cur/.test(rpWxss2) && /date-dot/.test(rpWxml));
+            // ②行为级——模拟 onLoad 后近 7 天列表装载（桩：每天回 available 计数）
+            const preCalls = apiCalls.length;
+            rp.data.dateList = []; rp.data.historyDays = 0; rp.data.historyLoading = false; rp.data.historyDone = false;
+            apiHandler = (o) => Promise.resolve({ date: 'x', reports: [
+              { key: 'aichip', available: true }, { key: 'quant', available: false }, { key: 'd4', available: false }] });
+            rp.loadHistoryDates(7);
+            setImmediate(() => {
+              ok('T4i.4 首屏近 7 天逐日探测装载（7 次请求，倒序今天在前）',
+                 rp.data.dateList.length === 7
+                 && apiCalls.slice(preCalls).filter((c) => /\/api\/daily_report\?date=\d{8}/.test(c.path)).length === 7
+                 && rp.data.dateList[0].date === rp.todayStr()
+                 && rp.data.dateList[0].avail === 1 && rp.data.dateList[1].avail === 1);
+              ok('T4i.5 今天标签+未封顶（historyDone=false）',
+                 rp.data.dateList[0].label.indexOf('今天') === 0 && rp.data.historyDone === false);
+              // 加载更多续加 7 天 → 14 天；连续加到 28 再补 2 天看 30 封顶
+              rp.loadMoreHistory();
+              setImmediate(() => {
+                ok('T4i.6 「更早 7 天」续加（7→14 天不重复）',
+                   rp.data.dateList.length === 14 && rp.data.dateList[13].date !== rp.data.dateList[0].date);
+                rp.loadMoreHistory();   // 14→21
+                setImmediate(() => {
+                  rp.loadMoreHistory(); // 21→28
+                  setImmediate(() => {
+                    rp.loadMoreHistory(); // 28→30（只补 2 天封顶）
+                    setImmediate(() => {
+                      ok('T4i.7 30 天封顶（28+2=30 后 historyDone=true，续加不再长）',
+                         rp.data.dateList.length === 30 && rp.data.historyDone === true
+                         && rp.data.dateList[29].date < rp.data.dateList[0].date);
+                      rp.loadMoreHistory();
+                      setImmediate(() => {
+                        ok('T4i.7b 封顶后再点不再请求（幂等）', rp.data.dateList.length === 30);
+                  // 点日期切换：报告区重载+对话历史随日期切换
+                  rp.data.chatMsgs = [{ role: 'user', text: '今天的提问' }];
+                  const todayKey = 'report_chat_' + rp.data.date;
+                  rp.pickDate({ currentTarget: { dataset: { date: rp.data.dateList[5].date } } });
+                  ok('T4i.8 切日期=报告区重载+当日对话先落盘',
+                     rp.data.date === rp.data.dateList[5].date
+                     && apiCalls.some((c) => c.path === '/api/daily_report?date=' + rp.data.date)
+                     && Array.isArray(_wxStorage[todayKey]) && _wxStorage[todayKey][0].text === '今天的提问');
+                  ok('T4i.9 切日期后对话切到该日记录（空=新日期无历史）',
+                     rp.data.chatMsgs.length === 0);
+
+                  /* ---------- ③对话持久化行为级 ---------- */
+                  rp.data.date = rp.todayStr();   // 回今天
+                  rp.data.chatMsgs = [];
+                  apiHandler = (o) => {
+                    if (o.path === '/ai/report_chat') return Promise.resolve({ reply: '持久化答复。' });
+                    return Promise.resolve({ reports: [] });
+                  };
+                  rp.data.inputVal = '持久化提问';
+                  rp.onSend();
+                  setImmediate(() => {
+                    ok('T4i.10 问答完成后对话落 storage（report_chat_<date>）',
+                       Array.isArray(_wxStorage['report_chat_' + rp.todayStr()])
+                       && _wxStorage['report_chat_' + rp.todayStr()].length === 2
+                       && _wxStorage['report_chat_' + rp.todayStr()][1].text === '持久化答复。');
+                    // 模拟杀进程重进：内存清空 → _restoreChat 恢复
+                    rp.data.chatMsgs = [];
+                    rp._restoreChat();
+                    ok('T4i.11 退出再进对话历史恢复（2 条含答复）',
+                       rp.data.chatMsgs.length === 2 && rp.data.chatMsgs[1].text === '持久化答复。');
+                    // 草稿与持久化分轨不冲突：草稿键 chat_draft_ 与 report_chat_ 各存各的
+                    ok('T4i.12 草稿键与对话持久化键分轨（互不覆盖）',
+                       !('report_chat_' + rp.todayStr() in _draftMap)
+                       && rpJs.indexOf("report_chat_") > 0 && /chat_draft_/.test(
+                         fs.readFileSync(path.join(MP, 'utils/store.js'), 'utf8')));
+                    // 结构级：持久化键按日期分+恢复时机（onLoad/pickDate）
+                    ok('T4i.13 结构锁——_persistChat/_restoreChat 在 onLoad 与 pickDate 链路',
+                       /onLoad\(\)\s*\{[\s\S]*?_restoreChat\(\)/.test(rpJs)
+                       && /pickDate[\s\S]*?_persistChat\(\)[\s\S]*?_restoreChat\(\)/.test(rpJs));
+
+                    timers.forEach((t) => clearInterval(t));
+                    console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAIL`);
+                    process.exit(fail === 0 ? 0 : 1);
+                  });
+                      });   // T4i.7b
+                    });     // 28→30
+                  });       // 21→28
+                });         // 14→21
+              });           // T4i.6（7→14）
+            });             // T4i.4/5（首屏 7 天）
           });
         });
       });

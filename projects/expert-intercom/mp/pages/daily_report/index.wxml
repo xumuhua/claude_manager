@@ -4,6 +4,20 @@
   <!-- ============ 报告视图 ============ -->
   <block wx:if="{{mode === 'report'}}">
 
+    <!-- 历史日期列表（MP-HIST1②，哥哥 10/9 令）：近 7 天首屏，「更早 7 天」续加，
+         30 天封顶；点日期切换报告区+问答上下文 -->
+    <scroll-view scroll-x class="date-strip" wx:if="{{dateList.length}}">
+      <view class="date-strip-in">
+        <view wx:for="{{dateList}}" wx:key="date"
+              class="date-chip {{item.date === date ? 'cur' : ''}}"
+              data-date="{{item.date}}" bindtap="pickDate">
+          {{item.label}}<text wx:if="{{item.avail > 0}}" class="date-dot">·</text>
+        </view>
+        <view wx:if="{{!historyDone}}" class="date-chip more {{historyLoading ? 'off' : ''}}"
+              bindtap="loadMoreHistory">{{historyLoading ? '加载中…' : '更早 7 天'}}</view>
+      </view>
+    </scroll-view>
+
     <!-- 报告概述卡片（当日三份；未产出/失败显示占位不报错） -->
     <view class="sec-title">📋 {{date}} 每日报告</view>
     <view wx:if="{{reportErr}}" class="banner-err">{{reportErr}}</view>
@@ -49,10 +63,11 @@
 
   <!-- 输入条（两视图共用；发送按 mode 分发） -->
   <view class="input-bar">
-    <!-- 私有群视图：操作钮（返回报告页 / 登出）贴输入框上方，大按钮快速点击（哥哥 10/8 令） -->
+    <!-- 私有群视图：操作钮（登出小胶囊居左灰底 / 返回报告页在右）贴输入框上方
+         MP-HIST1①（哥哥 10/9 原话：「不要太大有个就行，放在左边，用灰色的背景即可」） -->
     <view wx:if="{{mode === 'pgroup'}}" class="pg-actions">
+      <view class="pg-action-mini" bindtap="onLogout">登出</view>
       <view class="pg-action-btn" bindtap="backToReport">← 返回报告页</view>
-      <view class="pg-action-btn danger" bindtap="onLogout">登出</view>
     </view>
     <view class="input-row">
       <input

@@ -11,6 +11,33 @@
 
 .sec-title { font-size: 13px; font-weight: 600; color: var(--fg2); margin: 14px 14px 2px; }
 
+/* 历史日期横滚条（MP-HIST1② 哥哥 10/9 令）：小胶囊横排，选中高亮，「更早 7 天」续加 */
+.date-strip { white-space: nowrap; margin: 8px 0 0; }
+.date-strip-in { display: inline-flex; align-items: center; padding: 0 12px; }
+.date-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 10px;
+  margin-right: 6px;
+  border-radius: 13px;
+  font-size: 12px;
+  color: var(--fg2);
+  background: #F7F7F8;
+}
+.date-chip.cur {
+  color: #FFFFFF;
+  background: #2563EB;
+  font-weight: 600;
+}
+.date-chip.more { color: var(--primary); }
+.date-chip.off { opacity: 0.5; }
+.date-dot { color: #16A34A; margin-left: 2px; font-weight: 700; }
+.date-chip.cur .date-dot { color: #BBF7D0; }
+@media (prefers-color-scheme: dark) {
+  .date-chip { background: #1C1C1E; }
+}
+
 /* 报告卡片（status/experts 同款骨架） */
 .card {
   margin: 10px 12px;
@@ -50,9 +77,11 @@
   .chat-bubble.user { background: #1E3A5F; }
 }
 
-/* 私有群操作钮行（返回/登出）：贴输入条上方，大按钮快速点击（哥哥 10/8 令） */
+/* 私有群操作钮行：登出小胶囊居左灰底（MP-HIST1① 哥哥 10/9 原话「不要太大有个就行，
+   放在左边，用灰色的背景即可」）+ 返回报告页在右（保持大按钮快速点击，哥哥 10/8 令） */
 .pg-actions {
   display: flex;
+  align-items: center;
   gap: 10px;
   padding: 0 0 8px;
 }
@@ -68,13 +97,22 @@
   color: var(--primary);
   background: #E0ECFF;
 }
-.pg-action-btn.danger {
-  color: #FFFFFF;
-  background: #DC2626;
+/* 登出小胶囊：固定小尺寸、灰底灰字不醒目（非红色 danger） */
+.pg-action-mini {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  padding: 0 12px;
+  font-size: 12px;
+  border-radius: 14px;
+  color: #6B7280;
+  background: #E5E7EB;
 }
 @media (prefers-color-scheme: dark) {
   .pg-action-btn { background: #1E3A5F; }
-  .pg-action-btn.danger { background: #7F1D1D; }
+  .pg-action-mini { color: #9CA3AF; background: #374151; }
 }
 
 /* 私有群消息（哥哥 10/8 二令②：自己的消息靠右含名字，别人的靠左） */

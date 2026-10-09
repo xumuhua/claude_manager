@@ -19,6 +19,8 @@ const POLL_MS = 5000;              // 私有群轮询间隔（轻量实现：不
 const CHAT_KEEP = 40;              // 页内对话消息内存上限
 const IDLE_MS = 15000;             // MP-REPORT-UX②：无操作 15s 自动切报告页
 const DRAFT_KEY = 'daily_report';  // store 草稿键（按页面分轨）
+const HISTORY_PAGE_DAYS = 7;       // MP-HIST1②（哥哥 10/9 令）：单次加载天数（控制单次刷新条目）
+const HISTORY_MAX_DAYS = 30;       // 历史日期上限（近 30 天封顶）
 
 Page({
   data: {
@@ -29,7 +31,12 @@ Page({
     expanded: {},                  // key -> true（卡片展开全文）
     mdBlocks: {},                  // key -> blocks（懒解析）
     reportErr: '',
-    // 对话框
+    // 历史日期列表（MP-HIST1②，哥哥 10/9 令）：近 N 天逐日探测，控制单次刷新条目
+    dateList: [],                  // [{date, label, avail}]（倒序：今天在前）
+    historyDays: HISTORY_PAGE_DAYS,// 已加载天数（「更早 7 天」按钮续加，30 天封顶）
+    historyDone: false,            // 已到 30 天上限 → 不再显示加载更多
+    historyLoading: false,
+    // 对话框（MP-HIST1③：对话记录按日期 storage 持久化，退出页面/杀小程序回来仍在）
     chatMsgs: [],                  // [{role:'user'|'assistant', text}]
     inputVal: '',
     sending: false,
@@ -44,6 +51,8 @@ Page({
   onLoad() {
     this.setData({ date: this.todayStr(), myUser: this._myUsername() });
     this.loadReports();
+    this.loadHistoryDates(HISTORY_PAGE_DAYS);   // 首屏近 7 天（控制单次刷新条目）
+    this._restoreChat();                        // MP-HIST1③：按当前日期恢复对话历史
     this.startIdleWatch();
   },
 
@@ -60,6 +69,8 @@ Page({
   onUnload() { this.stopPoll(); this.stopIdleWatch(); },
 
   // 重置内部视图状态到列表：mode=report、所有展开收起、停私有群轮询、清群错误。
+  // 不动 selectedDate/历史列表/对话记录——切页回来应仍停在用户选中的日期，
+  // 对话历史随 _restoreChat 口径常驻（MP-HIST1 哥哥 10/9 令）。
   // 草稿不动（inputVal 由输入条自持，切页回来恢复草稿的口径在聊天页，不在本页）。
   resetToReportList() {
     if (this.data.mode === MODE_PGROUP) this.stopPoll();
@@ -98,8 +109,65 @@ Page({
 
   todayStr() {
     const d = new Date();
+    return this._fmtDate(d);
+  },
+
+  _fmtDate(d) {
     const p = (n) => (n < 10 ? '0' + n : '' + n);
     return '' + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate());
+  },
+
+  _dateLabel(dateStr) {
+    // YYYYMMDD → MM-DD（今天额外标「今天」）
+    const lab = dateStr.slice(4, 6) + '-' + dateStr.slice(6, 8);
+    return dateStr === this.todayStr() ? '今天 ' + lab : lab;
+  },
+
+  // ---------- MP-HIST1② 历史日期列表（哥哥 10/9 令：报告页含历史日期，控制单次刷新条目） ----------
+  // 方案=前端逐日请求近 N 天（复用单日 /api/daily_report 接口与其 10min 进程内缓存，
+  // 后端零改动零重启）；首屏 7 天，「更早 7 天」按钮续加，30 天封顶。
+  loadHistoryDates(extraDays) {
+    if (this.data.historyLoading) return;
+    const base = this.data.historyDays || this.data.dateList.length;
+    const days = Math.min(extraDays || HISTORY_PAGE_DAYS, HISTORY_MAX_DAYS - base);
+    if (days <= 0) { this.setData({ historyDone: true }); return; }
+    this.setData({ historyLoading: true });
+    const probes = [];
+    for (let i = 0; i < days; i++) {
+      const d = new Date();
+      d.setDate(d.getDate() - (base + i));
+      const ds = this._fmtDate(d);
+      probes.push(
+        api.request({ path: '/api/daily_report?date=' + ds, timeout: 30000 })
+          .then((r) => ({ date: ds, avail: (r.reports || []).filter((x) => x.available).length }))
+          .catch(() => ({ date: ds, avail: -1 }))   // -1=探测失败（不阻塞列表）
+      );
+    }
+    Promise.all(probes).then((rows) => {
+      const add = rows.map((r) => ({ date: r.date, label: this._dateLabel(r.date), avail: r.avail }));
+      this.setData({
+        dateList: this.data.dateList.concat(add),
+        historyDays: base + days,
+        historyDone: (base + days) >= HISTORY_MAX_DAYS,
+        historyLoading: false,
+      });
+    });
+  },
+
+  loadMoreHistory() {
+    this.touchIdle();
+    this.loadHistoryDates(HISTORY_PAGE_DAYS);
+  },
+
+  // 点历史日期：切换选中日期 → 报告区+问答上下文+对话历史随日期整体切换
+  pickDate(e) {
+    const date = e.currentTarget.dataset.date;
+    if (!date || date === this.data.date) return;
+    this.touchIdle();
+    this._persistChat();                       // 当前日期对话先落 storage
+    this.setData({ date, expanded: {}, reports: [], reportErr: '' });
+    this.loadReports();
+    this._restoreChat();                       // 换日期恢复对应日期的对话记录
   },
 
   // ---------- 报告区 ----------
@@ -129,6 +197,24 @@ Page({
       }
     }
     this.setData(patch);
+    this.touchIdle();
+  },
+
+  // ---------- MP-HIST1③ 报告问答对话持久化（哥哥 10/9 令：退出页面/杀掉小程序再回来历史还在） ----------
+  // 口径=前端 storage 按日期分键（亦菲 seq 2746 推荐最简方案，零后端改动）：
+  // 键 report_chat_<YYYYMMDD>，每次对话变更即落；与 15s 闲置草稿不冲突
+  // （草稿=输入框未发送内容，本项=已发送的对话记录）。
+  _chatStoreKey() { return 'report_chat_' + this.data.date; },
+  _persistChat() {
+    try { wx.setStorageSync(this._chatStoreKey(), this.data.chatMsgs.slice(-CHAT_KEEP)); } catch (e) { /* 满则忽略 */ }
+  },
+  _restoreChat() {
+    let msgs = [];
+    try {
+      const v = wx.getStorageSync(this._chatStoreKey());
+      if (Array.isArray(v)) msgs = v.filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.text === 'string');
+    } catch (e) { /* 忽略 */ }
+    this.setData({ chatMsgs: msgs.slice(-CHAT_KEEP) });
   },
 
   // ---------- 对话框 ----------
@@ -154,6 +240,7 @@ Page({
     }
     const msgs = this.data.chatMsgs.concat([{ role: 'user', text }]).slice(-CHAT_KEEP);
     this.setData({ chatMsgs: msgs, inputVal: '', sending: true });
+    this._persistChat();          // MP-HIST1③：对话变更即落盘（用户提问先入历史）
     try { store.clearDraft(DRAFT_KEY); } catch (e) { /* 忽略 */ }
     this.touchIdle();
     const payload = {
@@ -166,6 +253,7 @@ Page({
           chatMsgs: this.data.chatMsgs.concat([{ role: 'assistant', text: d.reply || '（空回复）' }]).slice(-CHAT_KEEP),
           sending: false,
         });
+        this._persistChat();      // 助手回复落盘
       })
       .catch((e) => {
         this.setData({ sending: false });
@@ -173,6 +261,7 @@ Page({
           this.setData({
             chatMsgs: this.data.chatMsgs.concat([{ role: 'assistant', text: '当日报告未产出，暂无法问答。' }]).slice(-CHAT_KEEP),
           });
+          this._persistChat();    // 兜底回复同样落盘
         } else {
           api.aiToast(e);
         }
