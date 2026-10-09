@@ -109,6 +109,11 @@ global.wx = {
   setInterval: (fn, ms) => { const t = setInterval(fn, ms); timers.push(t); return t; },
   clearInterval: (t) => clearInterval(t),
 };
+// MP-TIER1：daily_report 后台慢拉走全局 setTimeout(BG_PROBE_GAP_MS=500) 节流——
+// 生产环境逐日 500ms 间隔生效；测试桩为【立即执行】让慢拉在 setImmediate 链内同步可见，
+// 节流语义由结构锁断言（_drainDates/setTimeout/BG_PROBE_GAP_MS 在位）承载，不靠真等 500ms。
+const _origSetTimeout = global.setTimeout;
+global.setTimeout = (fn, ms) => { fn(); return 0; };
 const Module = require('module');
 const origResolve = Module._resolveFilename;
 Module._resolveFilename = function (request, ...rest) {
@@ -138,7 +143,25 @@ Module._resolveFilename = origResolve;
 
 const rp = Object.create(reportPageDef);
 rp.data = JSON.parse(JSON.stringify(reportPageDef.data));
-rp.setData = function (p) { Object.assign(this.data, p); };
+// setData 桩支持小程序路径键（'dateList[0].avail'）——MP-TIER1 后台慢拉逐日就地升级
+// 绿点用路径键，桩须按真语义合并（真机 setData 原生支持路径语法）。
+rp.setData = function (p) {
+  for (const k of Object.keys(p)) {
+    const m = k.match(/^(\w+)\[(\d+)\]\.(\w+)$/);
+    if (m) {
+      const arr = this.data[m[1]];
+      if (Array.isArray(arr) && arr[+m[2]]) arr[+m[2]][m[3]] = p[k];
+    } else {
+      this.data[k] = p[k];
+    }
+  }
+};
+// MP-TIER1：慢拉串行链每探一天需 ~3 tick（探测 settle→applyAvail→排下一日），
+// 7 天探测需 ~25 tick——嵌套 setImmediate 写不现实，用深等待 helper。
+function deepTicks(n, done) {
+  if (n <= 0) { done(); return; }
+  setImmediate(() => deepTicks(n - 1, done));
+}
 
 // 报告加载：三卡片渲染 + 未产出占位
 apiHandler = () => Promise.resolve({ date: '20261008', reports: [
@@ -458,7 +481,7 @@ setImmediate(() => {
               { key: 'aichip', available: true }, { key: 'quant', available: false }, { key: 'd4', available: false }] });
             rp.loadHistoryDates(7);
             setImmediate(() => {
-              ok('T4i.4 首屏近 7 天逐日探测装载（7 次请求，倒序今天在前）',
+              ok('T4i.4 首屏近 7 天页签装载（入壳即时 7 枚+后台慢拉 7 次探测，倒序今天在前）',
                  rp.data.dateList.length === 7
                  && apiCalls.slice(preCalls).filter((c) => /\/api\/daily_report\?date=\d{8}/.test(c.path)).length === 7
                  && rp.data.dateList[0].date === rp.todayStr()
@@ -481,17 +504,30 @@ setImmediate(() => {
               // 结构锁：页签纯日期文本（MM-DD/今天 MM-DD），无「报告」二字历史日期标签页形式
               ok('T4k.4 页签纯日期文本（date-chip 无「报告」字样，不带历史日期标签页形式）',
                  !/date-chip[^>]*>[^<]*报告/.test(rpWxml));
-              // 行为锁：探测全失败（reject）时日期页签仍全量装载、avail=-1 绿点不亮
+              // 行为锁：探测全失败（reject）时日期页签仍全量装载、avail=-1 绿点不亮。
+              // MP-TIER1：入壳即时（loadHistoryDates 同步出 7 页签 0 请求）+ 慢拉点火后
+              // 全失败重试再失败停留 -1——走完整链（loadReports settle 点火）验证：
+              // 当天报告 1 次 + 7 日探测×（首试+重试）= 15 次请求。
               const preCallsK = apiCalls.length;
               rp.data.dateList = []; rp.data.historyDays = 0; rp.data.historyLoading = false; rp.data.historyDone = false;
+              rp._bgQueue = []; rp._bgDraining = false; rp._reportSettled = false;
               apiHandler = () => Promise.reject({ code: 'NETWORK', message: 'x' });
               rp.loadHistoryDates(7);
               setImmediate(() => {
-                ok('T4k.5 探测全失败日期页签仍全量装载（7 枚含今天，avail=-1 不阻塞；MP-PROBE-FIX②失败重试一次故 7 日=14 次请求）',
-                   rp.data.dateList.length === 7
-                   && rp.data.dateList[0].date === rp.todayStr()
+                // 入壳即时：settle 前页签已 7 枚全 -1、零探测请求（分级第一级未让路）
+                const shellCalls = apiCalls.slice(preCallsK).filter((c) => /\/api\/daily_report\?date=\d{8}/.test(c.path)).length;
+                const shellOk = rp.data.dateList.length === 7
+                  && rp.data.dateList[0].date === rp.todayStr()
+                  && rp.data.dateList.every((x) => x.avail === -1)
+                  && shellCalls === 0;
+                rp.loadReports();      // 当天报告装载（失败）→ settle 点火后台慢拉
+                deepTicks(40, () => {
+                ok('T4k.5 探测全失败日期页签仍全量装载（入壳即时 7 枚含今天 avail=-1；慢拉全失败停留 -1 仅绿点不亮）',
+                   shellOk
+                   && rp.data.dateList.length === 7
                    && rp.data.dateList.every((x) => x.avail === -1)
-                   && apiCalls.slice(preCallsK).filter((c) => /\/api\/daily_report\?date=\d{8}/.test(c.path)).length === 14);
+                   && rp.data.reportErr === '网络不可用'
+                   && apiCalls.slice(preCallsK).filter((c) => /\/api\/daily_report\?date=\d{8}/.test(c.path)).length === 15);
                 // 恢复成功桩+重置列表，供 T4i.6 续加链路使用
                 apiHandler = (o) => Promise.resolve({ date: 'x', reports: [
                   { key: 'aichip', available: true }, { key: 'quant', available: false }, { key: 'd4', available: false }] });
@@ -502,8 +538,9 @@ setImmediate(() => {
                  「拉取失败」）：日期条探测 7 路并发改小批量（2 路一批）+超时 60s+
                  失败重试一次；探测与报告区错误口径分轨互不阻塞 ---------- */
               // 结构锁：批量串批执行器在位（禁回 7 路全并发 Promise.all(probes)）
-              ok('T4l.1 探测改小批量串批（PROBE_BATCH=2+_probeBatch 执行器，无 7 路全并发）',
-                 /PROBE_BATCH\s*=\s*2/.test(rpJs) && /_probeBatch/.test(rpJs)
+              ok('T4l.1 探测改分级慢拉（_drainDates 串行执行器+BG_PROBE_GAP_MS=500 节流+无 7 路全并发）',
+                 /_drainDates/.test(rpJs) && /BG_PROBE_GAP_MS\s*=\s*500/.test(rpJs)
+                 && /_bgProbeKickoff/.test(rpJs)
                  && !/Promise\.all\(probes\)/.test(rpJs));
               // 结构锁：探测超时 60s（30s 贴线教训）+常量同源
               ok('T4l.2 探测超时拉长 60s（PROBE_TIMEOUT_MS=60000，_probeDate 用之）',
@@ -512,9 +549,16 @@ setImmediate(() => {
               // 结构锁：loadReports 独立 60s（与探测分轨，探测全挂不阻塞报告区）
               ok('T4l.3 报告区 loadReports 超时独立拉长 60s（与探测分轨）',
                  /loadReports\(done\)\s*\{[\s\S]*?timeout:\s*60000/.test(rpJs));
-              // 行为锁：7 天探测=4 批串行——批间并发上限 2（apiCalls 时间序相邻同刻 ≤2）
+              // MP-TIER1④ 结构锁：点历史日期页签=单日请求（pickDate→loadReports 单日拉，
+              // 后端单日 10min 缓存复用——后台慢拉已探过的日期直接命中缓存）
+              ok('T4l.3b 点历史页签单日拉+慢拉已探日期命中缓存（pickDate→loadReports 单请求）',
+                 /pickDate[\s\S]*?loadReports\(\)/.test(rpJs)
+                 && /api\/daily_report\?date='\s*\+\s*this\.data\.date/.test(rpJs));
+              // 行为锁：MP-TIER1 后台慢拉串行——任何时刻在途探测 ≤1 路（分级拉取
+              // 「不能一下拉太多」铁证；批宽 2 的旧口径已废）
               const preCallsL = apiCalls.length;
               rp.data.dateList = []; rp.data.historyDays = 0; rp.data.historyLoading = false; rp.data.historyDone = false;
+              rp._bgQueue = []; rp._bgDraining = false; rp._reportSettled = false;
               let maxInFlight = 0, inFlight = 0;
               apiHandler = (o) => {
                 inFlight++; if (inFlight > maxInFlight) maxInFlight = inFlight;
@@ -524,12 +568,18 @@ setImmediate(() => {
                 }));
               };
               rp.loadHistoryDates(7);
+              rp.loadReports();     // settle 点火慢拉
+              // 逐日慢拉每链=2 个 setImmediate（探测发起→_applyAvail 升级），7 天需 8 层
+              // 全绿（4 层时仅前 3 天点亮属正常时序——桩 setTimeout 立即执行保串行不保提速）
               setImmediate(() => { setImmediate(() => { setImmediate(() => { setImmediate(() => {
-                ok('T4l.4 批间并发上限=2（7 天探测任何时刻在途 ≤2 路）',
-                   maxInFlight <= 2 && rp.data.dateList.length === 7);
+              setImmediate(() => { setImmediate(() => { setImmediate(() => { setImmediate(() => {
+                ok('T4l.4 后台慢拉串行（任何时刻探测在途 ≤1 路，7 页签探测后绿点全亮）',
+                   maxInFlight <= 1 && rp.data.dateList.length === 7
+                   && rp.data.dateList.every((x) => x.avail === 1));
                 // 行为锁：首次失败自动重试一次成功→avail 正常（重试只在失败时触发）
                 const preCallsL2 = apiCalls.length;
                 rp.data.dateList = []; rp.data.historyDays = 0; rp.data.historyLoading = false; rp.data.historyDone = false;
+                rp._bgQueue = []; rp._bgDraining = false; rp._reportSettled = false;
                 let tried = {};
                 apiHandler = (o) => {
                   const m = o.path.match(/date=(\d{8})/);
@@ -539,8 +589,12 @@ setImmediate(() => {
                   return Promise.resolve({ date: ds, reports: [{ key: 'aichip', available: true }] });
                 };
                 rp.loadHistoryDates(7);
-                setImmediate(() => { setImmediate(() => { setImmediate(() => { setImmediate(() => {
-                  ok('T4l.5 首次失败自动重试一次成功——绿点照常亮（avail=1，7 日=14 次请求）',
+                rp.loadReports();   // 当天首试（失败，loadReports 无重试链）+ 探测 7 日
+                // 计数口径：当天 loadReports 1 次（tried[today]=1 失败名额已用）+ 今天探测
+                // 首试即 tried=2 直接成功 1 次 + 其余 6 日×2（首试失败+重试成功）=12 → 合计 14 次
+                // 重试链每日 ≈4 tick，7 日 ≈30 tick——嵌套层数不现实，与 T4k.5 同款 deepTicks
+                deepTicks(45, () => {
+                  ok('T4l.5 首次失败自动重试一次成功——绿点照常亮（avail=1；当天首试失败名额已用+6 日×重试=14 次）',
                      rp.data.dateList.length === 7
                      && rp.data.dateList.every((x) => x.avail === 1)
                      && apiCalls.slice(preCallsL2).filter((c) => /\/api\/daily_report\?date=\d{8}/.test(c.path)).length === 14);
@@ -671,22 +725,23 @@ setImmediate(() => {
                 });         // T4l.6 批4
                 });         // T4l.6 批3
                 });         // T4l.6 批2
-                });         // T4l.5 内层
-                });         // T4l.5 批4
-                });         // T4l.5 批3
-                });         // T4l.5 批2
                 });         // T4l.4 内层
+                });         // T4l.4 批8
+                });         // T4l.4 批7
+                });         // T4l.4 批6
+                });         // T4l.4 批5
                 });         // T4l.4 批4
                 });         // T4l.4 批3
                 });         // T4l.4 批2
                 });         // T4k 恢复首屏 7 天（重置后重载）
+                });         // MP-TIER1：T4k.5 重试链第 4 层
+                });         // MP-TIER1：T4k.5 重试链第 3 层
+                });         // MP-TIER1：T4k.5 重试链第 2 层
+                });         // MP-TIER1：T4k.5 重试链第 1 层（loadReports settle 层）
               });           // T4k.5（探测全失败）
             });             // T4i.4/5（首屏 7 天）
           });
         });
       });
     });
-  });
-});
-  });   // MP-PROBE-FIX 并行会话漏补收尾×2（T4l 段插入 8 层 setImmediate 只补 6 层）——补齐防 SyntaxError
-});
+  });   // MP-TIER1：T4l.5 由 12 层 setImmediate 收敛为 deepTicks，净撤 11 层补 1 层

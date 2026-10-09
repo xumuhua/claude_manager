@@ -44,7 +44,7 @@ Page({
     reportErr: '',
     // 历史日期列表（MP-HIST1②，哥哥 10/9 令）：近 N 天逐日探测，控制单次刷新条目
     dateList: [],                  // [{date, label, avail}]（倒序：今天在前）
-    historyDays: HISTORY_PAGE_DAYS,// 已加载天数（「更早 7 天」按钮续加，30 天封顶）
+    historyDays: 0,                // 已加载天数（「更早 7 天」按钮续加，30 天封顶；0=未加载）
     historyDone: false,            // 已到 30 天上限 → 不再显示加载更多
     historyLoading: false,
     // 对话框（MP-HIST1③：对话记录按日期 storage 持久化，退出页面/杀小程序回来仍在）
@@ -198,19 +198,18 @@ Page({
     this._drainDates();
   },
 
-  // 逐日串行慢拉执行器：每 500ms 取一天探测，成功/失败都就地升级该页签 avail
-  // （成功=实际计数亮绿点；最终失败=-1 停留不亮），全部探完自动收工。
-  // setTimeout 节流在生产环境逐日间隔生效； drain 体内不再并发——任何时刻在途 ≤1 路。
+  // 逐日串行慢拉执行器：每 500ms 探一天——一次定时器回调只取【一天】发一路探测，
+  // 其 settle（成功/失败皆可）后再排下一个 500ms 定时器探下一天；任何时刻在途 ≤1 路
+  // （哥哥原话「不能一下拉太多」）。队列探空自动收工。测试桩 setTimeout=立即执行
+  // 时退化为微任务串行链，仍保「在途 ≤1」语义（下一路必须等上一路 settle）。
   _drainDates() {
     const q = this._bgQueue || [];
     if (!q.length) { this._bgDraining = false; return; }
     this._bgTimer = setTimeout(() => {
-      // 同 tick 内循环取队列——每个 setTimeout 回调触发一次「一天一个请求」节拍；
-      // 节流语义由生产环境真定时器保证（500ms/天），回调体内逐日同步推进不并发。
-      while ((this._bgQueue || []).length) {
-        const ds = this._bgQueue.shift();
-        this._probeDate(ds).then((r) => this._applyAvail(ds, r.avail));
-      }
+      const ds = this._bgQueue.shift();
+      this._probeDate(ds)
+        .then((r) => this._applyAvail(ds, r.avail))
+        .then(() => this._drainDates());      // 上一天 settle 后才排下一天
     }, BG_PROBE_GAP_MS);
   },
 
