@@ -30,6 +30,9 @@ ok('T1.3 动态页出 tabBar', !tabPaths.includes('pages/experts/index'));
 ok('T1.4 动态页保留 pages 注册（深链/复用）', app.pages.includes('pages/experts/index'));
 ok('T1.5 daily_report 已注册', app.pages.includes('pages/daily_report/index'));
 ok('T1.6 静态 list 全部在 pages 注册表内', tabPaths.every((p) => app.pages.includes(p)));
+// MP-HIST2①（哥哥 10/9 令）：进入小程序初始页面=日常报告——pages 首位（入口页）
+// 从对话改为日常报告；login.enterApp 同步落报告页（断言在 T4j.1）。
+ok('T1.7 pages 首位=日常报告（默认入口页，MP-HIST2①）', app.pages[0] === 'pages/daily_report/index');
 
 /* ---------- T2 custom-tab-bar 静态兜底同源 ---------- */
 const barJs = fs.readFileSync(path.join(MP, 'custom-tab-bar/index.js'), 'utf8');
@@ -462,6 +465,39 @@ setImmediate(() => {
                  && rp.data.dateList[0].avail === 1 && rp.data.dateList[1].avail === 1);
               ok('T4i.5 今天标签+未封顶（historyDone=false）',
                  rp.data.dateList[0].label.indexOf('今天') === 0 && rp.data.historyDone === false);
+              /* ---------- T4k MP-HIST2②（哥哥 10/9 原话「日期条缺今天/昨天页签」）：
+                 日期条无条件显示日期本身——不管有无报告、探测失败也照常出页签，
+                 仅绿点不亮；日期按本地时区，页签纯日期文本 ---------- */
+              // 结构锁：探测失败 catch 返回 avail=-1 且照常入列（不丢日期）
+              ok('T4k.1 探测失败不丢日期（catch 返回 {date,avail:-1} 照常入列）',
+                 /\.catch\(\(\)\s*=>\s*\(\{\s*date:\s*ds,\s*avail:\s*-1\s*\}\)\)/.test(rpJs));
+              // 结构锁：绿点只在「当日有报告产出」（avail>0）才亮——探测失败 -1 不亮
+              ok('T4k.2 绿点=当日有报告才标（wxml 条件 item.avail > 0）',
+                 /wx:if="\{\{item\.avail > 0\}\}" class="date-dot"/.test(rpWxml));
+              // 结构锁：日期按本地时区生成（getFullYear/getMonth/getDate），禁 UTC 换算
+              ok('T4k.3 日期按本地时区（_fmtDate 取 getFullYear/Month/Date，无 toISOString/UTC）',
+                 /getFullYear\(\)/.test(rpJs) && /getMonth\(\)/.test(rpJs) && /getDate\(\)/.test(rpJs)
+                 && !/toISOString/.test(rpJs) && !/getUTC/.test(rpJs));
+              // 结构锁：页签纯日期文本（MM-DD/今天 MM-DD），无「报告」二字历史日期标签页形式
+              ok('T4k.4 页签纯日期文本（date-chip 无「报告」字样，不带历史日期标签页形式）',
+                 !/date-chip[^>]*>[^<]*报告/.test(rpWxml));
+              // 行为锁：探测全失败（reject）时日期页签仍全量装载、avail=-1 绿点不亮
+              const preCallsK = apiCalls.length;
+              rp.data.dateList = []; rp.data.historyDays = 0; rp.data.historyLoading = false; rp.data.historyDone = false;
+              apiHandler = () => Promise.reject({ code: 'NETWORK', message: 'x' });
+              rp.loadHistoryDates(7);
+              setImmediate(() => {
+                ok('T4k.5 探测全失败日期页签仍全量装载（7 枚含今天，avail=-1 不阻塞）',
+                   rp.data.dateList.length === 7
+                   && rp.data.dateList[0].date === rp.todayStr()
+                   && rp.data.dateList.every((x) => x.avail === -1)
+                   && apiCalls.slice(preCallsK).filter((c) => /\/api\/daily_report\?date=\d{8}/.test(c.path)).length === 7);
+                // 恢复成功桩+重置列表，供 T4i.6 续加链路使用
+                apiHandler = (o) => Promise.resolve({ date: 'x', reports: [
+                  { key: 'aichip', available: true }, { key: 'quant', available: false }, { key: 'd4', available: false }] });
+                rp.data.dateList = []; rp.data.historyDays = 0; rp.data.historyLoading = false; rp.data.historyDone = false;
+                rp.loadHistoryDates(7);
+                setImmediate(() => {
               // 加载更多续加 7 天 → 14 天；连续加到 28 再补 2 天看 30 封顶
               rp.loadMoreHistory();
               setImmediate(() => {
@@ -532,18 +568,31 @@ setImmediate(() => {
                        && !/dateList\.filter/.test(rpJs)
                        && /item\.avail > 0/.test(rpWxml));
                     ok('T4j.4 探测失败仍入列（avail=-1 不阻塞日期条显示）',
-                       /avail:\s*-1/.test(rpJs) && /\.catch\(\(\)\s*=>\s*\(\{ date: ds, avail: -1 \}\)\)/.test(rpJs));
-                    // ③登录后预拉私有群历史缓存
+                       /avail:\s*-1/.test(rpJs) && /\.catch\(\(\)\s*=>\s*\(\{\s*date:\s*ds,\s*avail:\s*-1\s*\}\)\)/.test(rpJs));
+                    // ③登录后预拉私有群历史缓存（MP-HIST2 收口：读写统一走 store
+                    // 三接口，键 pgroup_cache_v1 不变同源）
                     ok('T4j.5 登录成功后台预拉 pgroup 历史（pgroup_cache_v1 落盘）',
-                       /pgroup_cache_v1/.test(loginJs) && /\/api\/pgroup\/messages\?limit=200/.test(loginJs));
-                    ok('T4j.6 进群先读缓存再接口校准（enterPgroup 秒开）',
-                       /enterPgroup[\s\S]*?pgroup_cache_v1[\s\S]*?loadPgroup\(true\)/.test(rpJs));
+                       /pgroup_cache_v1|setPgroup/.test(loginJs) && /\/api\/pgroup\/messages\?limit=200/.test(loginJs));
+                    ok('T4j.6 进群先读缓存再接口校准（enterPgroup 秒开，store.getPgroup）',
+                       /enterPgroup[\s\S]*?(store\.getPgroup|pgroup_cache_v1)[\s\S]*?loadPgroup\(true\)/.test(rpJs));
                     ok('T4j.7 登出清 pgroup 缓存（防换账号串历史）',
                        /onLogout[\s\S]*?removeStorageSync\('pgroup_cache_v1'\)/.test(rpJs));
                     // ④2505 明文提示撤出——hint 只留问报告引导
                     ok('T4j.8 报告页 hint 无 2505 明文（密码不写门口）',
                        !/输入 2505 进入私有聊天群/.test(rpWxml)
                        && /基于今日报告提问/.test(rpWxml));
+
+                    /* ---------- MP-HIST2⑤（哥哥 10/9 原话「屏幕有按动或者拖动也要
+                       重算时间」）：闲置判定从仅输入事件扩为【全屏交互事件】——
+                       两页 wxml 根节点 catchtouchstart 挂 onPageTouch，触摸/点击/
+                       滚动/拖动起点全覆盖；2505 私有群（daily_report）与聊天页统一口径 ---------- */
+                    const chatWxml2 = fs.readFileSync(path.join(MP, 'pages/chat/index.wxml'), 'utf8');
+                    ok('T4j.9 chat 页全屏交互 idle 复位（根节点 catchtouchstart→onPageTouch）',
+                       /<view class="page" catchtouchstart="onPageTouch">/.test(chatWxml2)
+                       && /onPageTouch\(\)\s*\{\s*this\.touchIdle\(\)/.test(chatSrc));
+                    ok('T4j.10 daily_report 页同款（2505 私有群统一口径）',
+                       /<view class="page" catchtouchstart="onPageTouch">/.test(rpWxml)
+                       && /onPageTouch\(\)\s*\{\s*this\.touchIdle\(\)/.test(rpJs));
 
                     timers.forEach((t) => clearInterval(t));
                     console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAIL`);
@@ -554,6 +603,8 @@ setImmediate(() => {
                   });       // 21→28
                 });         // 14→21
               });           // T4i.6（7→14）
+                });         // T4k 恢复首屏 7 天（重置后重载）
+              });           // T4k.5（探测全失败）
             });             // T4i.4/5（首屏 7 天）
           });
         });
