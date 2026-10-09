@@ -93,11 +93,10 @@ Page({
         api.request({ path: '/api/pgroup/messages?limit=200', timeout: 15000 })
           .then((d) => {
             try {
-              wx.setStorageSync('pgroup_cache_v1', {
-                msgs: (d.messages || []).slice(-200),
-                latest_seq: d.latest_seq || 0,
-                at: Date.now(),
-              });
+              // MP-PGFIX（亦菲 seq 2813② 同源收口）：走 store.setPgroup 统一入口——
+              // 旧手写 setStorageSync 键名是 msgs（getPgroup 坏缓存过滤只认 messages），
+              // 预拉缓存永远被当坏缓存滤掉，进群秒开实际从未生效；形态自此同源。
+              store.setPgroup((d.messages || []).slice(-200), d.latest_seq || 0);
             } catch (e) { /* 满则忽略 */ }
           })
           .catch(() => { /* 静默失败：进群时仍有接口兜底 */ });

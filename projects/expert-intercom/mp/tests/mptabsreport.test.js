@@ -129,10 +129,17 @@ const apiStub = {
 const cfgStub = { clearTokenCalls: 0, clearToken() { this.clearTokenCalls++; } };
 // MP-REPORT-UX：store 草稿 stub（内存 map 模拟 storage）
 const _draftMap = {};
+// MP-PGFIX（亦菲 seq 2813）：store pgroup 缓存 stub——照真 store.js 形态
+// {messages, latest_seq, at}，getPgroup 带同款坏缓存过滤（messages 须数组+latest_seq 须 number）
+let _pgroupVal = null;
 const storeStub = {
   getDraft: (k) => _draftMap[k] || '',
   setDraft: (k, v) => { _draftMap[k] = v; },
   clearDraft: (k) => { delete _draftMap[k]; },
+  getPgroup: () => ((_pgroupVal && Array.isArray(_pgroupVal.messages)
+    && typeof _pgroupVal.latest_seq === 'number') ? _pgroupVal : null),
+  setPgroup: (messages, latestSeq) => { _pgroupVal = { messages, latest_seq: latestSeq, at: Date.now() }; },
+  clearPgroup: () => { _pgroupVal = null; },
 };
 require.cache['../../utils/api'] = { exports: apiStub };
 require.cache['../../config'] = { exports: cfgStub };
@@ -792,9 +799,49 @@ setImmediate(() => {
                        /\.pg-msg \.pg-body\s*\{[^}]*box-shadow/.test(rpWxssPbg)
                        && /@media \(prefers-color-scheme: dark\)\s*\{[\s\S]*?\.pg-body\s*\{[^}]*#1C1C1E/.test(rpWxssPbg));
 
-                    timers.forEach((t) => clearInterval(t));
-                    console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAIL`);
-                    process.exit(fail === 0 ? 0 : 1);
+                    /* ---------- MP-PGFIX pgroup 清空后客户端状态（亦菲 seq 2813，哥哥清场正式启用 2505）----------
+                       ①loadPgroup latest_seq 取 ?? 语义——服务端清场返回 latest_seq=0（falsy），
+                       旧 || 回退保留本地旧 seq（16），poll after_seq=16 永拉不到重启后新消息；
+                       ②full 成功后回写 pgroup_cache_v1（store.setPgroup 收口）防进群闪旧消息；
+                       ③顺手修：login 预拉手写键名 msgs≠getPgroup 认的 messages，缓存一直被
+                       坏缓存过滤掉（进群秒开从未生效），改走 store.setPgroup 统一形态 ---------- */
+                    const rpJsPgf = fs.readFileSync(path.join(MP, 'pages/daily_report/index.js'), 'utf8');
+                    const loginJsPgf = fs.readFileSync(path.join(MP, 'pages/login/index.js'), 'utf8');
+                    ok('T4q.1 loadPgroup latest_seq ?? 语义（0 合法，旧 || 回退零残留）',
+                       !/d\.latest_seq\s*\|\|\s*this\.data\.pLatestSeq/.test(rpJsPgf)
+                       && /loadPgroup\(full, done\)[\s\S]*?d\.latest_seq === undefined[\s\S]*?this\.data\.pLatestSeq/.test(rpJsPgf));
+                    ok('T4q.2 full 成功后回写 store.setPgroup（缓存不再落后到下次登录）',
+                       /loadPgroup\(full, done\)[\s\S]*?if \(full\)[\s\S]*?store\.setPgroup\(/.test(rpJsPgf));
+                    ok('T4q.3 login 预拉回写走 store.setPgroup（msgs 键名漂移已修，缓存可被 getPgroup 读到）',
+                       /store\.setPgroup\(\(d\.messages \|\| \[\]\)\.slice\(-200\)/.test(loginJsPgf)
+                       && !/setStorageSync\('pgroup_cache_v1'/.test(loginJsPgf));
+                    // 行为锁：服务端清场场景——本地旧 seq=16，full 拉回空群 latest_seq=0
+                    rp.data.pLatestSeq = 16;
+                    rp.data.pMsgs = [{ seq: 16, from: 'gege', display: '哥哥', username: 'gege', body: '旧时代消息', ts: 1, msg_id: 'old' }];
+                    apiHandler = () => Promise.resolve({ messages: [], latest_seq: 0 });
+                    rp.loadPgroup(true);
+                    setImmediate(() => {
+                      ok('T4q.4 full 空群后 pLatestSeq 无条件取 0（不保留旧值 16）+旧消息清空',
+                         rp.data.pLatestSeq === 0 && rp.data.pMsgs.length === 0);
+                      const cached = storeStub.getPgroup();
+                      ok('T4q.5 full 空群后缓存同步回写为空（进群不再闪旧消息）',
+                         cached !== null && cached.latest_seq === 0 && cached.messages.length === 0);
+                      // seq 重启后增量 poll 以 after_seq=0 即可拉到新消息（自愈闭环）
+                      apiHandler = () => Promise.resolve({
+                        messages: [{ seq: 1, from: 'gege', display: '哥哥', username: 'gege', body: '清场后第一条', ts: 9, msg_id: 'n1' }],
+                        latest_seq: 1,
+                      });
+                      rp.loadPgroup(false);
+                      setImmediate(() => {
+                        const lastCall = apiCalls[apiCalls.length - 1];
+                        ok('T4q.6 增量 poll 以 after_seq=0 拉到 seq 重启后新消息（旧逻辑 after_seq=16 永拉不到）',
+                           /after_seq=0/.test(lastCall.path) && rp.data.pMsgs.length === 1
+                           && rp.data.pMsgs[0].seq === 1 && rp.data.pLatestSeq === 1);
+                        timers.forEach((t) => clearInterval(t));
+                        console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAIL`);
+                        process.exit(fail === 0 ? 0 : 1);
+                      });
+                    });
                   });
                       });   // T4i.7b
                     });     // 28→30

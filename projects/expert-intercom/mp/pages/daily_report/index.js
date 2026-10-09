@@ -457,11 +457,21 @@ Page({
       .then((d) => {
         const inc = d.messages || [];
         const pMsgs = full ? inc : this.data.pMsgs.concat(inc);
+        const shown = pMsgs.slice(-500);
+        // 亦菲 seq 2813①：服务端水位为准，latest_seq 取 ?? 语义（0 也是合法值）——
+        // 服务端清场后返回 latest_seq=0（falsy），旧 `||` 回退会保留本地旧 seq（如 16），
+        // 此后 poll after_seq=16 永远拉不到 seq 重启后的新消息（1,2,...）。
+        const nextSeq = (d.latest_seq === undefined || d.latest_seq === null)
+          ? this.data.pLatestSeq : d.latest_seq;
         this.setData({
-          pMsgs: this._markMine(pMsgs.slice(-500)),
-          pLatestSeq: d.latest_seq || this.data.pLatestSeq,
+          pMsgs: this._markMine(shown),
+          pLatestSeq: nextSeq,
           pErr: '',
         });
+        // 亦菲 seq 2813②：full 拉取成功后回写 pgroup_cache_v1（store.setPgroup 统一
+        // 收口，与 login 预拉同形态 {messages, latest_seq}）——服务端清空/换历史后
+        // 本地缓存同步更新，防进群闪旧消息一直落后到下次登录预拉。
+        if (full) { try { store.setPgroup(shown, nextSeq); } catch (e) { /* 缓存写失败不阻断 */ } }
         // 进私有群/收到新消息自动滚到底部（最新消息可见，哥哥 10/8 令③）
         if (inc.length || full) this._scrollBottom();
         if (done) done();
