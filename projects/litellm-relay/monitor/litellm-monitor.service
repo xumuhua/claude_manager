@@ -1,0 +1,24 @@
+[Unit]
+Description=LiteLLM relay upstream model status monitor (MON1)
+Documentation=file:///data/workspace/litellm_relay/monitor/README.md
+# 故意不 After/Wants litellm-relay：中转站挂了监测件照样要跑（那正是它要报的事）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=manager
+Group=manager
+EnvironmentFile=-/data/workspace/litellm_relay/monitor/monitor.env
+ExecStart=/usr/bin/python3 /data/workspace/litellm_relay/monitor/model_monitor.py --daemon
+Restart=always
+RestartSec=30
+# 生产同机好公民：内存/CPU 封顶，优先级让路
+MemoryMax=300M
+CPUQuota=20%
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
