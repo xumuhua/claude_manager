@@ -402,28 +402,25 @@ setImmediate(() => {
                /\.input-bar\s*\{[\s\S]*?bottom:\s*env\(safe-area-inset-bottom\)/.test(rpWxss2)
                && !/\.input-bar\s*\{[\s\S]*?bottom:\s*calc\(48px/.test(rpWxss2));
 
-            /* ---------- MP-KB1 键盘避让（哥哥 10/9 真机实测「键盘弹起挡住输入框」，
-               亦菲 seq 2719）：chat textarea / daily_report input 须 adjust-position+
-               cursor-spacing+bindkeyboardheightchange；dock/input-bar 内联 bottom=kbHeight
-               手动抬（login 悬浮钮同款先例），收起回贴屏底 ---------- */
+            /* ---------- MP-KB1 键盘避让（哥哥 10/9 真机实测两轮：先「挡住输入框」后
+               「叠加弹太高」，亦菲 seq 2719/2738）：定稿=只留 adjust-position+cursor-spacing
+               系统单轨（微信推 page 最稳）；手动抬轨（bindkeyboardheightchange+kbHeight
+               内联 bottom）与系统上推叠加双倍抬高，068fc92 双轨教训后整轨撤出。 ---------- */
             const chatWxml = fs.readFileSync(path.join(MP, 'pages/chat/index.wxml'), 'utf8');
             const rpWxml = fs.readFileSync(path.join(MP, 'pages/daily_report/index.wxml'), 'utf8');
             const chatJs = fs.readFileSync(path.join(MP, 'pages/chat/index.js'), 'utf8');
             const rpJs = fs.readFileSync(path.join(MP, 'pages/daily_report/index.js'), 'utf8');
-            ok('T4h.8 chat textarea 键盘避让三件套（adjust-position+cursor-spacing+bindkeyboardheightchange）',
+            ok('T4h.8 chat textarea 键盘避让=adjust-position+cursor-spacing 系统单轨',
                /<textarea[\s\S]*?adjust-position="\{\{true\}\}"/.test(chatWxml)
-               && /<textarea[\s\S]*?cursor-spacing="1[0-9]"/.test(chatWxml)
-               && /<textarea[\s\S]*?bindkeyboardheightchange="onKeyboardHeight"/.test(chatWxml));
-            ok('T4h.9 daily_report input 键盘避让三件套（同上）',
+               && /<textarea[\s\S]*?cursor-spacing="1[0-9]"/.test(chatWxml));
+            ok('T4h.9 daily_report input 键盘避让=adjust-position+cursor-spacing 系统单轨（同上）',
                /<input[\s\S]*?adjust-position="\{\{true\}\}"/.test(rpWxml)
-               && /<input[\s\S]*?cursor-spacing="1[0-9]"/.test(rpWxml)
-               && /<input[\s\S]*?bindkeyboardheightchange="onKeyboardHeight"/.test(rpWxml));
-            ok('T4h.10 chat dock 内联 bottom=kbHeight 手动抬（fixed 底栏不吃 adjust-position 的 page 上推）',
-               /class="dock"\s+style="\{\{kbHeight \? 'bottom:' \+ kbHeight \+ 'px' : ''\}\}"/.test(chatWxml)
-               && /onKeyboardHeight\(e\)\s*\{[\s\S]*?kbHeight/.test(chatJs));
-            ok('T4h.11 daily_report input-bar 内联 bottom=kbHeight 手动抬（同款）',
-               /class="input-bar"\s+style="\{\{kbHeight \? 'bottom:' \+ kbHeight \+ 'px' : ''\}\}"/.test(rpWxml)
-               && /onKeyboardHeight\(e\)\s*\{[\s\S]*?kbHeight/.test(rpJs));
+               && /<input[\s\S]*?cursor-spacing="1[0-9]"/.test(rpWxml));
+            ok('T4h.10 手动抬轨整轨撤出——两页 wxml 无 bindkeyboardheightchange、无 kbHeight 内联 bottom',
+               !/bindkeyboardheightchange/.test(chatWxml) && !/bindkeyboardheightchange/.test(rpWxml)
+               && !/kbHeight/.test(chatWxml) && !/kbHeight/.test(rpWxml));
+            ok('T4h.11 手动抬轨整轨撤出——两页 js 无 onKeyboardHeight/kbHeight 残留',
+               !/onKeyboardHeight|kbHeight/.test(chatJs) && !/onKeyboardHeight|kbHeight/.test(rpJs));
 
             timers.forEach((t) => clearInterval(t));
             console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAIL`);

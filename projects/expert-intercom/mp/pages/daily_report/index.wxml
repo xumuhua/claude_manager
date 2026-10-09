@@ -48,7 +48,7 @@
   </block>
 
   <!-- 输入条（两视图共用；发送按 mode 分发） -->
-  <view class="input-bar" style="{{kbHeight ? 'bottom:' + kbHeight + 'px' : ''}}">
+  <view class="input-bar">
     <!-- 私有群视图：操作钮（返回报告页 / 登出）贴输入框上方，大按钮快速点击（哥哥 10/8 令） -->
     <view wx:if="{{mode === 'pgroup'}}" class="pg-actions">
       <view class="pg-action-btn" bindtap="backToReport">← 返回报告页</view>
@@ -65,7 +65,6 @@
         disabled="{{sending}}"
         adjust-position="{{true}}"
         cursor-spacing="12"
-        bindkeyboardheightchange="onKeyboardHeight"
       />
       <view class="send-btn {{sending ? 'off' : ''}}" bindtap="onSend">发送</view>
     </view>
