@@ -169,18 +169,20 @@ def test_read_fallbacks(monkeypatch, tmp_path):
 
 
 def test_agg_stats():
+    # MP-STAT3 顺手修旧债：f5086c0 把延迟字段订正为 request_duration_ms（单位已是
+    # ms，勿再乘 1000），本测试当时没同步（base 即红的唯一旧债），此处对齐。
     rows = [
-        {"model": "kimi-han", "total_time": 2.0, "prompt_tokens": 100,
+        {"model": "kimi-han", "request_duration_ms": 2000.0, "prompt_tokens": 100,
          "completion_tokens": 50, "status": "success"},
-        {"model": "kimi-han", "total_time": 4.0, "prompt_tokens": 200,
+        {"model": "kimi-han", "request_duration_ms": 4000.0, "prompt_tokens": 200,
          "completion_tokens": 150, "status": "500"},
-        {"model": "zhipu", "total_time": 1.0, "prompt_tokens": 10,
+        {"model": "zhipu", "request_duration_ms": 1000.0, "prompt_tokens": 10,
          "completion_tokens": 10, "status": "success"},
     ]
     out = sp._agg_stats(rows)
     assert out["kimi-han"]["requests"] == 2
     assert out["kimi-han"]["errors"] == 1
-    # 延迟均值按全部样本摊（(2.0+4.0)/2=3.0s，错误请求延迟同样反映服务状态）
+    # 延迟均值按全部样本摊（(2000+4000)/2=3000ms，错误请求延迟同样反映服务状态）
     assert out["kimi-han"]["avg_latency_ms"] == 3000
     assert out["kimi-han"]["avg_prompt_tokens"] == 150
     assert out["kimi-han"]["avg_completion_tokens"] == 100
@@ -191,6 +193,141 @@ def test_agg_stats():
 def test_agg_stats_empty():
     assert sp._agg_stats([]) == {}
     assert sp._agg_stats(None) == {}
+
+
+# ---------- MP-STAT3：per-request 统计 PG 直连（方案二） ----------
+# 背景：relay 老 /spend/logs 是 litellm DEPRECATED 无分页端点（find_many 无 take、
+# num_logs 参数不存在），全表全列（jsonb 平均 3.3KB/行）灌 prisma engine → 内存
+# 十倍放大 → cgroup OOM 连坐 relay 整服（2026-10-09 00:19/00:25 两次实证）。
+# 修法=status_proxy 直连 PG 取标量列 top-500，relay 读端点永久绕行。
+
+def test_pg_fetch_no_env(monkeypatch):
+    monkeypatch.delenv("LITELLM_DATABASE_URL", raising=False)
+    rows, err = asyncio.run(sp._pg_fetch_spend_rows())
+    assert rows is None and "LITELLM_DATABASE_URL" in err
+
+
+def test_pg_fetch_no_driver(monkeypatch):
+    """驱动缺失只降级 stats（返回错误串），不抛异常炸接口。"""
+    monkeypatch.setenv("LITELLM_DATABASE_URL", "postgresql://u:p@127.0.0.1:5432/litellm")
+    monkeypatch.setitem(sys.modules, "asyncpg", None)   # import asyncpg → ImportError
+    rows, err = asyncio.run(sp._pg_fetch_spend_rows())
+    assert rows is None and "asyncpg" in err
+
+
+def _fake_asyncpg(recs=None, conn_err=None):
+    import types
+    fake = types.ModuleType("asyncpg")
+    state = {"closed": False, "sql": None, "kwargs": None}
+
+    class FakeConn:
+        async def fetch(self, sql, limit, timeout=None):
+            state["sql"] = (sql, limit, timeout)
+            return recs or []
+
+        async def close(self):
+            state["closed"] = True
+
+    async def connect(dsn, **kw):
+        state["kwargs"] = (dsn, kw)
+        if conn_err:
+            raise conn_err
+        return FakeConn()
+
+    fake.connect = connect
+    return fake, state
+
+
+def test_pg_fetch_rows_ok(monkeypatch):
+    monkeypatch.setenv("LITELLM_DATABASE_URL", "postgresql://u:p@127.0.0.1:5432/litellm")
+    fake, state = _fake_asyncpg(recs=[
+        ("anthropic/qwen3.8-max", "kimi-han", 1500, 100, 50, "success"),
+        ("anthropic/k3", "", -1, None, None, ""),      # 无别名/无延迟/空计数行
+    ])
+    monkeypatch.setitem(sys.modules, "asyncpg", fake)
+    rows, err = asyncio.run(sp._pg_fetch_spend_rows(limit=2))
+    assert err is None and len(rows) == 2
+    assert rows[0] == {"model": "anthropic/qwen3.8-max", "model_group": "kimi-han",
+                       "request_duration_ms": 1500.0, "prompt_tokens": 100.0,
+                       "completion_tokens": 50.0, "status": "success"}
+    assert rows[1]["request_duration_ms"] is None and rows[1]["model_group"] is None
+    # SQL 口径：只取标量列（严禁 jsonb 大字段）+ LIMIT 参数化 + 只读事务
+    sql, limit, timeout = state["sql"]
+    assert limit == 2 and "LIMIT $1" in sql
+    for bomb in ("messages", "response", "metadata", "proxy_server_request"):
+        assert bomb not in sql
+    assert "SELECT *" not in sql
+    dsn, kw = state["kwargs"]
+    assert dsn.startswith("postgresql://")
+    assert kw.get("server_settings", {}).get("default_transaction_read_only") == "on"
+    assert state["closed"] is True                    # 连接必归还
+    # 行形态与 _agg_stats 消费口径兼容
+    agg = sp._agg_stats(rows)
+    assert agg["kimi-han"]["avg_latency_ms"] == 1500
+    assert agg["anthropic/k3"]["avg_latency_ms"] is None
+
+
+def test_pg_fetch_conn_error(monkeypatch):
+    monkeypatch.setenv("LITELLM_DATABASE_URL", "postgresql://u:p@127.0.0.1:1/none")
+    fake, _ = _fake_asyncpg(conn_err=OSError("refused"))
+    monkeypatch.setitem(sys.modules, "asyncpg", fake)
+    rows, err = asyncio.run(sp._pg_fetch_spend_rows())
+    assert rows is None and err == "pg unreachable: OSError"
+
+
+async def _fake_relay_json_ok(session, headers, path, params=None, timeout_s=8):
+    if path == "/spend/logs":
+        raise AssertionError("collect_models 不得再打 relay /spend/logs（内存炸弹绕行）")
+    if path == "/health/liveliness":
+        return "alive", None
+    if path == "/model/info":
+        return {"data": [{"model_name": "kimi-han",
+                          "litellm_params": {"model": "anthropic/qwen3.8-max",
+                                             "api_base": "https://x.example"}}]}, None
+    return {}, None
+
+
+def test_collect_models_stats_pg(monkeypatch):
+    """collect_models ④ 走 PG 直连：stats_available=true + 聚合出数 + 零 relay 读。"""
+    monkeypatch.setenv("RELAY_MASTER_KEY", "k")
+    monkeypatch.setattr(sp, "_relay_json", _fake_relay_json_ok)
+    rows = [{"model": "anthropic/qwen3.8-max", "model_group": "kimi-han",
+             "request_duration_ms": 1200.0, "prompt_tokens": 10.0,
+             "completion_tokens": 5.0, "status": "success"}]
+
+    async def fake_pg(limit=sp.STATS_PG_LIMIT):
+        return rows, None
+    monkeypatch.setattr(sp, "_pg_fetch_spend_rows", fake_pg)
+    out = asyncio.run(sp.collect_models())
+    assert out["stats_available"] is True and out["stats_note"] is None
+    assert out["stats"]["kimi-han"]["requests"] == 1
+    assert out["stats"]["kimi-han"]["avg_latency_ms"] == 1200
+    assert "spend_logs" not in out["errors"]
+    assert out["litellm_alive"] is True               # ①②③ relay 路径不受影响
+
+
+def test_collect_models_pg_down_degrades(monkeypatch):
+    """PG 不可用只降级 stats（false+errors），relay 三源照常出数不炸接口。"""
+    monkeypatch.setenv("RELAY_MASTER_KEY", "k")
+    monkeypatch.setattr(sp, "_relay_json", _fake_relay_json_ok)
+
+    async def fake_pg(limit=sp.STATS_PG_LIMIT):
+        return None, "pg unreachable: OSError"
+    monkeypatch.setattr(sp, "_pg_fetch_spend_rows", fake_pg)
+    out = asyncio.run(sp.collect_models())
+    assert out["stats_available"] is False and out["stats"] is None
+    assert out["errors"]["spend_logs"] == "pg unreachable: OSError"
+    assert out["stats_note"]                          # 前端 banner 文案在位
+    assert len(out["models"]) == 1
+
+
+def test_relay_spend_logs_never_called():
+    """结构锁：collect_models 零 /spend/logs 调用（防回退到内存炸弹路径）。
+    按引号形态断言调用实参——注释里的背景叙述（无引号）不算违例。"""
+    import inspect
+    src = inspect.getsource(sp.collect_models)
+    assert '"/spend/logs"' not in src and "'/spend/logs'" not in src
+    assert "_pg_fetch_spend_rows" in src
 
 
 # ---------- 缓存 ----------

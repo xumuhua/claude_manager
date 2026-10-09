@@ -6,8 +6,13 @@
   heartbeat_dir 未配置即仅本机自采，缺哪台如实返回，前端不写死机器清单。
 - GET /api/status/models —— 中转站 LiteLLM（默认 http://127.0.0.1:9536）：
   /v1/models 清单、/health?mode=full 各上游健康、rotator_state.json 链头+轮转池、
-  config.yaml fallbacks；per-request 统计走 /spend/logs（SQLite 未就绪时
-  stats_available=false、stats 字段 null，结构现在就定好，前端按 null 渲染占位）。
+  config.yaml fallbacks；per-request 统计走 PG 直连（MP-STAT3 方案二：
+  LiteLLM_SpendLogs 标量列最近 500 条。relay 老 /spend/logs 是 litellm
+  DEPRECATED 无分页端点——find_many 无 take、num_logs 参数不存在，全表全列
+  （含 messages/response jsonb 平均 3.3KB/行）灌进 prisma query engine，内存
+  十倍放大→cgroup OOM 连坐整个 relay（2026-10-09 00:19/00:25 两次实证，
+  engine anon-rss 1.4G），永久绕行）。PG 不可用时 stats_available=false、
+  stats 字段 null，前端按 null 渲染占位。
 
 新鲜度判读（README 既定 6min 线）：心跳 ts 超 6min=stale；AWS 机 ts 为 UTC
 （慢 8h），按 host 前缀归一时差后统一判定，不做 ssh 探测（本轮只展示级别）。
@@ -335,8 +340,63 @@ ROTATOR_STATE = "/data/workspace/litellm_relay/rotator_state.json"
 RELAY_CONFIG = "/data/workspace/litellm_relay/config.yaml"
 STATS_SAMPLE_N = 50                        # 哥哥口径：每模型取最近 N 条求均值
 
-# 无 DB 时 spend/logs 不可用的标记错误体（实测 500 "ErrorDatabase not connected"）
-_DB_DOWN_MARK = "Database not connected"
+# ---------- per-request 统计：PG 直连（MP-STAT3 方案二，亦菲 seq 2828）----------
+# 不再经 relay /spend/logs：该 DEPRECATED 端点无分页全表读，会把 prisma query
+# engine 内存打爆（OOM 连坐 relay 整服重启），且对 litellm/prisma 版本漂移脆弱
+# （0.15.0 reconnect AttributeError 事故同源）。直连 PG 只取标量列 top-N，
+# 毫秒级、免驱动 relay 读端点、版本漂移免疫。
+PG_DSN_ENV = "LITELLM_DATABASE_URL"   # 与 litellm-relay unit 同源（keys/litellm-pg.env）
+STATS_PG_LIMIT = 500                  # 最近 N 条（与原 /spend/logs 请求的窗口一致）
+STATS_PG_TIMEOUT_S = 6                # 本机 PG connect+top-N 排序毫秒级，6s 纯兜底
+
+# 只取聚合所需标量列——严禁 SELECT *（messages/response/metadata jsonb 是内存炸弹本体）
+_SPEND_SQL = (
+    "SELECT model, COALESCE(model_group, ''), COALESCE(request_duration_ms, -1), "
+    "prompt_tokens, completion_tokens, COALESCE(status, '') "
+    'FROM "LiteLLM_SpendLogs" ORDER BY "startTime" DESC LIMIT $1'
+)
+
+
+async def _pg_fetch_spend_rows(limit=STATS_PG_LIMIT):
+    """PG 直连取最近 limit 条 spend 行（标量列）。返回 (rows, err)。
+
+    rows 字段形态与 _agg_stats 消费口径一致（model/model_group/status/
+    request_duration_ms/prompt_tokens/completion_tokens）；任何失败降级
+    (None, err) 不炸接口。asyncpg 惰性导入：驱动缺失只降级 stats，不影响
+    servers/models 其余数据源。
+    """
+    dsn = os.environ.get(PG_DSN_ENV) or ""
+    if not dsn:
+        return None, f"env {PG_DSN_ENV} 未设置"
+    try:
+        import asyncpg
+    except ImportError:
+        return None, "pg driver asyncpg 未安装"
+    try:
+        conn = await asyncpg.connect(
+            dsn=dsn, timeout=STATS_PG_TIMEOUT_S,
+            server_settings={"default_transaction_read_only": "on"})  # 统计路径只读硬保障
+        try:
+            recs = await conn.fetch(_SPEND_SQL, limit, timeout=STATS_PG_TIMEOUT_S)
+        finally:
+            try:
+                await conn.close()
+            except Exception:                       # noqa: BLE001 — close 失败不改变结果
+                pass
+    except Exception as e:                          # noqa: BLE001 — 逐项降级（含超时/拒连/SQL 错）
+        return None, f"pg unreachable: {e.__class__.__name__}"
+    rows = []
+    for r in recs:
+        dur = r[2]
+        rows.append({
+            "model": r[0] or None,
+            "model_group": r[1] or None,
+            "request_duration_ms": None if dur is None or dur < 0 else float(dur),
+            "prompt_tokens": float(r[3] or 0),
+            "completion_tokens": float(r[4] or 0),
+            "status": r[5] or "",
+        })
+    return rows, None
 
 
 def _relay_headers(cfg):
@@ -450,8 +510,8 @@ async def collect_models():
         "rotator": _read_rotator(),
         "fallbacks": _read_fallbacks(),
         "stats_available": False,
-        "stats": None,               # SQLite 就绪后：{model: {...}}
-        "stats_note": "SQLite 未落地，per-request 统计暂缺",
+        "stats": None,               # PG 就绪时：{model: {...}}
+        "stats_note": "per-request 统计暂不可用",
         "errors": {},
     }
     if hdr_err:
@@ -497,17 +557,15 @@ async def collect_models():
                     "provider": (api_base or "").split("//")[-1].split("/")[0],
                     "state": state,
                 })
-        # ④ per-request 统计（SQLite 未就绪 → null+stats_available:false）
-        spend, spend_err = await _relay_json(
-            session, headers, "/spend/logs",
-            params={"num_logs": 500, "include": "all"}, timeout_s=10)
-        if spend_err or not isinstance(spend, (dict, list)) or (isinstance(spend, dict) and "data" not in spend):
-            payload["errors"]["spend_logs"] = spend_err or _DB_DOWN_MARK
-        else:
-            rows = spend if isinstance(spend, list) else (spend.get("data") or [])
-            payload["stats_available"] = True
-            payload["stats_note"] = None
-            payload["stats"] = _agg_stats(rows)
+    # ④ per-request 统计：PG 直连（方案二）——relay /spend/logs 无分页读=prisma
+    #    engine 内存炸弹（OOM 连坐 relay 整服），永久绕行；PG 失败只降级 stats
+    rows, pg_err = await _pg_fetch_spend_rows()
+    if pg_err:
+        payload["errors"]["spend_logs"] = pg_err
+    else:
+        payload["stats_available"] = True
+        payload["stats_note"] = None
+        payload["stats"] = _agg_stats(rows)
     return payload
 
 
