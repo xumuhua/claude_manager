@@ -238,7 +238,10 @@ Page({
 
   // ---------- MP-REPORT-UX②：15s 无操作自动切报告页（草稿保留） ----------
   // 触发动作：输入/点发送/切会话/点菜单/点摘要/滚动/长按/录音/快捷指令等任何 bindtap/
-  // bindinput/bindscroll 都视同活动。到点 wx.switchTab 到日常报告页（tab 页正确切法，
+  // bindinput/bindscroll 都视同活动。MP-HIST2⑤（哥哥 10/9 原话）扩为【全屏交互事件】：
+  // 「屏幕有按动或者拖动也要重算时间」——页面 catchtouchstart（任意按下/拖动起点）
+  // 即刷新，触摸/点击/滚动/拖动全覆盖；2505 私有群与本页同一口径（daily_report
+  // 页的 wxml 同款挂法）。到点 wx.switchTab 到日常报告页（tab 页正确切法，
   // navigateTo 对 tab 页会 fail）。草稿已随 onInput 实时存 storage。
   startIdleWatch() {
     this.stopIdleWatch();
@@ -249,6 +252,9 @@ Page({
     if (this._idleTimer) { clearInterval(this._idleTimer); this._idleTimer = null; }
   },
   touchIdle() { this._idleLast = Date.now(); },
+  // MP-HIST2⑤：全屏交互事件统一入口——wxml 页面根节点 catchtouchstart 挂这里
+  // （catch 形态拦截冒泡不阻塞子元素 bindtap/bindinput，任意按下/拖动起点即刷新）
+  onPageTouch() { this.touchIdle(); },
   checkIdle() {
     if (Date.now() - (this._idleLast || 0) < IDLE_MS) return;
     this.stopIdleWatch();

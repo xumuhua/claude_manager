@@ -1,13 +1,13 @@
 {
   "pages": [
+    "pages/daily_report/index",
     "pages/login/index",
     "pages/chat/index",
     "pages/repos/index",
     "pages/repo/tree",
     "pages/repo/doc",
     "pages/experts/index",
-    "pages/status/index",
-    "pages/daily_report/index"
+    "pages/status/index"
   ],
   "window": {
     "navigationBarBackgroundColor": "#FFFFFF",
@@ -21,14 +21,28 @@
     "selectedColor": "#2563EB",
     "backgroundColor": "#FFFFFF",
     "list": [
-      { "pagePath": "pages/daily_report/index", "text": "📋 日常报告" },
-      { "pagePath": "pages/chat/index", "text": "💬 对话" },
-      { "pagePath": "pages/status/index", "text": "🖥️ 状态" },
-      { "pagePath": "pages/repos/index", "text": "📖 阅读" }
+      {
+        "pagePath": "pages/daily_report/index",
+        "text": "📋 日常报告"
+      },
+      {
+        "pagePath": "pages/chat/index",
+        "text": "💬 对话"
+      },
+      {
+        "pagePath": "pages/status/index",
+        "text": "🖥️ 状态"
+      },
+      {
+        "pagePath": "pages/repos/index",
+        "text": "📖 阅读"
+      }
     ]
   },
   "permission": {
-    "scope.record": { "desc": "用于语音输入转文字（可编辑后再发送）" }
+    "scope.record": {
+      "desc": "用于语音输入转文字（可编辑后再发送）"
+    }
   },
   "style": "v2",
   "darkmode": true,

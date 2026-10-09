@@ -11,6 +11,7 @@ const K = {
   aiCardFold: 'ai_card_fold', // { key: bool }
   treeSort: 'tree_sort',      // MP-UX4：tree 列表排序记忆（'name' | 'mtime'）
   draft: (page) => 'chat_draft_' + page,  // MP-REPORT-UX：聊天类页面输入框草稿（15s 无操作切页时保留）
+  pgroup: 'pgroup_msgs_v1',   // MP-HIST2③：私有群消息预拉缓存（登录后即后台拉，输暗号进群秒见历史）
 };
 
 function get(key, def) {
@@ -67,6 +68,16 @@ const setTreeSort = (mode) => set(K.treeSort, mode === 'mtime' ? 'mtime' : 'name
 const getDraft = (page) => get(K.draft(page), '');
 const setDraft = (page, text) => set(K.draft(page), text);
 const clearDraft = (page) => { try { wx.removeStorageSync(K.draft(page)); } catch (e) { /* 忽略 */ } };
+
+// ---- MP-HIST2③：私有群消息预拉缓存（哥哥 10/9 令：登录成功即后台拉，
+// 用户输暗号进群立刻看到历史不等转圈）----
+// 形态 { messages, latest_seq, at }；读时返回 null 表示无缓存/坏缓存（调用方回退请求）。
+const getPgroup = () => {
+  const v = get(K.pgroup, null);
+  return (v && Array.isArray(v.messages) && typeof v.latest_seq === 'number') ? v : null;
+};
+const setPgroup = (messages, latestSeq) => set(K.pgroup, { messages, latest_seq: latestSeq, at: Date.now() });
+const clearPgroup = () => { try { wx.removeStorageSync(K.pgroup); } catch (e) { /* 忽略 */ } };
 
 // ---- MP-PERF2：tree 层缓存持久化（页面销毁/冷启动后仍可命中，TTL 30min）----
 // 只存 tree 列表与 mtime 图（不存文件内容）；LRU 体积上限 cfg.TREE_CACHE_MAX_BYTES，
@@ -154,6 +165,7 @@ module.exports = {
   getSummary, setSummary, getCardFold, setCardFold,
   getTreeSort, setTreeSort,
   getDraft, setDraft, clearDraft,
+  getPgroup, setPgroup, clearPgroup,
   getTreeLevels, putTreeLevel, delTreeLevel,
   getTreeMtimes, putTreeMtimes, delTreeMtimes,
   getDoc, putDoc, listDocs, docKey,

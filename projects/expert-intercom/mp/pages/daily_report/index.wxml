@@ -1,11 +1,14 @@
 <!-- pages/daily_report — MP-TABS-REPORT 日常报告页：报告区 / 私有群双视图 -->
-<view class="page">
+<!-- MP-HIST2⑤（哥哥 10/9 原话）：15s 闲置判定扩为全屏交互事件——根节点
+     catchtouchstart 挂 onPageTouch，屏幕任意按下/拖动起点都重置计时
+     （catch 形态拦截冒泡不阻塞子元素事件，与 chat 页同一口径） -->
+<view class="page" catchtouchstart="onPageTouch">
 
   <!-- ============ 报告视图 ============ -->
   <block wx:if="{{mode === 'report'}}">
 
-    <!-- 历史日期列表（MP-HIST1②，哥哥 10/9 令）：近 7 天首屏，「更早 7 天」续加，
-         30 天封顶；点日期切换报告区+问答上下文 -->
+    <!-- 历史日期列表（MP-HIST1②，哥哥 10/9 令；MP-HIST2② 修正：无条件显示日期本身——
+         不管有无报告都出页签，探测失败仅绿点不亮；日期按本地时区，纯日期文本） -->
     <scroll-view scroll-x class="date-strip" wx:if="{{dateList.length}}">
       <view class="date-strip-in">
         <view wx:for="{{dateList}}" wx:key="date"
@@ -36,9 +39,9 @@
       </view>
     </view>
 
-    <!-- LLM 对话框（问报告细节；暗号 2505 切私有群） -->
+    <!-- LLM 对话框（问报告细节；暗号口径哥哥 10/9 令④：明文提示撤出，只留问报告引导） -->
     <view class="sec-title">💬 问报告</view>
-    <view wx:if="{{!chatMsgs.length}}" class="chat-hint">基于今日三份报告提问，例如「量化日报今天主线是什么」。输入 2505 进入私有聊天群。</view>
+    <view wx:if="{{!chatMsgs.length}}" class="chat-hint">基于今日报告提问，例如「量化日报今天主线是什么」。</view>
     <view wx:for="{{chatMsgs}}" wx:key="index" class="chat-row {{item.role === 'user' ? 'me' : ''}}">
       <view class="chat-bubble {{item.role}}">{{item.text}}</view>
     </view>

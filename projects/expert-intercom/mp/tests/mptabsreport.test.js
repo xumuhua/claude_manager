@@ -519,6 +519,32 @@ setImmediate(() => {
                        /onLoad\(\)\s*\{[\s\S]*?_restoreChat\(\)/.test(rpJs)
                        && /pickDate[\s\S]*?_persistChat\(\)[\s\S]*?_restoreChat\(\)/.test(rpJs));
 
+                    /* ---------- MP-HIST2 哥哥 10/9 调整单×4 ---------- */
+                    // ①默认 tab=日常报告（login enterApp 落 daily_report 不再 chat）
+                    const loginJs = fs.readFileSync(path.join(MP, 'pages/login/index.js'), 'utf8');
+                    ok('T4j.1 登录成功默认进日常报告页（switchTab daily_report）',
+                       /enterApp\(\)\s*\{[\s\S]*?switchTab\(\{[^}]*url:\s*'\/pages\/daily_report\/index'/.test(loginJs));
+                    ok('T4j.2 旧默认页 chat 在 login 链路已撤（enterApp 不再指 chat）',
+                       !/enterApp\(\)\s*\{[\s\S]*?switchTab\(\{[^}]*url:\s*'\/pages\/chat\/index'/.test(loginJs));
+                    // ②日期条无条件显示日期——wxml 不过滤 avail，绿点由 avail>0 显式控制
+                    ok('T4j.3 日期条无条件渲染（dateList 不过滤 avail，绿点独立条件）',
+                       /wx:for="\{\{dateList\}\}"/.test(rpWxml)
+                       && !/dateList\.filter/.test(rpJs)
+                       && /item\.avail > 0/.test(rpWxml));
+                    ok('T4j.4 探测失败仍入列（avail=-1 不阻塞日期条显示）',
+                       /avail:\s*-1/.test(rpJs) && /\.catch\(\(\)\s*=>\s*\(\{ date: ds, avail: -1 \}\)\)/.test(rpJs));
+                    // ③登录后预拉私有群历史缓存
+                    ok('T4j.5 登录成功后台预拉 pgroup 历史（pgroup_cache_v1 落盘）',
+                       /pgroup_cache_v1/.test(loginJs) && /\/api\/pgroup\/messages\?limit=200/.test(loginJs));
+                    ok('T4j.6 进群先读缓存再接口校准（enterPgroup 秒开）',
+                       /enterPgroup[\s\S]*?pgroup_cache_v1[\s\S]*?loadPgroup\(true\)/.test(rpJs));
+                    ok('T4j.7 登出清 pgroup 缓存（防换账号串历史）',
+                       /onLogout[\s\S]*?removeStorageSync\('pgroup_cache_v1'\)/.test(rpJs));
+                    // ④2505 明文提示撤出——hint 只留问报告引导
+                    ok('T4j.8 报告页 hint 无 2505 明文（密码不写门口）',
+                       !/输入 2505 进入私有聊天群/.test(rpWxml)
+                       && /基于今日报告提问/.test(rpWxml));
+
                     timers.forEach((t) => clearInterval(t));
                     console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAIL`);
                     process.exit(fail === 0 ? 0 : 1);

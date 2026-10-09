@@ -79,6 +79,8 @@ Page({
 
   // ---------- MP-REPORT-UX②：15s 无操作自动切报告页（草稿保留） ----------
   // 触发动作：输入/点发送/入群/退群/操作钮/登出（任何 bindtap/bindinput 都视同活动）。
+  // MP-HIST2⑤（哥哥 10/9 原话）扩为全屏交互事件——根节点 catchtouchstart 见
+  // onPageTouch（屏幕任意按下/拖动起点都重置计时）。
   // 到点仅当还在 pgroup 视图才切回 report——报告视图 15s 无操作本就该停着不折腾。
   // 草稿保 storage（store.setDraft），回 pgroup 时恢复（enterPgroup 读回）。
   startIdleWatch() {
@@ -90,6 +92,10 @@ Page({
     if (this._idleTimer) { clearInterval(this._idleTimer); this._idleTimer = null; }
   },
   touchIdle() { this._idleLast = Date.now(); },
+  // MP-HIST2⑤（哥哥 10/9 原话「屏幕有按动或者拖动也要重算时间」）：闲置判定从
+  // 仅输入事件扩为【全屏交互事件】——wxml 页面根节点 catchtouchstart 挂这里，
+  // 触摸/点击/滚动/拖动起点全覆盖；与 chat 页同一口径（2505 私有群共用本输入条）。
+  onPageTouch() { this.touchIdle(); },
   checkIdle() {
     if (this.data.mode !== MODE_PGROUP) return;
     if (Date.now() - (this._idleLast || 0) < IDLE_MS) return;
@@ -126,6 +132,12 @@ Page({
   // ---------- MP-HIST1② 历史日期列表（哥哥 10/9 令：报告页含历史日期，控制单次刷新条目） ----------
   // 方案=前端逐日请求近 N 天（复用单日 /api/daily_report 接口与其 10min 进程内缓存，
   // 后端零改动零重启）；首屏 7 天，「更早 7 天」按钮续加，30 天封顶。
+  // MP-HIST2②（哥哥 10/9 原话「日期条缺今天/昨天页签」修正）：
+  // ①日期条【无条件显示日期本身】——不管当日有无报告，探测失败（avail=-1）也照常
+  //   出页签，仅绿点不亮（绿点=当日有报告产出才标）；
+  // ②日期一律按【本地时区】生成（_fmtDate 取 getFullYear/getMonth/getDate，
+  //   与后端报告日期同口径），禁 UTC 换算防跨日错位；
+  // ③页签是纯日期文本（MM-DD/今天 MM-DD），不带「报告」二字历史日期标签页形式。
   loadHistoryDates(extraDays) {
     if (this.data.historyLoading) return;
     const base = this.data.historyDays || this.data.dateList.length;
@@ -140,7 +152,9 @@ Page({
       probes.push(
         api.request({ path: '/api/daily_report?date=' + ds, timeout: 30000 })
           .then((r) => ({ date: ds, avail: (r.reports || []).filter((x) => x.available).length }))
-          .catch(() => ({ date: ds, avail: -1 }))   // -1=探测失败（不阻塞列表）
+          // MP-HIST2②：探测失败（网络/服务异常）也不丢日期页签——avail=-1 照常入列，
+          // 仅绿点不亮（wxml 绿点条件 item.avail > 0），日期条无条件显示日期本身
+          .catch(() => ({ date: ds, avail: -1 }))
       );
     }
     Promise.all(probes).then((rows) => {
@@ -274,6 +288,20 @@ Page({
     let draft = '';
     try { draft = store.getDraft(DRAFT_KEY) || ''; } catch (e) { /* 忽略 */ }
     this.setData({ mode: MODE_PGROUP, pErr: '', inputVal: draft, myUser: this._myUsername() });
+    // 哥哥 10/9 令③：登录时已后台预拉私有群历史（login → pgroup_cache_v1）。
+    // 先用缓存秒开（用户进群立刻看到历史，不用等转圈），再照常 full 拉一次校准
+    // （缓存可能落后于进群时刻的新消息；校准失败也不影响缓存已渲染的内容）。
+    // MP-HIST2 收口：经 store.getPgroup 读（统一口径+坏缓存过滤），键名不变同源。
+    try {
+      const cache = store.getPgroup();
+      if (cache && cache.messages.length) {
+        this.setData({
+          pMsgs: this._markMine(cache.messages.slice(-500)),
+          pLatestSeq: cache.latest_seq || 0,
+        });
+        this._scrollBottom();
+      }
+    } catch (e) { /* 缓存损坏静默跳过，走接口 */ }
     this.loadPgroup(true);
     this.startPoll();
     this.touchIdle();
@@ -321,6 +349,7 @@ Page({
     cfg.clearToken();
     try { wx.removeStorageSync('display_name'); } catch (e) { /* 忽略 */ }
     try { wx.removeStorageSync('login_cred'); } catch (e) { /* 忽略 */ }
+    try { wx.removeStorageSync('pgroup_cache_v1'); } catch (e) { /* 忽略 */ }   // 哥哥 10/9 令③：预拉缓存随登出清，防换账号串历史（store.clearPgroup 同键）
     wx.reLaunch({ url: '/pages/login/index' });
   },
 

@@ -1,7 +1,10 @@
 // pages/login — F7 登录页：用户名+密码 → POST /login → token 入 storage → 进主页
 // 启动流程：本页为入口页，已有 token（storage 或 config.local.js 旁路）直接放行进主页。
+// MP-HIST2①③（哥哥 10/9 令）：登录成功后默认落日常报告页；后台预拉私有群历史
+// 入 storage（用户输暗号进群秒见历史不等转圈）。
 const cfg = require('../../config');
 const api = require('../../utils/api');
+const store = require('../../utils/store');
 
 Page({
   data: {
@@ -38,8 +41,9 @@ Page({
     } catch (e) { /* 同上 */ }
   },
 
+  // 哥哥 10/9 令①：进入小程序初始页面=日常报告（默认 tab 从对话改为日常报告）
   enterApp() {
-    wx.switchTab({ url: '/pages/chat/index' });
+    wx.switchTab({ url: '/pages/daily_report/index' });
   },
 
   onInput(e) {
@@ -83,6 +87,21 @@ Page({
       // （多账号共用 agent token 时服务端据此区分 gege/nana 取展示名）
       if (data.login_cred) wx.setStorageSync('login_cred', data.login_cred);
       else wx.removeStorageSync('login_cred');   // 旧服务端无此字段时清残留防串号
+      // 哥哥 10/9 令③：登录成功即后台预拉 2505 私有群历史缓存（用户输暗号进群
+      // 立刻看到历史，不用等转圈）。静默拉，失败不影响登录主流程。
+      try {
+        api.request({ path: '/api/pgroup/messages?limit=200', timeout: 15000 })
+          .then((d) => {
+            try {
+              wx.setStorageSync('pgroup_cache_v1', {
+                msgs: (d.messages || []).slice(-200),
+                latest_seq: d.latest_seq || 0,
+                at: Date.now(),
+              });
+            } catch (e) { /* 满则忽略 */ }
+          })
+          .catch(() => { /* 静默失败：进群时仍有接口兜底 */ });
+      } catch (e) { /* 同步异常也兜住 */ }
       this.enterApp();
     } catch (e) {
       // F7.2：区分密码失败(401/AUTH_FAILED) vs 网络问题(code=NETWORK，errMsg 是 wx.request 原始错误)
