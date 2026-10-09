@@ -54,8 +54,13 @@ python3 model_monitor.py --report --json   # 机器可读（将来小程序状�
 python3 model_monitor.py --events 20       # 最近 20 条事件
 python3 model_monitor.py --once            # 立刻跑一轮（手工巡检/排障）
 python3 model_monitor.py --once --dry-run  # 跑一轮，告警只打印不发送
-python3 model_monitor.py --selftest        # 离线自测 75 条（零外网零生产写入，本地 stub）
+python3 model_monitor.py --selftest        # 离线自测 88 条（零外网零生产写入，本地 stub）
 python3 model_monitor.py --demo            # 真实告警演示（见下）
+
+# 人工说明位（MANUAL_OVERRIDE，见下节）
+python3 model_monitor.py --flag kimi-xia SUSPECT --note "订阅真伪待哥哥确认"
+python3 model_monitor.py --note kimi-xia "10-10 起探测恢复 200"
+python3 model_monitor.py --flag kimi-xia NONE      # 清除标记（备注留着）
 ```
 
 查库（本机无 sqlite3 CLI，用 python 即可）：
@@ -73,7 +78,7 @@ EOF
 
 | 表 | 一行是什么 | 关键字段 |
 | --- | --- | --- |
-| `target` | 一个监测对象的当前状态（含去抖中间态） | `state` 已认定状态 / `pending`+`pending_n` 去抖中 / `state_since` / `fail_streak` / `last_err` 最近错误摘要 / `n_probe`+`n_fail` 累计 |
+| `target` | 一个监测对象的当前状态（含去抖中间态） | `state` 已认定状态 / `pending`+`pending_n` 去抖中 / `state_since` / `fail_streak` / `last_err` 最近错误摘要 / `n_probe`+`n_fail` 累计 / `manual_flag`+`manual_note`+`manual_since` 人工说明位 |
 | `probe` | 一次探测（每轮每目标一行，默认留 14 天） | `ts`/`target`/`state` 原始判定/`committed` 判定前的已认定态/`status`/`ms`/`err` |
 | `event` | 一次「值得记的事」 | `kind`（`quota_exhausted`/`state_change`/`recovered`/`head_switch`/`target_vanished`/`rotator_stall`/`config_parse_error`/`log_*`）/`prev`→`cur`/`summary`/`alerted` 是否已发过知会 |
 | `meta` | 水位与杂项 | `rotator_head` 链头 / `rotator_last_rotate` / `log_off:*` 日志扫描偏移 / `entry_alias` 浮动入口指向 / `last_cycle` |
@@ -90,6 +95,18 @@ EOF
 ```
 
 投递口径：hub 与中转站同机走 `127.0.0.1:8765`，会话 **`dm_coder`**（= coder↔yifei 信道，与 rotator 告警同口径同信道；hub 配置里并不存在 `dm_yifei` 这个会话），`from=coder`、`mentions` 一律置空（知会不是点火源，别 @ 出别家 supervisor）、`reply_to=null`。token 从 `/home/manager/keys/rotator-alert.env`（`ROTATOR_ALERT_TOKEN`，与 rotator 共用）或环境变量 `MON_ALERT_TOKEN` 取，**不落库、不进正文、不进 git**。
+
+## 人工说明位（MANUAL_OVERRIDE）
+
+探测只认 HTTP 事实，但有些事实**需要人判读**：比如某上游订阅其实已失效、只是端点仍返回 200（10-10 亦菲 seq 2852 观察：kimi-xia 原订阅 403、现探测 200，真伪待哥哥确认）。这时不要改探测逻辑、也不要手工改库里的 `state`——挂一个人工说明位：
+
+| flag | 含义 | 效果 |
+| --- | --- | --- |
+| `SUSPECT` | 探测虽 200，但人工判定可信度存疑 | `--report` 里状态带 `*` 号并单列说明；该目标的告警正文自动附 `⚠人工标记 SUSPECT（备注）` |
+| `IGNORE` | 已知长期故障，别为它吵人 | 照常探测、照常落库、照常记事件（`alerted=0` 可追溯），但**不发 dm** |
+| `NONE` | 清除标记 | 备注保留，标记清掉 |
+
+`--note` 是纯人话备注（随告警与 `--report` 展示，过 `redact()` 抹密钥）。三条铁律：**①人工标记永不改写探测真值**（`state` 永远是探测判定的结果，人工判读只加在展示与告警层）②每次改动都留 `manual_override` 事件行（谁改的、什么时候、改成什么，可追溯）③老库在线补列（`ALTER TABLE ADD COLUMN`），既有行与历史零丢失。
 
 ## 真实告警演示（`--demo`）
 
@@ -122,4 +139,4 @@ EOF
 
 ## 自测
 
-`python3 model_monitor.py --selftest` → **75 条 ALL PASS**，零外网零生产写入（上游与 hub 都用本地 stub，库与日志落临时目录）。覆盖：分类器 15 条（含真 403-额度报文）/ 配置解析与动态发现 10 条 / 全链路 34 条（去抖、边沿触发、恢复、合并、链头切换、上游消失、轮转停摆、hub 不可达容错、demo 演练路径）/ 日志增量扫描 10 条（ANSI 剥离、偏移续读、轮转归零、首次只吃尾部窗口不回放历史）/ 只读纪律与保留期 6 条。
+`python3 model_monitor.py --selftest` → **88 条 ALL PASS**，零外网零生产写入（上游与 hub 都用本地 stub，库与日志落临时目录）。覆盖：分类器 15 条（含真 403-额度报文）/ 配置解析与动态发现 10 条 / 全链路 34 条（去抖、边沿触发、恢复、合并、链头切换、上游消失、轮转停摆、hub 不可达容错、demo 演练路径）/ 日志增量扫描 10 条（ANSI 剥离、偏移续读、轮转归零、首次只吃尾部窗口不回放历史）/ 只读纪律与保留期 6 条 / 人工说明位 13 条（老库在线迁移、redact、不改写真值、IGNORE 抑制仍可追溯、SUSPECT 随告警发出）。

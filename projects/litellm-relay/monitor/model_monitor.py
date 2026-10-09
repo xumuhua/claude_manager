@@ -463,7 +463,10 @@ CREATE TABLE IF NOT EXISTS target(
   last_ok     TEXT,
   last_err    TEXT,
   n_probe     INTEGER DEFAULT 0,
-  n_fail      INTEGER DEFAULT 0
+  n_fail      INTEGER DEFAULT 0,
+  manual_flag TEXT DEFAULT '',
+  manual_note TEXT DEFAULT '',
+  manual_since TEXT
 );
 CREATE TABLE IF NOT EXISTS probe(
   id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -493,6 +496,24 @@ CREATE INDEX IF NOT EXISTS idx_event_ts ON event(ts);
 """
 
 
+MANUAL_COLS = (("manual_flag", "TEXT DEFAULT ''"),
+               ("manual_note", "TEXT DEFAULT ''"),
+               ("manual_since", "TEXT"))
+
+
+def _migrate(conn):
+    """老库在线补列（MON1 v1.1 人工说明位）——ALTER 只加列，既有行与历史零丢失。"""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(target)")}
+    added = []
+    for col, decl in MANUAL_COLS:
+        if col not in cols:
+            conn.execute(f"ALTER TABLE target ADD COLUMN {col} {decl}")
+            added.append(col)
+    if added:
+        conn.commit()
+    return added
+
+
 def db_open(path=None):
     path = path or DB_PATH
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -501,8 +522,33 @@ def db_open(path=None):
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=8000")
     conn.executescript(SCHEMA)
+    _migrate(conn)
     conn.commit()
     return conn
+
+
+def set_manual(conn, name, flag=None, note=None):
+    """人工说明位（亦菲 seq 2852 观察单）：探测真值一个字不改，只在展示/告警层加人工判读。
+
+    flag：SUSPECT=探测虽 200 但人工判定可信度存疑（如订阅真伪待核）；
+          IGNORE=已知长期故障，别为它告警（仍照常探测落库）；
+          NONE/空=清除。
+    note：人话备注，会随该目标的告警正文一起发出去，也在 --report 里显示。
+    """
+    row = target_get(conn, name)
+    if row is None:
+        return False, f"目标 {name} 不在库里（先跑一轮 --once 让它纳管）"
+    if flag is not None:
+        f = "" if flag.upper() in ("NONE", "CLEAR", "") else flag.upper()
+        conn.execute("UPDATE target SET manual_flag=?, manual_since=? WHERE name=?",
+                     (f, now_iso() if f else None, name))
+    if note is not None:
+        conn.execute("UPDATE target SET manual_note=? WHERE name=?", (redact(note), name))
+    r = target_get(conn, name)
+    add_event(conn, "manual_override", name, None, r["manual_flag"] or None,
+              f"人工说明位：flag={r['manual_flag'] or '（清除）'} note={r['manual_note'] or '（空）'}")
+    conn.commit()
+    return True, f"{name}: flag={r['manual_flag'] or '-'} note={r['manual_note'] or '-'}"
 
 
 def meta_get(conn, k, default=None):
@@ -628,12 +674,20 @@ def _commit_transition(conn, name, prev, new, res, alerts, demo=0):
     if res.get("latency_ms") is not None:
         summary += f"｜{res['latency_ms']}ms"
     eid = add_event(conn, kind, name, prev, new, summary, demo=demo)
+    # 人工说明位：随告警一起发出去，防「探测 200 但订阅其实已失效」这类误导读
+    row = target_get(conn, name)
+    flag = (row["manual_flag"] or "") if row else ""
+    note = (row["manual_note"] or "") if row else ""
+    manual = (f"｜⚠人工标记 {flag}" if flag else "") + (f"（{note}）" if note else "")
+    if want_alert and flag == "IGNORE":
+        want_alert = False
+        log(f"[人工 IGNORE] {name} 告警被抑制（{note or '无备注'}）")
     if want_alert:
         head = "恢复" if kind == "recovered" else "异常"
         alerts.append({
             "kind": kind, "event_id": eid, "target": name,
             "line": f"· {head}｜{name}：{(prev or '首见')} → {new}"
-                    f"（{HUMAN_STATE.get(new, new)}）{('｜' + res['err']) if res.get('err') else ''}",
+                    f"（{HUMAN_STATE.get(new, new)}）{('｜' + res['err']) if res.get('err') else ''}{manual}",
         })
     return eid
 
@@ -801,6 +855,11 @@ def build_status_line(conn, head=None):
         s += "（异常：" + ", ".join(bad) + "）"
     if head:
         s += f"，链头 {head}"
+    flagged = [f"{r['name']}={r['manual_flag'] or '备注'}" for r in conn.execute(
+        "SELECT name,manual_flag FROM target WHERE in_config=1 AND"
+        " (manual_flag!='' OR manual_note!='') ORDER BY name")]
+    if flagged:
+        s += "，⚠人工说明位：" + ", ".join(flagged)
     return s
 
 
@@ -926,11 +985,18 @@ def report(conn, as_json=False):
         print(f"链头 rotator head = {head}")
     print(f"{'目标':<14}{'类型':<11}{'状态':<22}{'HTTP':<6}{'耗时':<8}{'起于':<21}摘要")
     for r in rows:
+        star = "*" if r["manual_flag"] else ""
         print(f"{r['name']:<14}{r['kind']:<11}"
-              f"{(r['state'] or '-') + ' ' + HUMAN_STATE.get(r['state'], ''):<22}"
+              f"{(r['state'] or '-') + star + ' ' + HUMAN_STATE.get(r['state'], ''):<22}"
               f"{str(r['last_status'] if r['last_status'] is not None else '-'):<6}"
               f"{str(r['last_ms'] if r['last_ms'] is not None else '-') + 'ms':<8}"
               f"{(r['state_since'] or '-'):<21}{(r['last_err'] or '')[:60]}")
+    notes = [(r["name"], r["manual_flag"], r["manual_note"], r["manual_since"]) for r in rows
+             if r["manual_flag"] or r["manual_note"]]
+    if notes:
+        print("--- ⚠人工说明位（探测真值不改，仅人工判读；* 号即此意）：")
+        for n, f, note, since in notes:
+            print(f"  {n}: {f or '（仅备注）'} 自 {since or '-'}｜{note or '-'}")
     print(f"--- 库内 probe {n_pr} 行 / event {n_ev} 行；最近事件：")
     for r in conn.execute("SELECT ts,kind,target,prev,cur,summary,alerted FROM event ORDER BY id DESC LIMIT 8"):
         print(f"  [{r['ts']}] {r['kind']:<18}{(r['target'] or '-'):<14}"
@@ -1362,6 +1428,78 @@ def selftest(verbose=True):
         ck("5.6 库可被第二进程并发只读（WAL+busy_timeout，--report 与常驻不打架）",
            conn2.execute("SELECT COUNT(*) c FROM target").fetchone()["c"] >= 3)
         conn2.close()
+
+        # ---------------- 6. 人工说明位 MANUAL_OVERRIDE（亦菲 seq 2852 观察单） ----------------
+        print("[6] 人工说明位（探测真值不改，只加人工判读）")
+        conn = db_open(DB_PATH)
+        # 6.1 老库在线迁移
+        old_db = os.path.join(mdir, "legacy.db")
+        c0 = sqlite3.connect(old_db)
+        c0.execute("CREATE TABLE meta(k TEXT PRIMARY KEY, v TEXT)")
+        c0.execute("CREATE TABLE target(name TEXT PRIMARY KEY, kind TEXT NOT NULL, model TEXT,"
+                   " api_base TEXT, in_config INTEGER DEFAULT 1, first_seen TEXT, last_probe TEXT,"
+                   " state TEXT DEFAULT 'UNKNOWN', pending TEXT, pending_n INTEGER DEFAULT 0,"
+                   " fail_streak INTEGER DEFAULT 0, state_since TEXT, last_status INTEGER,"
+                   " last_ms INTEGER, last_ok TEXT, last_err TEXT, n_probe INTEGER DEFAULT 0,"
+                   " n_fail INTEGER DEFAULT 0)")
+        c0.execute("INSERT INTO target(name,kind,state,n_probe) VALUES('legacy-upstream','upstream','OK',7)")
+        c0.commit()
+        c0.close()
+        c1 = db_open(old_db)
+        cols = {r["name"] for r in c1.execute("PRAGMA table_info(target)")}
+        ck("6.1 老库在线补列（ALTER 只加列，既有行与历史零丢失）",
+           {"manual_flag", "manual_note", "manual_since"} <= cols
+           and c1.execute("SELECT state,n_probe FROM target WHERE name='legacy-upstream'").fetchone()["state"] == "OK"
+           and c1.execute("SELECT n_probe FROM target WHERE name='legacy-upstream'").fetchone()["n_probe"] == 7,
+           sorted(cols))
+        c1.close()
+
+        hits.clear()
+        okc, msg = set_manual(conn, "kimi-han-src", flag="SUSPECT",
+                              note="订阅真伪待哥哥确认（key sk-liveabc123456789 别外泄）")
+        ck("6.2 --flag/--note 写入成功", okc, msg)
+        row = target_get(conn, "kimi-han-src")
+        ck("6.3 备注过 redact（密钥抹掉）",
+           "sk-liveabc123456789" not in row["manual_note"] and "<REDACTED>" in row["manual_note"],
+           row["manual_note"])
+        ck("6.4 manual_flag/manual_since 落位", row["manual_flag"] == "SUSPECT" and row["manual_since"])
+        ck("6.5 manual_override 事件留档",
+           conn.execute("SELECT COUNT(*) c FROM event WHERE kind='manual_override'"
+                        " AND target='kimi-han-src'").fetchone()["c"] == 1)
+        ck("6.6 不存在的目标返回 False 不炸", set_manual(conn, "no-such-target", flag="SUSPECT")[0] is False)
+        # 探测真值不被人工标记改写
+        run_cycle(conn, no_alert=True)
+        row = target_get(conn, "kimi-han-src")
+        ck("6.7 人工标记不改写探测真值（state 仍是探测判定的 QUOTA_403）",
+           row["state"] == QUOTA_403 and row["manual_flag"] == "SUSPECT", (row["state"], row["manual_flag"]))
+        rep = report(conn, as_json=True)
+        ck("6.8 --report --json 带出人工说明位",
+           any(t["name"] == "kimi-han-src" and t["manual_flag"] == "SUSPECT" for t in rep["targets"]))
+        ck("6.9 池内可用度行带 ⚠人工说明位", "⚠人工说明位" in build_status_line(conn, "zhipu"),
+           build_status_line(conn, "zhipu"))
+
+        # IGNORE：已知长期故障别吵人，但事件仍落库
+        set_manual(conn, "kimi-han-src", flag="IGNORE", note="已确认失效，等换 key")
+        _mutate_stub(up, "/coding/v1/messages",
+                     (401, '{"error":{"type":"authentication_error","message":"invalid key"}}'))
+        hits.clear()
+        run_cycle(conn)
+        ck("6.10 IGNORE 抑制告警（真状态跃迁也不发 dm）", len(hits) == 0, len(hits))
+        ck("6.11 抑制的事件仍落库且 alerted=0（可追溯，不是吞掉）",
+           conn.execute("SELECT COUNT(*) c FROM event WHERE target='kimi-han-src' AND cur='AUTH_401'"
+                        " AND alerted=0").fetchone()["c"] == 1)
+        # SUSPECT + 备注随告警正文发出
+        set_manual(conn, "zhipu", flag="SUSPECT", note="订阅真伪待核（seq 2852）")
+        _mutate_stub(up, "/api/anthropic/v1/messages", (403, '{"error":{"message":"no access"}}'))
+        hits.clear()
+        run_cycle(conn)
+        ck("6.12 SUSPECT+备注随告警正文一起发（防误导读）",
+           len(hits) == 1 and "⚠人工标记 SUSPECT" in hits[0]["body"]
+           and "订阅真伪待核" in hits[0]["body"], [h["body"][:150] for h in hits])
+        ck("6.13 清除标记后不再带人工尾巴",
+           set_manual(conn, "zhipu", flag="NONE")[0]
+           and target_get(conn, "zhipu")["manual_flag"] == "")
+        conn.close()
     finally:
         for s in (up, hub_srv):
             try:
@@ -1433,12 +1571,26 @@ def main(argv=None):
     ap.add_argument("--e2e", action="store_true", help="额外跑一发经中转站的端到端探测（会落 spendlogs 行）")
     ap.add_argument("--targets", default="", help="只探测指定目标，逗号分隔")
     ap.add_argument("--db", default=DB_PATH, help=f"库文件路径（默认 {DB_PATH}）")
+    ap.add_argument("--flag", nargs=2, metavar=("TARGET", "FLAG"),
+                    help="人工说明位：SUSPECT（探测虽 200 但可信度存疑）/ IGNORE（别为它告警）/ NONE（清除）")
+    ap.add_argument("--note", nargs=2, metavar=("TARGET", "TEXT"), help="给某目标挂人话备注（随告警与 --report 展示）")
     a = ap.parse_args(argv)
 
     if a.selftest:
         return selftest()
 
     DB_PATH = a.db
+
+    if a.flag or a.note:
+        conn = db_open(DB_PATH)
+        for tgt, flag in ([tuple(a.flag)] if a.flag else []):
+            ok, msg = set_manual(conn, tgt, flag=flag)
+            print(("OK " if ok else "ERR ") + msg)
+        for tgt, note in ([tuple(a.note)] if a.note else []):
+            ok, msg = set_manual(conn, tgt, note=note)
+            print(("OK " if ok else "ERR ") + msg)
+        conn.close()
+        return 0
 
     if a.report or a.events or a.json:
         conn = db_open(DB_PATH)
