@@ -60,13 +60,21 @@ REPORT_SOURCES = [
     },
 ]
 
-REPORT_CACHE_TTL_S = 600          # 报告聚合 10min 进程内缓存（报告日产一次，变了拉下轮）
+REPORT_CACHE_TTL_S = 600          # 历史日期报告聚合缓存 10min（报告日产一次，变了拉下轮）
+# MP-PROBE-FIX④（亦菲 seq 2776，哥哥 10/9 实测「拉取失败」）：当日报告改 5min 短缓存——
+# 日期条探测每天都打当日接口，10min 内反复探测不再重走 GitHub 三源往返；
+# 历史日期报告日产一次不再变，沿用 10min 长缓存。
+REPORT_CACHE_TODAY_TTL_S = 300
 _MAX_MD_BYTES = 512 * 1024        # 单份报告体积上限（F5 规范同源 1MB 内从严）
 _MAX_CHAT_CTX_CHARS = 40000       # 问答上下文总量上限（字符）
 _MAX_MSG_LEN = 2000               # 私有群单条正文上限
 _PGROUP_MAX_KEEP = 500            # 私有群内存环形容量（热读窗口；落盘文件才是全量历史）
 
 _CACHE = {}                       # {"report:<date>": (expire, payload)}
+
+
+def _today_str():
+    return time.strftime("%Y%m%d", time.localtime())
 
 
 def _cache_get(key):
@@ -80,8 +88,9 @@ def _cache_get(key):
     return payload
 
 
-def _cache_put(key, payload):
-    _CACHE[key] = (time.monotonic() + REPORT_CACHE_TTL_S, payload)
+def _cache_put(key, payload, ttl=None):
+    """ttl 缺省=历史档 10min；当日报告调用方显式传 REPORT_CACHE_TODAY_TTL_S。"""
+    _CACHE[key] = (time.monotonic() + (ttl or REPORT_CACHE_TTL_S), payload)
 
 
 # ---------- GitHub raw 拉取 ----------
@@ -221,7 +230,9 @@ async def daily_report(request):
     if hit is not None:
         return web.json_response(hit, headers={"X-Cache": "hit"})
     payload = await collect_daily_report(request.app["cfg"], date)
-    _cache_put(key, payload)
+    # MP-PROBE-FIX④：当日短缓存 5min（反复探测友好）/历史日期长缓存 10min
+    _cache_put(key, payload,
+               REPORT_CACHE_TODAY_TTL_S if date == _today_str() else REPORT_CACHE_TTL_S)
     return web.json_response(payload, headers={"X-Cache": "miss"})
 
 

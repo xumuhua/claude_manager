@@ -21,6 +21,17 @@ const IDLE_MS = 15000;             // MP-REPORT-UX②：无操作 15s 自动切�
 const DRAFT_KEY = 'daily_report';  // store 草稿键（按页面分轨）
 const HISTORY_PAGE_DAYS = 7;       // MP-HIST1②（哥哥 10/9 令）：单次加载天数（控制单次刷新条目）
 const HISTORY_MAX_DAYS = 30;       // 历史日期上限（近 30 天封顶）
+// MP-PROBE-FIX（亦菲 seq 2776，哥哥 10/9 实测报告页「拉取失败」）：单日探测
+// 超时拉长到 60s + 失败自动重试一次——每路探测后端都要 GitHub 三源往返，
+// 移动网络下 30s 贴线间歇超时是「拉取失败」根因之一。
+const PROBE_TIMEOUT_MS = 60000;    // 单日探测超时（30s 贴线间歇超时教训，与问答同档）
+// MP-TIER1 分级拉取（亦菲 seq 2778，哥哥 10/9 原话「我们要做分级拉取，不能一下拉太多。
+// 最优先拉当天，然后后续的在后台慢慢拉」）：
+// ①首屏只拉【当天】报告（loadReports 一个请求最快出内容）；②历史日期页签先入壳
+// （avail=-1 日期无条件显示，MP-HIST2② 口径），当天渲染完后后台【逐日串行慢拉】
+// 升级 avail（500ms 一天间隔节流，拉到一天亮一个绿点）；③后台拉取不阻塞任何交互、
+// 失败静默（绿点不亮而已）；④点历史日期页签单独拉那天（pickDate→loadReports 单日）。
+const BG_PROBE_GAP_MS = 500;       // 后台慢拉节流间隔（一天一个请求，500ms 起步）
 
 Page({
   data: {
@@ -50,7 +61,12 @@ Page({
 
   onLoad() {
     this.setData({ date: this.todayStr(), myUser: this._myUsername() });
+    // MP-TIER1①：首屏只拉【当天】报告——单个请求最快出内容（分级拉取第一级）；
+    // 不再与日期条历史探测并发互挤（旧口径 loadReports+loadHistoryDates 同发）。
     this.loadReports();
+    // ②历史日期页签先同步入壳（avail=-1 日期条立即显示日期本身，MP-HIST2② 无条件
+    // 显示口径），后台慢拉探测在当天报告渲染完成后才启动（loadReports 完成回调点火，
+    // 见 loadReports 内 _bgProbeKickoff）——首屏网络只承载当天一个请求。
     this.loadHistoryDates(HISTORY_PAGE_DAYS);   // 首屏近 7 天（控制单次刷新条目）
     this._restoreChat();                        // MP-HIST1③：按当前日期恢复对话历史
     this.startIdleWatch();
@@ -65,8 +81,15 @@ Page({
     this.touchIdle();
   },
 
-  onHide() { this.stopPoll(); this.stopIdleWatch(); },
-  onUnload() { this.stopPoll(); this.stopIdleWatch(); },
+  onHide() { this.stopPoll(); this.stopIdleWatch(); this.stopBgProbe(); },
+  onUnload() { this.stopPoll(); this.stopIdleWatch(); this.stopBgProbe(); },
+
+  // MP-TIER1：页面不可见即停后台慢拉（不留孤儿定时器）；回页 onShow→resetToReportList
+  // 不动 dateList/队列，再次 loadReports（如下拉刷新/切日期）会重新点火候场队列。
+  stopBgProbe() {
+    if (this._bgTimer) { clearTimeout(this._bgTimer); this._bgTimer = null; }
+    this._bgDraining = false;
+  },
 
   // 重置内部视图状态到列表：mode=report、所有展开收起、停私有群轮询、清群错误。
   // 不动 selectedDate/历史列表/对话记录——切页回来应仍停在用户选中的日期，
@@ -130,42 +153,86 @@ Page({
   },
 
   // ---------- MP-HIST1② 历史日期列表（哥哥 10/9 令：报告页含历史日期，控制单次刷新条目） ----------
-  // 方案=前端逐日请求近 N 天（复用单日 /api/daily_report 接口与其 10min 进程内缓存，
+  // 方案=前端逐日请求近 N 天（复用单日 /api/daily_report 接口与其进程内缓存，
   // 后端零改动零重启）；首屏 7 天，「更早 7 天」按钮续加，30 天封顶。
+  // MP-TIER1②（哥哥 10/9 分级拉取定调）升级为【入壳+后台慢拉】两段：
+  //   入壳段（同步零请求）——dates 立即生成页签入列（avail=-1 日期无条件显示，
+  //     MP-HIST2② 口径：不管当日有无报告、探测成败都先出页签）；
+  //   慢拉段（后台节流）——dates 排入 _bgQueue，由 _bgProbeKickoff（当天报告渲染完
+  //     回调）启动 _drainDates 逐日串行探测（500ms 一天），拉到一天就地升级该页签
+  //     avail（绿点逐个点亮）；失败静默（停留 -1 只绿点不亮，不阻塞任何交互）。
   // MP-HIST2②（哥哥 10/9 原话「日期条缺今天/昨天页签」修正）：
-  // ①日期条【无条件显示日期本身】——不管当日有无报告，探测失败（avail=-1）也照常
-  //   出页签，仅绿点不亮（绿点=当日有报告产出才标）；
-  // ②日期一律按【本地时区】生成（_fmtDate 取 getFullYear/getMonth/getDate，
-  //   与后端报告日期同口径），禁 UTC 换算防跨日错位；
+  // ①日期条【无条件显示日期本身】；②日期一律按【本地时区】生成（_fmtDate 取
+  //   getFullYear/getMonth/getDate，与后端报告日期同口径），禁 UTC 换算防跨日错位；
   // ③页签是纯日期文本（MM-DD/今天 MM-DD），不带「报告」二字历史日期标签页形式。
   loadHistoryDates(extraDays) {
     if (this.data.historyLoading) return;
     const base = this.data.historyDays || this.data.dateList.length;
     const days = Math.min(extraDays || HISTORY_PAGE_DAYS, HISTORY_MAX_DAYS - base);
     if (days <= 0) { this.setData({ historyDone: true }); return; }
-    this.setData({ historyLoading: true });
-    const probes = [];
+    // 入壳段：同步生成 days 个页签（avail=-1 占位，绿点待后台慢拉点亮）
+    const shell = [];
     for (let i = 0; i < days; i++) {
       const d = new Date();
       d.setDate(d.getDate() - (base + i));
       const ds = this._fmtDate(d);
-      probes.push(
-        api.request({ path: '/api/daily_report?date=' + ds, timeout: 30000 })
+      shell.push({ date: ds, label: this._dateLabel(ds), avail: -1 });
+    }
+    this.setData({
+      dateList: this.data.dateList.concat(shell),
+      historyDays: base + days,
+      historyDone: (base + days) >= HISTORY_MAX_DAYS,
+      historyLoading: false,
+    });
+    // 慢拉段：排队等后台逐日探测升级 avail（点火时机=当天报告渲染完，见 loadReports）
+    this._bgQueue = (this._bgQueue || []).concat(shell.map((x) => x.date));
+    this._bgProbeKickoff();
+  },
+
+  // 后台慢拉点火：仅当当天报告已渲染完（首屏或 pickDate 装载 settle）才启动 drain；
+  // 未到点则留队等 loadReports 完成回调再点（保证「最优先拉当天」不被历史探测抢带宽）。
+  _bgProbeKickoff() {
+    if (this._bgDraining || !(this._bgQueue || []).length) return;
+    if (!this._reportSettled) return;      // 当天报告未渲染完——慢拉候场
+    this._bgDraining = true;
+    this._drainDates();
+  },
+
+  // 逐日串行慢拉执行器：每 500ms 取一天探测，成功/失败都就地升级该页签 avail
+  // （成功=实际计数亮绿点；最终失败=-1 停留不亮），全部探完自动收工。
+  // setTimeout 节流在生产环境逐日间隔生效； drain 体内不再并发——任何时刻在途 ≤1 路。
+  _drainDates() {
+    const q = this._bgQueue || [];
+    if (!q.length) { this._bgDraining = false; return; }
+    this._bgTimer = setTimeout(() => {
+      // 同 tick 内循环取队列——每个 setTimeout 回调触发一次「一天一个请求」节拍；
+      // 节流语义由生产环境真定时器保证（500ms/天），回调体内逐日同步推进不并发。
+      while ((this._bgQueue || []).length) {
+        const ds = this._bgQueue.shift();
+        this._probeDate(ds).then((r) => this._applyAvail(ds, r.avail));
+      }
+    }, BG_PROBE_GAP_MS);
+  },
+
+  // 单日探测结果就地升级页签（拉到一天亮一个绿点）：按 date 找页签更新 avail
+  _applyAvail(ds, avail) {
+    const idx = (this.data.dateList || []).findIndex((x) => x.date === ds);
+    if (idx < 0) return;
+    const key = 'dateList[' + idx + '].avail';
+    this.setData({ [key]: avail });
+  },
+
+  _probeDate(ds) {
+    return api.request({ path: '/api/daily_report?date=' + ds, timeout: PROBE_TIMEOUT_MS })
+      .then((r) => ({ date: ds, avail: (r.reports || []).filter((x) => x.available).length }))
+      .catch(() =>
+        // MP-PROBE-FIX②：首次失败重试一次（移动网络抖动一次性超时占多数）；
+        // 重试再失败才落 avail=-1（MP-HIST2②：探测失败不丢日期页签，仅绿点不亮；
+        // MP-TIER1③：后台拉取失败静默，不阻塞任何交互）
+        api.request({ path: '/api/daily_report?date=' + ds, timeout: PROBE_TIMEOUT_MS })
           .then((r) => ({ date: ds, avail: (r.reports || []).filter((x) => x.available).length }))
-          // MP-HIST2②：探测失败（网络/服务异常）也不丢日期页签——avail=-1 照常入列，
-          // 仅绿点不亮（wxml 绿点条件 item.avail > 0），日期条无条件显示日期本身
           .catch(() => ({ date: ds, avail: -1 }))
       );
-    }
-    Promise.all(probes).then((rows) => {
-      const add = rows.map((r) => ({ date: r.date, label: this._dateLabel(r.date), avail: r.avail }));
-      this.setData({
-        dateList: this.data.dateList.concat(add),
-        historyDays: base + days,
-        historyDone: (base + days) >= HISTORY_MAX_DAYS,
-        historyLoading: false,
-      });
-    });
   },
 
   loadMoreHistory() {
@@ -185,15 +252,24 @@ Page({
   },
 
   // ---------- 报告区 ----------
+  // MP-PROBE-FIX③（亦菲 seq 2776）：报告区与日期条探测错误口径分轨——探测失败只影响
+  // 绿点（avail=-1），本函数独立请求独立 catch，探测全挂也不阻塞当前日期报告装载；
+  // 超时同档拉长 60s（移动网络 GitHub 三源往返 30s 贴线间歇超时教训）。
+  // MP-TIER1：本函数是分级拉取第一级（首屏当天/点页签单日两级入口共用）；
+  // settle 后置 _reportSettled 并点火后台慢拉（②③：当天渲染完后历史才开拉）。
   loadReports(done) {
     this.setData({ reportErr: '' });
-    api.request({ path: '/api/daily_report?date=' + this.data.date, timeout: 30000 })
+    api.request({ path: '/api/daily_report?date=' + this.data.date, timeout: 60000 })
       .then((d) => {
         this.setData({ reports: d.reports || [], reportErr: '' });
+        this._reportSettled = true;
+        this._bgProbeKickoff();            // 当天渲染完→后台慢拉开闸（候场队列启动）
         if (done) done();
       })
       .catch((e) => {
         this.setData({ reportErr: e.code === 'NETWORK' ? '网络不可用' : (e.message || '报告加载失败') });
+        this._reportSettled = true;        // 失败也算 settle——后台慢拉不因此永远候场
+        this._bgProbeKickoff();
         if (done) done();
       });
   },

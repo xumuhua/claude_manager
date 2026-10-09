@@ -584,3 +584,42 @@ def test_r9_persist_disabled_by_default():
     assert s.persist_path is None
     s.append("gege_dev", "哥哥", "x", username="g")
     assert s.seq == 1
+
+
+# ---------- R11 报告缓存分档（MP-PROBE-FIX④，亦菲 seq 2776：当日 5min 短缓存/
+# 历史日期 10min 长缓存——日期条探测反复打当日接口不再重走 GitHub 三源往返） ----------
+
+def test_r11_cache_ttl_tiered(monkeypatch):
+    """当日日期→短 TTL（REPORT_CACHE_TODAY_TTL_S）；历史日期→长 TTL（REPORT_CACHE_TTL_S）。"""
+    session = FakeSession(_gh_routes_all_ok())
+    monkeypatch.setattr(report_proxy.aiohttp, "ClientSession", lambda **kw: session)
+    report_proxy._CACHE.clear()
+    app = _mk_app()
+    today = report_proxy._today_str()
+    asyncio.run(report_proxy.daily_report(FakeRequest(app, query={"date": today})))
+    asyncio.run(report_proxy.daily_report(FakeRequest(app, query={"date": "20200101"})))
+    exp_today, _ = report_proxy._CACHE["report:" + today]
+    exp_hist, _ = report_proxy._CACHE["report:20200101"]
+    now = time.monotonic()
+    # 当日档≈300s、历史档≈600s（各留 30s 执行余量）
+    assert 300 - 30 < exp_today - now <= 300
+    assert 600 - 30 < exp_hist - now <= 600
+    assert report_proxy.REPORT_CACHE_TODAY_TTL_S == 300
+    assert report_proxy.REPORT_CACHE_TTL_S == 600
+
+
+def test_r11_today_short_ttl_expires_first(monkeypatch):
+    """当日短档先于历史长档过期——伪造时间轴实证两档寿命不同。"""
+    session = FakeSession(_gh_routes_all_ok())
+    monkeypatch.setattr(report_proxy.aiohttp, "ClientSession", lambda **kw: session)
+    report_proxy._CACHE.clear()
+    app = _mk_app()
+    today = report_proxy._today_str()
+    asyncio.run(report_proxy.daily_report(FakeRequest(app, query={"date": today})))
+    asyncio.run(report_proxy.daily_report(FakeRequest(app, query={"date": "20200101"})))
+    # 时间推进 400s：当日档（300s）应已过期、历史档（600s）仍在
+    real_monotonic = time.monotonic
+    monkeypatch.setattr(report_proxy.time, "monotonic", lambda: real_monotonic() + 400)
+    assert report_proxy._cache_get("report:" + today) is None
+    assert report_proxy._cache_get("report:20200101") is not None
+    report_proxy._CACHE.clear()

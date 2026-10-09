@@ -487,18 +487,81 @@ setImmediate(() => {
               apiHandler = () => Promise.reject({ code: 'NETWORK', message: 'x' });
               rp.loadHistoryDates(7);
               setImmediate(() => {
-                ok('T4k.5 探测全失败日期页签仍全量装载（7 枚含今天，avail=-1 不阻塞）',
+                ok('T4k.5 探测全失败日期页签仍全量装载（7 枚含今天，avail=-1 不阻塞；MP-PROBE-FIX②失败重试一次故 7 日=14 次请求）',
                    rp.data.dateList.length === 7
                    && rp.data.dateList[0].date === rp.todayStr()
                    && rp.data.dateList.every((x) => x.avail === -1)
-                   && apiCalls.slice(preCallsK).filter((c) => /\/api\/daily_report\?date=\d{8}/.test(c.path)).length === 7);
+                   && apiCalls.slice(preCallsK).filter((c) => /\/api\/daily_report\?date=\d{8}/.test(c.path)).length === 14);
                 // 恢复成功桩+重置列表，供 T4i.6 续加链路使用
                 apiHandler = (o) => Promise.resolve({ date: 'x', reports: [
                   { key: 'aichip', available: true }, { key: 'quant', available: false }, { key: 'd4', available: false }] });
                 rp.data.dateList = []; rp.data.historyDays = 0; rp.data.historyLoading = false; rp.data.historyDone = false;
                 rp.loadHistoryDates(7);
                 setImmediate(() => {
-              // 加载更多续加 7 天 → 14 天；连续加到 28 再补 2 天看 30 封顶
+              /* ---------- T4l MP-PROBE-FIX（亦菲 seq 2776，哥哥 10/9 实测报告页
+                 「拉取失败」）：日期条探测 7 路并发改小批量（2 路一批）+超时 60s+
+                 失败重试一次；探测与报告区错误口径分轨互不阻塞 ---------- */
+              // 结构锁：批量串批执行器在位（禁回 7 路全并发 Promise.all(probes)）
+              ok('T4l.1 探测改小批量串批（PROBE_BATCH=2+_probeBatch 执行器，无 7 路全并发）',
+                 /PROBE_BATCH\s*=\s*2/.test(rpJs) && /_probeBatch/.test(rpJs)
+                 && !/Promise\.all\(probes\)/.test(rpJs));
+              // 结构锁：探测超时 60s（30s 贴线教训）+常量同源
+              ok('T4l.2 探测超时拉长 60s（PROBE_TIMEOUT_MS=60000，_probeDate 用之）',
+                 /PROBE_TIMEOUT_MS\s*=\s*60000/.test(rpJs)
+                 && /timeout:\s*PROBE_TIMEOUT_MS/.test(rpJs));
+              // 结构锁：loadReports 独立 60s（与探测分轨，探测全挂不阻塞报告区）
+              ok('T4l.3 报告区 loadReports 超时独立拉长 60s（与探测分轨）',
+                 /loadReports\(done\)\s*\{[\s\S]*?timeout:\s*60000/.test(rpJs));
+              // 行为锁：7 天探测=4 批串行——批间并发上限 2（apiCalls 时间序相邻同刻 ≤2）
+              const preCallsL = apiCalls.length;
+              rp.data.dateList = []; rp.data.historyDays = 0; rp.data.historyLoading = false; rp.data.historyDone = false;
+              let maxInFlight = 0, inFlight = 0;
+              apiHandler = (o) => {
+                inFlight++; if (inFlight > maxInFlight) maxInFlight = inFlight;
+                return new Promise((res) => setImmediate(() => {
+                  inFlight--;
+                  res({ date: 'x', reports: [{ key: 'aichip', available: true }] });
+                }));
+              };
+              rp.loadHistoryDates(7);
+              setImmediate(() => { setImmediate(() => { setImmediate(() => { setImmediate(() => {
+                ok('T4l.4 批间并发上限=2（7 天探测任何时刻在途 ≤2 路）',
+                   maxInFlight <= 2 && rp.data.dateList.length === 7);
+                // 行为锁：首次失败自动重试一次成功→avail 正常（重试只在失败时触发）
+                const preCallsL2 = apiCalls.length;
+                rp.data.dateList = []; rp.data.historyDays = 0; rp.data.historyLoading = false; rp.data.historyDone = false;
+                let tried = {};
+                apiHandler = (o) => {
+                  const m = o.path.match(/date=(\d{8})/);
+                  const ds = m ? m[1] : 'x';
+                  tried[ds] = (tried[ds] || 0) + 1;
+                  if (tried[ds] === 1) return Promise.reject({ code: 'NETWORK', message: '抖一下' });
+                  return Promise.resolve({ date: ds, reports: [{ key: 'aichip', available: true }] });
+                };
+                rp.loadHistoryDates(7);
+                setImmediate(() => { setImmediate(() => { setImmediate(() => { setImmediate(() => {
+                  ok('T4l.5 首次失败自动重试一次成功——绿点照常亮（avail=1，7 日=14 次请求）',
+                     rp.data.dateList.length === 7
+                     && rp.data.dateList.every((x) => x.avail === 1)
+                     && apiCalls.slice(preCallsL2).filter((c) => /\/api\/daily_report\?date=\d{8}/.test(c.path)).length === 14);
+                  // 行为锁：探测全失败时报告区 loadReports 仍独立可装载（分轨③）
+                  apiHandler = () => Promise.reject({ code: 'NETWORK', message: 'x' });
+                  rp.data.dateList = []; rp.data.historyDays = 0; rp.data.historyLoading = false; rp.data.historyDone = false;
+                  rp.loadHistoryDates(7);
+                  setImmediate(() => { setImmediate(() => { setImmediate(() => { setImmediate(() => {
+                    apiHandler = (o) => Promise.resolve({ date: rp.data.date, reports: [
+                      { key: 'aichip', available: true, summary: 's', note: '' }] });
+                    rp.loadReports();
+                    setImmediate(() => {
+                      ok('T4l.6 探测全失败后报告区独立装载成功（错误口径分轨不串联）',
+                         rp.data.reports.length === 1 && rp.data.reportErr === ''
+                         && rp.data.dateList.every((x) => x.avail === -1));
+                      // 恢复成功桩+重置列表，供 T4i.6 续加链路使用
+                      apiHandler = (o) => Promise.resolve({ date: 'x', reports: [
+                        { key: 'aichip', available: true }, { key: 'quant', available: false }, { key: 'd4', available: false }] });
+                      rp.data.dateList = []; rp.data.historyDays = 0; rp.data.historyLoading = false; rp.data.historyDone = false;
+                      rp.loadHistoryDates(7);
+                      setImmediate(() => {
               rp.loadMoreHistory();
               setImmediate(() => {
                 ok('T4i.6 「更早 7 天」续加（7→14 天不重复）',
@@ -603,6 +666,19 @@ setImmediate(() => {
                   });       // 21→28
                 });         // 14→21
               });           // T4i.6（7→14）
+              });           // T4l 恢复首屏 7 天（重置后重载）
+                });         // T4l.6 内层
+                });         // T4l.6 批4
+                });         // T4l.6 批3
+                });         // T4l.6 批2
+                });         // T4l.5 内层
+                });         // T4l.5 批4
+                });         // T4l.5 批3
+                });         // T4l.5 批2
+                });         // T4l.4 内层
+                });         // T4l.4 批4
+                });         // T4l.4 批3
+                });         // T4l.4 批2
                 });         // T4k 恢复首屏 7 天（重置后重载）
               });           // T4k.5（探测全失败）
             });             // T4i.4/5（首屏 7 天）
@@ -611,4 +687,6 @@ setImmediate(() => {
       });
     });
   });
+});
+  });   // MP-PROBE-FIX 并行会话漏补收尾×2（T4l 段插入 8 层 setImmediate 只补 6 层）——补齐防 SyntaxError
 });
