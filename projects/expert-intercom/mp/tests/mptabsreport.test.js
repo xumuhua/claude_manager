@@ -701,15 +701,36 @@ setImmediate(() => {
 
                     /* ---------- MP-HIST2⑤（哥哥 10/9 原话「屏幕有按动或者拖动也要
                        重算时间」）：闲置判定从仅输入事件扩为【全屏交互事件】——
-                       两页 wxml 根节点 catchtouchstart 挂 onPageTouch，触摸/点击/
-                       滚动/拖动起点全覆盖；2505 私有群（daily_report）与聊天页统一口径 ---------- */
+                       两页 wxml 根节点挂 onPageTouch，触摸/点击/滚动/拖动起点全覆盖；
+                       2505 私有群（daily_report）与聊天页统一口径。
+                       MP-JANK1（哥哥 10/9 实测报告页「按什么都没反应」）：catch→bind——
+                       catch 拦截 touchstart 冒泡在报告页（scroll-x 日期条+深层级子元素）
+                       会吞子元素 tap；bind 冒泡阶段照样到根，idle 复位语义不变 ---------- */
                     const chatWxml2 = fs.readFileSync(path.join(MP, 'pages/chat/index.wxml'), 'utf8');
-                    ok('T4j.9 chat 页全屏交互 idle 复位（根节点 catchtouchstart→onPageTouch）',
-                       /<view class="page" catchtouchstart="onPageTouch">/.test(chatWxml2)
+                    ok('T4j.9 chat 页全屏交互 idle 复位（根节点 bindtouchstart→onPageTouch，MP-JANK1 catch→bind）',
+                       /<view class="page" bindtouchstart="onPageTouch">/.test(chatWxml2)
+                       && !/catchtouchstart/.test(chatWxml2)
                        && /onPageTouch\(\)\s*\{\s*this\.touchIdle\(\)/.test(chatSrc));
-                    ok('T4j.10 daily_report 页同款（2505 私有群统一口径）',
-                       /<view class="page" catchtouchstart="onPageTouch">/.test(rpWxml)
+                    ok('T4j.10 daily_report 页同款（2505 私有群统一口径，catch 残留为零）',
+                       /<view class="page" bindtouchstart="onPageTouch">/.test(rpWxml)
+                       && !/catchtouchstart/.test(rpWxml)
                        && /onPageTouch\(\)\s*\{\s*this\.touchIdle\(\)/.test(rpJs));
+
+                    /* ---------- MP-JANK1 报告页卡死（哥哥 10/9 实测 fb34901+47619a3
+                       「进去很快但好卡，按什么都没反应」）----------
+                       ②markdown 全文不进 setData：loadReports 剥离 markdown 收
+                       this._mdSource 实例字段，渲染层每次只承载标题/摘要，展开时
+                       懒解析单卡片全文（fb34901 修好拉取后大 reports 第一次真正
+                       渲染，50KB+ 整包过渲染层=大 jank 源） ---------- */
+                    ok('T4m.1 loadReports 剥离 markdown（渲染层零全文，收 _mdSource）',
+                       /_mdSource\s*=\s*\{\}/.test(rpJs)
+                       && /markdown:\s*undefined/.test(rpJs)
+                       && !/setData\(\{\s*reports:\s*d\.reports/.test(rpJs));
+                    ok('T4m.2 展开懒解析走 _mdSource（单卡片按需入块）',
+                       /toggleReport[\s\S]*?\(this\._mdSource \|\| \{\}\)\[key\]/.test(rpJs)
+                       && !/find\(\(r\) => r\.key === key\)[\s\S]*?markdown/.test(rpJs));
+                    ok('T4m.3 切日期清 mdBlocks（key 跨日期复用，防旧日期全文污染）',
+                       /pickDate[\s\S]*?mdBlocks:\s*\{\}/.test(rpJs));
 
                     timers.forEach((t) => clearInterval(t));
                     console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAIL`);

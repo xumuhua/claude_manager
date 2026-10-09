@@ -240,12 +240,14 @@ Page({
   },
 
   // 点历史日期：切换选中日期 → 报告区+问答上下文+对话历史随日期整体切换
+  // MP-JANK1 顺手修：mdBlocks 同步清空——key 是 aichip/quant/d4 三键跨日期复用，
+  // 不清的话切日期后展开同 key 卡片会渲染【旧日期】的全文（懒解析缓存污染）
   pickDate(e) {
     const date = e.currentTarget.dataset.date;
     if (!date || date === this.data.date) return;
     this.touchIdle();
     this._persistChat();                       // 当前日期对话先落 storage
-    this.setData({ date, expanded: {}, reports: [], reportErr: '' });
+    this.setData({ date, expanded: {}, mdBlocks: {}, reports: [], reportErr: '' });
     this.loadReports();
     this._restoreChat();                       // 换日期恢复对应日期的对话记录
   },
@@ -256,11 +258,20 @@ Page({
   // 超时同档拉长 60s（移动网络 GitHub 三源往返 30s 贴线间歇超时教训）。
   // MP-TIER1：本函数是分级拉取第一级（首屏当天/点页签单日两级入口共用）；
   // settle 后置 _reportSettled 并点火后台慢拉（②③：当天渲染完后历史才开拉）。
+  // MP-JANK1②（哥哥 10/9 实测「进去很快但好卡」）：reports 进 setData 前剥掉
+  // markdown 全文（三份 50KB+ 整包过渲染层是大 jank 源——fb34901 修好拉取后大
+  // reports 第一次真正渲染，本页才卡），全文收 this._mdSource 实例字段，
+  // toggleReport 展开时按 key 懒解析（mdBlocks 渲染层口径不变）。
   loadReports(done) {
     this.setData({ reportErr: '' });
     api.request({ path: '/api/daily_report?date=' + this.data.date, timeout: 60000 })
       .then((d) => {
-        this.setData({ reports: d.reports || [], reportErr: '' });
+        this._mdSource = {};
+        const reports = (d.reports || []).map((r) => {
+          if (r && r.markdown) this._mdSource[r.key] = r.markdown;
+          return Object.assign({}, r, { markdown: undefined });
+        });
+        this.setData({ reports, reportErr: '' });
         this._reportSettled = true;
         this._bgProbeKickoff();            // 当天渲染完→后台慢拉开闸（候场队列启动）
         if (done) done();
@@ -280,9 +291,11 @@ Page({
     expanded[key] = !expanded[key];
     const patch = { expanded };
     if (expanded[key] && !this.data.mdBlocks[key]) {
-      const item = (this.data.reports || []).find((r) => r.key === key);
-      if (item && item.markdown) {
-        patch.mdBlocks = Object.assign({}, this.data.mdBlocks, { [key]: md.parse(item.markdown) });
+      // MP-JANK1②：markdown 全文不进 setData（loadReports 只存 this._mdSource），
+      // 展开时按 key 从实例字段取再解析入块——渲染层每次只承载一张卡片的全文
+      const mk = (this._mdSource || {})[key];
+      if (mk) {
+        patch.mdBlocks = Object.assign({}, this.data.mdBlocks, { [key]: md.parse(mk) });
       }
     }
     this.setData(patch);

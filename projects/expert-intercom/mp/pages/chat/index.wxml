@@ -1,7 +1,8 @@
 <!-- MP-HIST2⑤（哥哥 10/9 原话）：15s 闲置判定扩为全屏交互事件——根节点
-     catchtouchstart 挂 onPageTouch，屏幕任意按下/拖动起点都重置计时
-     （catch 形态拦截冒泡不阻塞子元素事件，与 touchIdle 各挂点同口径互补） -->
-<view class="page" catchtouchstart="onPageTouch">
+     bindtouchstart 挂 onPageTouch，屏幕任意按下/拖动起点都重置计时。
+     MP-JANK1（哥哥 10/9 实测报告页「按什么都没反应」）：catch→bind 与报告页
+     同改——bind 冒泡阶段照样到根，idle 复位语义不变；两页统一口径 -->
+<view class="page" bindtouchstart="onPageTouch">
   <!-- 顶栏：会话下拉菜单 + 状态点 + @我过滤 + 速览 -->
   <!-- MP-UX6：segmented 横排 → 下拉菜单（哥哥 9/13 拍板），菜单项按最近消息
        热度倒序（越热越靠前），当前项高亮+✓，未读小红点延续 -->
