@@ -1054,3 +1054,149 @@ def test_r14_bad_five_source_config_rejected(tmp_path, bad, why):
     p.write_text(_CFG_BASE + bad + "\n", encoding="utf-8")
     with pytest.raises(cfg_mod.ConfigError):
         cfg_mod.load_config(str(p))
+
+
+# ==================== R17 MP-RPTSPLIT-1 v3 本地镜像层（亦菲 seq 2938） ====================
+# 读序三级锁：>7 天过期占位 / 本地镜像命中零网络 / 镜像缺 GitHub fallback；
+# 兼容锁：字段结构与旧路径逐字段一致；回滚开关 report_mirror.enabled=false。
+
+import datetime as _dt
+
+
+def _today():
+    return _dt.date.today().strftime("%Y%m%d")
+
+
+def _mk_mirror(tmp_path, date, files):
+    """造镜像目录：files={key: markdown 文本}。"""
+    dash = f"{date[:4]}-{date[4:6]}-{date[6:8]}"
+    d = tmp_path / "mp_reports" / dash
+    d.mkdir(parents=True, exist_ok=True)
+    for k, txt in files.items():
+        (d / f"{k}.md").write_text(txt, encoding="utf-8")
+    return str(tmp_path / "mp_reports")
+
+
+def test_r17_expired_over_7days_placeholder():
+    """>7 天日期=「已过期」占位：不打镜像不打 GitHub（FakeSession 计数为零）、
+    note 带「已过期」、available=false。"""
+    import asyncio
+    old = (_dt.date.today() - _dt.timedelta(days=8)).strftime("%Y%m%d")
+    calls = []
+    class CountingSession:
+        def get(self, url, timeout=None):
+            calls.append(url)
+            raise AssertionError("过期日期不许发任何 GitHub 请求")
+    srcs = [{"key": "aichip", "title": "t", "owner": "o", "repo": "r",
+             "branch": "main", "dir": "d", "date_fmt": "dash"}]
+    cfg = _cfg()
+    item = asyncio.run(report_proxy._collect_one(CountingSession(), cfg, srcs[0], old))
+    assert item["available"] is False
+    assert "已过期" in item["note"]
+    assert item["markdown"] == "" and item["summary"] == ""
+    assert calls == []
+
+
+def test_r17_expired_boundary_7days_not_expired(tmp_path):
+    """边界：恰好第 7 天（含今天共 8 天保留窗）不过期——可走镜像/fallback。"""
+    d7 = (_dt.date.today() - _dt.timedelta(days=7)).strftime("%Y%m%d")
+    assert report_proxy._mirror_expired(d7) is False
+    d8 = (_dt.date.today() - _dt.timedelta(days=8)).strftime("%Y%m%d")
+    assert report_proxy._mirror_expired(d8) is True
+    assert report_proxy._mirror_expired(_today()) is False
+
+
+def test_r17_mirror_hit_zero_network(tmp_path):
+    """镜像命中：零 GitHub 请求（session.get 不被调用）、毫秒级直出全文+摘要。"""
+    import asyncio
+    md = "# 标题\n\n第一段内容。\n\n## 小节"
+    root = _mk_mirror(tmp_path, _today(), {"aichip": md})
+    cfg = _cfg()
+    cfg["report_mirror"] = {"enabled": True, "root": root}
+    src = {"key": "aichip", "title": "AI", "owner": "o", "repo": "r",
+           "branch": "main", "dir": "d", "date_fmt": "dash"}
+    class NoNetSession:
+        def get(self, url, timeout=None):
+            raise AssertionError(f"镜像命中不许发 GitHub 请求：{url}")
+    item = asyncio.run(report_proxy._collect_one(NoNetSession(), cfg, src, _today()))
+    assert item["available"] is True
+    assert item["markdown"] == md
+    assert "第一段内容" in item["summary"]          # 摘要与 GitHub 全文同源口径
+    assert "本地镜像" in item["path"]
+    assert item["key"] == "aichip" and item["note"] == ""
+
+
+def test_r17_mirror_miss_falls_back_to_github(tmp_path, monkeypatch):
+    """镜像缺（目录空）→ GitHub fallback 原样：现有链路行为不变（列目录+拉全文）。"""
+    import asyncio
+    root = _mk_mirror(tmp_path, _today(), {})       # 目录在但零文件
+    cfg = _cfg()
+    cfg["report_mirror"] = {"enabled": True, "root": root}
+    src = {"key": "aichip", "title": "AI", "owner": "x", "repo": "a",
+           "branch": "main", "dir": "ai_research/daily", "date_fmt": "dash"}
+    today = _today()
+    dash = f"{today[:4]}-{today[4:6]}-{today[6:8]}"
+    async def fake_list(session, c, s):
+        return [f"{dash}_L2汇总.md"], None
+    async def fake_raw(session, c, s, path):
+        return "# 远端\n\nfallback 全文", None
+    monkeypatch.setattr(report_proxy, "_list_dir", fake_list)
+    monkeypatch.setattr(report_proxy, "_fetch_raw", fake_raw)
+    item = asyncio.run(report_proxy._collect_one(object(), cfg, src, today))
+    assert item["available"] is True
+    assert item["markdown"] == "# 远端\n\nfallback 全文"
+    assert item["path"] == f"ai_research/daily/{dash}_L2汇总.md"
+
+
+def test_r17_mirror_disabled_bypass(tmp_path):
+    """回滚开关：report_mirror.enabled=false → 镜像文件明明在也不读，直接 GitHub
+    （collect 层面=fallback 路径；这里验 _mirror_read 返回 None + 过期判定不拦）。"""
+    import asyncio
+    md = "# 镜像里有"
+    root = _mk_mirror(tmp_path, _today(), {"aichip": md})
+    cfg = _cfg()
+    cfg["report_mirror"] = {"enabled": False, "root": root}
+    src = {"key": "aichip", "title": "AI", "owner": "o", "repo": "r",
+           "branch": "main", "dir": "d", "date_fmt": "dash"}
+    assert report_proxy._mirror_read(cfg, src, _today()) is None
+
+
+def test_r17_fields_compat_full_payload(tmp_path):
+    """兼容锁：镜像命中时 /api/daily_report 响应字段结构与旧口径逐字段一致
+    （date/generated_at/reports[] 且卡片五键 key/title/available/summary/markdown/note/path）。"""
+    import asyncio
+    md = "# A\n\n正文A"
+    root = _mk_mirror(tmp_path, _today(), {"aichip": md, "gossip": "# G\n\n正文G"})
+    cfg = _cfg()
+    cfg["report_mirror"] = {"enabled": True, "root": root}
+    cfg["report_sources"] = [
+        {"key": "aichip", "title": "AI", "owner": "o", "repo": "r",
+         "branch": "main", "dir": "d", "date_fmt": "dash"},
+        {"key": "gossip", "title": "瓜", "owner": "o", "repo": "r",
+         "branch": "main", "dir": "d", "date_fmt": "dash"},
+    ]
+    payload = asyncio.run(report_proxy.collect_daily_report(cfg, _today()))
+    assert set(payload) == {"date", "generated_at", "reports"}
+    assert payload["date"] == _today()
+    for r in payload["reports"]:
+        assert set(r) == {"key", "title", "available", "summary", "markdown", "note", "path"}
+        assert r["available"] is True
+    keys = [r["key"] for r in payload["reports"]]
+    assert keys == ["aichip", "gossip"]          # gather 保序=源登记顺序
+
+
+def test_r17_mirror_config_validation(tmp_path):
+    """report_mirror 坏配置四型拒启动（enabled 非布尔/root 空串/未知字段/整段非映射）。"""
+    import config as cfg_mod
+    bads = [
+        ("\nreport_mirror:\n  enabled: 不是布尔\n", "enabled"),
+        ("\nreport_mirror:\n  root: \"\"\n", "root"),
+        ("\nreport_mirror:\n  foo: 1\n", "未知字段"),
+        ("\nreport_mirror: 3\n", "须为映射"),
+    ]
+    for frag, why in bads:
+        p = tmp_path / f"badmirror.yaml"
+        p.write_text(_CFG_BASE + frag, encoding="utf-8")
+        with pytest.raises(cfg_mod.ConfigError) as ei:
+            cfg_mod.load_config(str(p))
+        assert why in str(ei.value)

@@ -28,6 +28,14 @@ douyin/YYYY-MM-DD_抖音热点.md（dash），title 抖音热点参考，卡片�
 概述口径：零成本启发式（不烧 LLM 日限额）——md 一级/二级标题清单 + 首个非标题段落
 节选。拉取失败/当日未产出 → available=false + note，卡片渲染占位不报错（红线 §3）。
 
+**本地镜像层**（MP-RPTSPLIT-1 v3，亦菲 seq 2938，哥哥拍板「只改后端不改前端」，
+原话「巡检验证完成就把文件放本地，最多看 7 天，过了 7 天清除」）：读序改三级——
+①>7 天日期=「已过期」占位（note 字段，前端占位渲染现成）；②本地镜像命中
+（/data/workspace/share/mp_reports/YYYY-MM-DD/<key>.md，bin/mp_report_mirror.py
+落盘三波维护）→ 零网络直用毫秒级；③镜像缺 → GitHub fallback（原链路原样）。
+/api/daily_report 对前端的字段结构完全不变（还是那个全量聚合接口）——镜像消灭的
+是「冷缓存现去 GitHub 捞五源几十秒」的窗口，行为不变速度质变。
+
 报告问答 POST /ai/report_chat：多轮 messages + 当日报告全文为上下文，走 Ark
 Anthropic 兼容端点（复用 ai_proxy._ark_messages），计入 summary 日限额与频控。
 红线同 ai_proxy：结果【不写入消息总线】。
@@ -39,6 +47,7 @@ GET/POST /api/pgroup/messages——登录 token 即可读（require_agent 已保
 热读，落盘文件即全量历史。重启自清作废。
 """
 import asyncio
+import datetime
 import json
 import logging
 import os
@@ -226,10 +235,75 @@ def _make_summary(md_text):
 
 # ---------- GET /api/daily_report ----------
 
+# MP-RPTSPLIT-1 v3（亦菲 seq 2938，哥哥拍板「只改后端不改前端」）：本地镜像层。
+# 读序=本地镜像优先 → GitHub fallback；>7 天日期=「已过期」占位（前端占位渲染现成）。
+# 镜像由 bin/mp_report_mirror.py 落盘三波维护（09:45/18:45/20:45 + 03:05 清理），
+# 契约：/data/workspace/share/mp_reports/YYYY-MM-DD/<key>.md 单份全文。
+_DEFAULT_MIRROR_ROOT = "/data/workspace/share/mp_reports"
+MIRROR_KEEP_DAYS = 7               # 哥哥原话「最多看 7 天」：过期判定与镜像清理同源
+
+
+def _mirror_cfg(cfg):
+    """镜像读层配置（config 可选 `report_mirror:` 段；不配=启用默认路径）。
+    enabled=false → 整层旁路（回到纯 GitHub 链路，回滚开关）。"""
+    m = (cfg or {}).get("report_mirror") or {}
+    return {
+        "enabled": m.get("enabled", True),
+        "root": m.get("root") or _DEFAULT_MIRROR_ROOT,
+    }
+
+
+def _mirror_expired(date):
+    """date 距今 > MIRROR_KEEP_DAYS 天（严格按本地日历日差，不依赖镜像目录存在性；
+    今天=0 天差，永远不过期；未来日期同样不过期——异常入参兜底按未过期走 fallback）。"""
+    try:
+        d = datetime.date(int(date[:4]), int(date[4:6]), int(date[6:8]))
+    except ValueError:
+        return False
+    return (datetime.date.today() - d).days > MIRROR_KEEP_DAYS
+
+
+def _mirror_read(cfg, src, date):
+    """本地镜像单源读 → 卡片 dict | None（None=镜像未命中，调用方走 GitHub fallback）。
+    命中即零网络毫秒级；镜像文件与 GitHub 全文同源（落盘脚本拉的就是 raw md），
+    summary/markdown 口径与 GitHub 路径完全一致（兼容锁：字段结构不变）。"""
+    m = _mirror_cfg(cfg)
+    if not m["enabled"] or _mirror_expired(date):
+        return None
+    dash = f"{date[:4]}-{date[4:6]}-{date[6:8]}"
+    p = os.path.join(m["root"], dash, f"{src['key']}.md")
+    if not os.path.isfile(p):
+        return None                    # 落盘前窗口/该源未产出 → fallback 保底
+    try:
+        with open(p, "rb") as f:
+            raw = f.read(_MAX_MD_BYTES + 1)
+    except OSError as e:
+        log.warning("[report] 镜像读失败 %s: %s", p, e)
+        return None                    # 读失败（权限/半态）→ fallback，绝不炸
+    if len(raw) > _MAX_MD_BYTES:
+        raw = raw[:_MAX_MD_BYTES]
+    md = raw.decode("utf-8", errors="replace")
+    return {"key": src["key"], "title": src["title"],
+            "available": True, "summary": _make_summary(md), "markdown": md,
+            "note": "", "path": f"{dash}/{src['key']}.md（本地镜像）"}
+
+
 async def _collect_one(session, cfg, src, date):
     """拉单个报告源 → 卡片 dict。任何异常都在此收口成 available=false + note，
     绝不上抛（红线 §3：单源问题不许炸整个接口；并发聚合下尤其要紧——一个源抛穿
-    asyncio.gather 会连坐其余三源）。"""
+    asyncio.gather 会连坐其余三源）。
+
+    MP-RPTSPLIT-1 v3 读序：①>7 天日期=「已过期」占位（镜像清理已删、GitHub 也不必
+    再打——历史日期报告不变，过期语义由前端占位渲染承接）；②本地镜像命中→零网络
+    直用（毫秒级）；③镜像缺→原 GitHub 链路原样 fallback（落盘前窗口/该源未产出，
+    行为与升级前完全一致）。"""
+    if _mirror_expired(date):
+        return {"key": src["key"], "title": src["title"],
+                "available": False, "summary": "", "markdown": "",
+                "note": "已过期（报告仅保留近 7 天）"}
+    hit = _mirror_read(cfg, src, date)
+    if hit is not None:
+        return hit
     item = {"key": src["key"], "title": src["title"],
             "available": False, "summary": "", "markdown": "", "note": ""}
     try:

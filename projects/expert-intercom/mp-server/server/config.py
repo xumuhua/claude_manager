@@ -121,6 +121,25 @@ def load_config(path):
     # 生产零配置改动。加第五源从此只需改 config.local.yaml + 重启，不必动代码。
     cfg["report_sources"] = _load_report_sources(raw.get("report_sources"))
 
+    # MP-RPTSPLIT-1 v3（亦菲 seq 2938，哥哥拍板「只改后端不改前端」）：本地镜像读层
+    # 可选段（enabled/root）。缺省=启用+默认路径 /data/workspace/share/mp_reports——
+    # 生产零配置改动即得镜像读序；enabled=false 可整体旁路回纯 GitHub 链路（回滚开关）。
+    rm = raw.get("report_mirror")
+    if rm is None:
+        cfg["report_mirror"] = {}
+    elif isinstance(rm, dict):
+        bad_keys = set(rm) - {"enabled", "root"}
+        if bad_keys:
+            raise ConfigError(f"report_mirror: 未知字段 {sorted(bad_keys)}（仅 enabled/root）")
+        if "enabled" in rm and not isinstance(rm["enabled"], bool):
+            raise ConfigError("report_mirror.enabled: 须为布尔")
+        if "root" in rm and (not isinstance(rm["root"], str) or not rm["root"].strip()):
+            raise ConfigError("report_mirror.root: 须为非空字符串（镜像根目录绝对路径）")
+        cfg["report_mirror"] = {"enabled": rm.get("enabled", True),
+                                "root": (rm.get("root") or "").strip() or None}
+    else:
+        raise ConfigError("report_mirror: 须为映射（enabled/root；不需要配置就整段删掉，默认启用）")
+
     # AI 中转（D1 v2 §9 R-5/R-6/R-7；哥哥 2026-08-23 拍板 Q5 限额）
     # 红线：doubao key 只经 env 注入，不落代码/配置/GitHub；语音凭证为 openspeech
     # 独立 appid+token 体系（2026-08-23 实测 Ark key 不能直调，见 tests/verify/），
