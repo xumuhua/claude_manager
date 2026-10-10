@@ -791,3 +791,66 @@ def test_r12_config_bad_report_sources_rejected(tmp_path, bad, why):
     p.write_text(_CFG_BASE + bad + "\n", encoding="utf-8")
     with pytest.raises(cfg_mod.ConfigError):
         cfg_mod.load_config(str(p))
+
+
+# ---------- R13 MP-GOSSIP1 四源并发加固（加第四源后串行最坏 120s 顶穿 nginx 90s/前端 60s） ----------
+
+class _SlowResp(FakeResp):
+    """__aenter__ 里挂 10ms 并统计在途路数——用来实证「四源是否真并发」。"""
+
+    def __init__(self, meter, *a, **kw):
+        super().__init__(*a, **kw)
+        self._meter = meter
+
+    async def __aenter__(self):
+        self._meter["n"] += 1
+        self._meter["max"] = max(self._meter["max"], self._meter["n"])
+        await asyncio.sleep(0.01)
+        self._meter["n"] -= 1
+        return self
+
+
+def test_r13_four_sources_fetched_concurrently(monkeypatch):
+    """并发实证：四源聚合期间在途 GitHub 请求数 >1（串行恒为 1）。
+    口径=加第四源不许把接口最坏时延线性拉长（哥哥 10/9「拉取失败」同源风险）。"""
+    meter = {"n": 0, "max": 0}
+    routes = {k: _SlowResp(meter, v.status, v._payload, v._raw)
+              for k, v in _gh_routes_all_ok().items()}
+    session = FakeSession(routes)
+    monkeypatch.setattr(report_proxy.aiohttp, "ClientSession", lambda **kw: session)
+    payload = asyncio.run(report_proxy.collect_daily_report(_cfg(), "20261008"))
+    assert len(payload["reports"]) == 4
+    assert all(r["available"] for r in payload["reports"])
+    assert meter["max"] >= 2, f"未见并发（在途峰值={meter['max']}）"
+    # gather 保序：卡片顺序=源登记顺序
+    assert [r["key"] for r in payload["reports"]] == ["aichip", "quant", "d4", "gossip"]
+
+
+def test_r13_one_source_exception_isolated(monkeypatch):
+    """单源抛意外异常（非 ClientError/TimeoutError 那类已被内层收口的）也不连坐——
+    gather 下一个源抛穿会带走全部四源，故 _collect_one 有兜底 except。"""
+    routes = _gh_routes_all_ok()
+    routes["/repos/xumuhua/gossip/contents/daily"] = RuntimeError("boom")
+    session = FakeSession(routes)
+    monkeypatch.setattr(report_proxy.aiohttp, "ClientSession", lambda **kw: session)
+    payload = asyncio.run(report_proxy.collect_daily_report(_cfg(), "20261008"))
+    by_key = {r["key"]: r for r in payload["reports"]}
+    assert len(payload["reports"]) == 4
+    assert by_key["gossip"]["available"] is False
+    assert "RuntimeError" in by_key["gossip"]["note"]
+    assert by_key["aichip"]["available"] is True and by_key["d4"]["available"] is True
+
+
+def test_r13_all_sources_down_interface_still_200(monkeypatch):
+    """四源全挂（仓未建/token 未覆盖/网络断）：接口仍 200，四张卡全占位——
+    报告页零报错横幅（红线 §3）；gossip 今晚试刊前就是这个态。"""
+    session = FakeSession({})        # 无任何路由 → 全部 404
+    monkeypatch.setattr(report_proxy.aiohttp, "ClientSession", lambda **kw: session)
+    app = _mk_app()
+    report_proxy._CACHE.clear()
+    resp = asyncio.run(report_proxy.daily_report(FakeRequest(app, query={"date": "20261008"})))
+    assert resp.status == 200
+    body = json.loads(resp.text)
+    assert len(body["reports"]) == 4
+    assert all(r["available"] is False and r["note"] for r in body["reports"])
+    report_proxy._CACHE.clear()

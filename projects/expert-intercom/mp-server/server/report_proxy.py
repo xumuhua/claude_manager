@@ -11,7 +11,11 @@
 **config 可配路线**（MP-GOSSIP1）：源清单支持整段挪进 config——config.yaml 可选
 `report_sources:` 段（结构同下方 REPORT_SOURCES，见 config._load_report_sources），
 配了就整体替换内置默认（含顺序=前端卡片顺序）；不配则用下方默认四源。所以【加第五源
-可只改生产 config.local.yaml + 重启，不必改代码】；今晚 gossip 上线走默认，生产零配置改动。
+可只改生产 config.local.yaml + 重启，不必改代码】；gossip 上线走默认，生产零配置改动。
+
+**四源并发聚合**（MP-GOSSIP1 加固，见 collect_daily_report）：加第四源同时把串行 for
+改成 asyncio.gather——串行最坏 4×(列目录+拉全文)=120s 会顶穿 nginx 90s/前端 60s 超时
+（哥哥 10/9「拉取失败」同源风险），并发后最坏≈单源两跳。gather 保序=卡片顺序不变。
 
 概述口径：零成本启发式（不烧 LLM 日限额）——md 一级/二级标题清单 + 首个非标题段落
 节选。拉取失败/当日未产出 → available=false + note，卡片渲染占位不报错（红线 §3）。
@@ -214,30 +218,49 @@ def _make_summary(md_text):
 
 # ---------- GET /api/daily_report ----------
 
+async def _collect_one(session, cfg, src, date):
+    """拉单个报告源 → 卡片 dict。任何异常都在此收口成 available=false + note，
+    绝不上抛（红线 §3：单源问题不许炸整个接口；并发聚合下尤其要紧——一个源抛穿
+    asyncio.gather 会连坐其余三源）。"""
+    item = {"key": src["key"], "title": src["title"],
+            "available": False, "summary": "", "markdown": "", "note": ""}
+    try:
+        names, err = await _list_dir(session, cfg, src)
+        if err:
+            item["note"] = f"报告源不可达（{err}）"
+            return item
+        path = _pick_daily_file(names, src, date)
+        if not path:
+            item["note"] = "当日未产出"
+            return item
+        md, err2 = await _fetch_raw(session, cfg, src, path)
+        if err2:
+            item["note"] = f"报告拉取失败（{err2}）"
+            return item
+        item.update({"available": True, "path": path,
+                     "summary": _make_summary(md), "markdown": md})
+    except Exception as e:      # noqa: BLE001 —— 兜底：源侧任何意外只标该源不可用
+        log.warning("[report] 源 %s 聚合异常 %s: %s", src.get("key"),
+                    e.__class__.__name__, e)
+        item["available"] = False
+        item["note"] = f"报告源异常（{e.__class__.__name__}）"
+    return item
+
+
 async def collect_daily_report(cfg, date):
     """聚合当日四源（源清单见 _sources()：config report_sources 段可整体替换）。
-    单源失败只标该源 available=false，整体不炸。"""
-    reports = []
+    单源失败只标该源 available=false，整体不炸。
+
+    **四源并发**（MP-GOSSIP1 加固）：加第四源前是串行 for 循环，最坏时延
+    4×(gh_timeout_s 列目录 + gh_timeout_s 拉全文)=4×30s=120s，会顶穿 nginx
+    proxy_read_timeout 90s 与前端 60s 探测超时——正是哥哥 10/9「拉取失败」
+    （MP-PROBE-FIX）的同源风险，加源只会更糟。改 asyncio.gather 并发后最坏≈单源
+    两跳（30s），常态由四源往返之和降为最慢一路；gather 保序 → reports 顺序
+    仍等于源登记顺序（=前端卡片顺序）。GitHub 侧 4 路并发对 5000/h 配额无压力。"""
     timeout_hdr = _gh_headers(cfg)
     async with aiohttp.ClientSession(headers=timeout_hdr) as session:
-        for src in _sources(cfg):
-            item = {"key": src["key"], "title": src["title"],
-                    "available": False, "summary": "", "markdown": "", "note": ""}
-            names, err = await _list_dir(session, cfg, src)
-            if err:
-                item["note"] = f"报告源不可达（{err}）"
-            else:
-                path = _pick_daily_file(names, src, date)
-                if not path:
-                    item["note"] = "当日未产出"
-                else:
-                    md, err2 = await _fetch_raw(session, cfg, src, path)
-                    if err2:
-                        item["note"] = f"报告拉取失败（{err2}）"
-                    else:
-                        item.update({"available": True, "path": path,
-                                     "summary": _make_summary(md), "markdown": md})
-            reports.append(item)
+        reports = list(await asyncio.gather(
+            *[_collect_one(session, cfg, src, date) for src in _sources(cfg)]))
     return {
         "date": date,
         "generated_at": int(time.time()),
