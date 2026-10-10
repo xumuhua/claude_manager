@@ -870,6 +870,13 @@ setImmediate(() => {
                         ok('T4r.5 js 零硬编码源 key 清单（懒解析/展开态按 key 索引，四源同轨）',
                            !/\[\s*'aichip'\s*,\s*'quant'\s*,\s*'d4'\s*\]/.test(rpJsR)
                            && /this\._mdSource\[r\.key\]/.test(rpJsR));
+                        // 亦菲 seq 2912 拍板：gossip 进阅读页预设仓清单（能直接翻 daily/ 目录树）
+                        const cfgJsR = fs.readFileSync(path.join(MP, 'config.js'), 'utf8');
+                        const mRepos = cfgJsR.match(/DEFAULT_REPOS:\s*\[([\s\S]*?)\]/);
+                        ok('T4r.12 阅读页 DEFAULT_REPOS 含 xumuhua/gossip（亦菲 seq 2912 拍板）',
+                           !!mRepos && /'xumuhua\/gossip'/.test(mRepos[1])
+                           && /'xumuhua\/claude_stock'/.test(mRepos[1]));
+
                         ok('T4r.6 绿点计数按 reports 过滤（源数变化自适应，非写死 3）',
                            /filter\(\(x\) => x\.available\)\.length/.test(rpJsR)
                            && !/avail\s*===?\s*3/.test(rpJsR));

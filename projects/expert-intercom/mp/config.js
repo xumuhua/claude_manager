@@ -40,10 +40,13 @@ module.exports = {
   },
 
   // 默认常用仓（D1 §2.2，可本地收藏排序）
+  // MP-GOSSIP1（亦菲 seq 2912 拍板「加」）：gossip 进预设清单——哥哥能在阅读页直接翻
+  // daily/ 目录树看每日吃瓜日报（与报告页第四源同仓，走同一 GITHUB_RO_TOKEN 通道）。
   DEFAULT_REPOS: [
     'xumuhua/claude_stock',
     'xumuhua/claude_manager',
     'xumuhua/aichip',
+    'xumuhua/gossip',
     'xumuhua/mcn_design',
     'xumuhua/chip_design_ir',
     'xumuhua/agent_research',
