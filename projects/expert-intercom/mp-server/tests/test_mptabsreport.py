@@ -2,12 +2,14 @@
 
 口径（任务书 2026-10-08 + 亦菲 seq 2586 派单）：
   R1 tabs 接口四页=对话/状态/日常报告/阅读（动态页下线）
-  R2 daily_report 聚合：三源各态——产出/未产出/源不可达；date 参数校验
+  R2 daily_report 聚合：四源各态——产出/未产出/源不可达；date 参数校验
   R3 概述启发式：标题清单+首段节选；空文不炸
   R4 report_chat：多轮 messages 组包（system 并入首条 user）；NO_REPORT 404；
      非哥哥 403；限额/频控生效
   R5 pgroup：登录可读；非哥哥写 403；seq 自增+after_seq 增量；超长 413；环形截断
   R9 pgroup 落盘持久化：append 落 jsonl；重启加载历史 seq 接续；内存环形热窗与落盘全量分轨；坏行跳过
+  R12 MP-GOSSIP1 第四源 gossip（亦菲 seq 2893）：源登记形态/四源聚合/仓未建 404 不炸/
+     config report_sources 可配路线（整体替换+缺省回落默认+坏配置拒启动）
 用法：pytest tests/test_mptabsreport.py（venv 见 /tmp/mpmsg1_venv）
 """
 import asyncio
@@ -159,13 +161,15 @@ def test_r1_tabs_four_pages():
 # ---------- R2 聚合 ----------
 
 def _gh_routes_all_ok(date_plain="20261008", date_dash="2026-10-08"):
-    """亦菲 seq 2590 拍板口径：
-    aichip=xumuhua/aichip main ai_research/daily/YYYY-MM-DD_L2汇总.md
-    quant =claude_stock main output/daily_report/quant_daily_YYYYMMDD.md
-    d4    =claude_stock d4  output/stockmodel/daily/YYYY-MM-DD_*.md"""
+    """亦菲 seq 2590 拍板口径 + MP-GOSSIP1 第四源（亦菲 seq 2893）：
+    aichip =xumuhua/aichip main ai_research/daily/YYYY-MM-DD_L2汇总.md
+    quant  =claude_stock main output/daily_report/quant_daily_YYYYMMDD.md
+    d4     =claude_stock d4  output/stockmodel/daily/YYYY-MM-DD_*.md
+    gossip =xumuhua/gossip main daily/YYYY-MM-DD_吃瓜日报.md（dash 日期）"""
     md_a = "# AICHIP 全景\n首段落内容。\n\n## 章节一\n## 章节二".encode()
     md_q = "# 量化日报\n市场概述。".encode()
     md_d = "# 人话版\n说人话。".encode()
+    md_g = "# 吃瓜日报\n\n今日瓜田三枚。\n\n## 瓜一\n正文".encode()
     return {
         "/repos/xumuhua/aichip/contents/ai_research/daily": FakeResp(200, [
             {"name": f"{date_dash}_L2汇总.md"}, {"name": "README.md"}]),
@@ -173,9 +177,12 @@ def _gh_routes_all_ok(date_plain="20261008", date_dash="2026-10-08"):
             {"name": f"quant_daily_{date_plain}.md"}]),
         "/repos/xumuhua/claude_stock/contents/output/stockmodel/daily": FakeResp(200, [
             {"name": f"{date_dash}_TRIAL1人话版.md"}]),
+        "/repos/xumuhua/gossip/contents/daily": FakeResp(200, [
+            {"name": f"{date_dash}_吃瓜日报.md"}, {"name": "README.md"}]),
         "/aichip/main/ai_research/daily/": FakeResp(200, raw=md_a),
         "/claude_stock/main/output/daily_report/": FakeResp(200, raw=md_q),
         "/claude_stock/d4/output/stockmodel/daily/": FakeResp(200, raw=md_d),
+        "/gossip/main/daily/": FakeResp(200, raw=md_g),
     }
 
 
@@ -189,6 +196,9 @@ def test_r2_collect_all_available(monkeypatch):
     assert by_key["aichip"]["path"] == "ai_research/daily/2026-10-08_L2汇总.md"
     assert by_key["quant"]["path"] == "output/daily_report/quant_daily_20261008.md"
     assert "人话版" in by_key["d4"]["path"]
+    # MP-GOSSIP1 第四源（亦菲 seq 2893）：gossip 娱乐吃瓜日报 daily/YYYY-MM-DD_吃瓜日报.md
+    assert by_key["gossip"]["path"] == "daily/2026-10-08_吃瓜日报.md"
+    assert by_key["gossip"]["available"] is True
 
 
 def test_r2_unproduced_placeholder(monkeypatch):
@@ -623,3 +633,161 @@ def test_r11_today_short_ttl_expires_first(monkeypatch):
     assert report_proxy._cache_get("report:" + today) is None
     assert report_proxy._cache_get("report:20200101") is not None
     report_proxy._CACHE.clear()
+
+
+# ---------- R12 MP-GOSSIP1 第四源 gossip + config 可配路线（亦菲 seq 2893，哥哥 10/10 令） ----------
+
+def _cfg_with_sources(sources):
+    c = _cfg()
+    c["report_sources"] = sources
+    return c
+
+
+def test_r12_gossip_source_registered():
+    """源登记形态照单：key=gossip / title=娱乐吃瓜日报 / xumuhua/gossip main / dir daily / dash。
+    顺序=前端卡片顺序，gossip 是第四张卡。"""
+    keys = [s["key"] for s in report_proxy.REPORT_SOURCES]
+    assert keys == ["aichip", "quant", "d4", "gossip"]
+    g = report_proxy.REPORT_SOURCES[-1]
+    assert g["title"] == "娱乐吃瓜日报"
+    assert (g["owner"], g["repo"], g["branch"]) == ("xumuhua", "gossip", "main")
+    assert g["dir"] == "daily" and g["date_fmt"] == "dash"
+
+
+def test_r12_pick_daily_file_gossip_dash():
+    """gossip 文件名 daily/YYYY-MM-DD_吃瓜日报.md（dash 日期）命中；同日多份取字典序最后。"""
+    src = report_proxy.REPORT_SOURCES[-1]
+    names = ["README.md", "2026-10-09_吃瓜日报.md", "2026-10-10_吃瓜日报.md", "notes.txt"]
+    assert report_proxy._pick_daily_file(names, src, "20261010") == "daily/2026-10-10_吃瓜日报.md"
+    # 当日无文件（只有昨天）→ None = 当日未产出占位
+    assert report_proxy._pick_daily_file(["2026-10-09_吃瓜日报.md"], src, "20261010") is None
+    # 同日两份取字典序最后
+    assert report_proxy._pick_daily_file(
+        ["2026-10-10_吃瓜日报.md", "2026-10-10_吃瓜日报_补.md"], src, "20261010"
+    ) == "daily/2026-10-10_吃瓜日报_补.md"
+
+
+def test_r12_collect_four_sources_all_available(monkeypatch):
+    """四源全产出：reports 长度 4、顺序与登记一致、gossip 全文与概述都拿到。"""
+    session = FakeSession(_gh_routes_all_ok())
+    monkeypatch.setattr(report_proxy.aiohttp, "ClientSession", lambda **kw: session)
+    payload = asyncio.run(report_proxy.collect_daily_report(_cfg(), "20261008"))
+    assert len(payload["reports"]) == 4
+    assert [r["key"] for r in payload["reports"]] == ["aichip", "quant", "d4", "gossip"]
+    g = payload["reports"][-1]
+    assert g["available"] is True and g["title"] == "娱乐吃瓜日报"
+    assert "今日瓜田三枚" in g["summary"] and g["markdown"].startswith("# 吃瓜日报")
+
+
+def test_r12_gossip_unproduced_placeholder(monkeypatch):
+    """gossip 当日未产出（20:30 试刊前）→ available=false + note 占位，其余三源照常。"""
+    routes = _gh_routes_all_ok()
+    routes["/repos/xumuhua/gossip/contents/daily"] = FakeResp(
+        200, [{"name": "README.md"}, {"name": "2026-10-01_吃瓜日报.md"}])
+    session = FakeSession(routes)
+    monkeypatch.setattr(report_proxy.aiohttp, "ClientSession", lambda **kw: session)
+    payload = asyncio.run(report_proxy.collect_daily_report(_cfg(), "20261008"))
+    g = [r for r in payload["reports"] if r["key"] == "gossip"][0]
+    assert g["available"] is False and g["note"] == "当日未产出"
+    assert g["markdown"] == "" and g["summary"] == ""
+    assert [r for r in payload["reports"] if r["key"] != "gossip"][0]["available"] is True
+
+
+def test_r12_gossip_repo_missing_404_not_fatal(monkeypatch):
+    """仓未建 / GITHUB_RO_TOKEN 未覆盖新仓 → contents 404：只标该源不可达，
+    接口整体 200 不炸（红线 §3：占位不报错），其余三源零影响。"""
+    routes = _gh_routes_all_ok()
+    routes["/repos/xumuhua/gossip/contents/daily"] = FakeResp(404)
+    session = FakeSession(routes)
+    monkeypatch.setattr(report_proxy.aiohttp, "ClientSession", lambda **kw: session)
+    app = _mk_app()
+    report_proxy._CACHE.clear()
+    resp = asyncio.run(report_proxy.daily_report(FakeRequest(app, query={"date": "20261008"})))
+    assert resp.status == 200                      # 接口不炸
+    body = json.loads(resp.text)
+    g = [r for r in body["reports"] if r["key"] == "gossip"][0]
+    assert g["available"] is False and "404" in g["note"]
+    assert sum(1 for r in body["reports"] if r["available"]) == 3
+    report_proxy._CACHE.clear()
+
+
+def test_r12_config_sources_override_defaults(monkeypatch):
+    """config 可配路线：cfg["report_sources"] 非空即【整体替换】内置默认（含顺序）——
+    加第五源只改 config.local.yaml + 重启，不动代码。"""
+    session = FakeSession(_gh_routes_all_ok())
+    monkeypatch.setattr(report_proxy.aiohttp, "ClientSession", lambda **kw: session)
+    only = [{"key": "gossip", "title": "娱乐吃瓜日报", "owner": "xumuhua",
+             "repo": "gossip", "branch": "main", "dir": "daily", "date_fmt": "dash"}]
+    payload = asyncio.run(report_proxy.collect_daily_report(_cfg_with_sources(only), "20261008"))
+    assert [r["key"] for r in payload["reports"]] == ["gossip"]
+    assert payload["reports"][0]["available"] is True
+    # 内置默认清单未被就地改写（整体替换非追加）
+    assert [s["key"] for s in report_proxy.REPORT_SOURCES] == ["aichip", "quant", "d4", "gossip"]
+
+
+def test_r12_sources_fallback_when_cfg_key_absent():
+    """cfg 无 report_sources 键（老配置/测试桩 dict）→ 回落内置默认四源，不 KeyError。"""
+    assert report_proxy._sources({}) is report_proxy.REPORT_SOURCES
+    assert report_proxy._sources({"report_sources": None}) is report_proxy.REPORT_SOURCES
+    assert len(report_proxy._sources(_cfg())) == 4
+
+
+_CFG_BASE = """
+port: 8766
+hub: {url: "http://127.0.0.1:8765", token: "hubtok"}
+agents:
+  - {name: gege_dev, role: gege, token: "tok_gege", scope: [group, dm]}
+"""
+
+
+def test_r12_config_parse_report_sources(tmp_path):
+    """config.yaml report_sources 段解析：branch 缺省 main、date_fmt 缺省 dash、
+    dir 首尾斜杠剥掉；未配置段 → None（回落内置默认，生产零配置改动）。"""
+    import config as cfg_mod
+    p = tmp_path / "c_default.yaml"
+    p.write_text(_CFG_BASE, encoding="utf-8")
+    assert cfg_mod.load_config(str(p))["report_sources"] is None
+
+    raw = _CFG_BASE + """
+report_sources:
+  - key: gossip
+    title: 娱乐吃瓜日报
+    owner: xumuhua
+    repo: gossip
+    dir: /daily/
+  - key: aichip
+    title: aichip AI 全景摘要
+    owner: xumuhua
+    repo: aichip
+    branch: main
+    dir: ai_research/daily
+    date_fmt: dash
+"""
+    p2 = tmp_path / "c_src.yaml"
+    p2.write_text(raw, encoding="utf-8")
+    srcs = cfg_mod.load_config(str(p2))["report_sources"]
+    assert [s["key"] for s in srcs] == ["gossip", "aichip"]       # 顺序即卡片顺序
+    assert srcs[0]["branch"] == "main" and srcs[0]["date_fmt"] == "dash"
+    assert srcs[0]["dir"] == "daily"                              # 斜杠已剥
+
+
+@pytest.mark.parametrize("bad,why", [
+    ("report_sources: []", "空列表"),
+    ("report_sources: {a: 1}", "非列表"),
+    ("report_sources:\n  - key: Gossip\n    title: t\n    owner: o\n    repo: r\n    dir: d", "key 大写"),
+    ("report_sources:\n  - key: gossip\n    title: t\n    owner: o\n    repo: r\n    dir: d\n"
+     "  - key: gossip\n    title: t2\n    owner: o\n    repo: r\n    dir: d", "key 重复"),
+    ("report_sources:\n  - key: gossip\n    title: t\n    owner: o\n    repo: r", "缺 dir"),
+    ("report_sources:\n  - key: gossip\n    title: ''\n    owner: o\n    repo: r\n    dir: d", "title 空"),
+    ("report_sources:\n  - key: gossip\n    title: t\n    owner: o\n    repo: r\n    dir: d\n"
+     "    date_fmt: slash", "date_fmt 非法"),
+    ("report_sources:\n  - gossip", "条目非映射"),
+])
+def test_r12_config_bad_report_sources_rejected(tmp_path, bad, why):
+    """坏报告源配置【拒启动】（与 users/agents 同口径）——静默回落默认会让哥哥
+    看不到日报且极难查。"""
+    import config as cfg_mod
+    p = tmp_path / "bad.yaml"
+    p.write_text(_CFG_BASE + bad + "\n", encoding="utf-8")
+    with pytest.raises(cfg_mod.ConfigError):
+        cfg_mod.load_config(str(p))

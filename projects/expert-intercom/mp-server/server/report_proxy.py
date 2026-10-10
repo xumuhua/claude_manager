@@ -1,10 +1,17 @@
-"""日常报告代理（MP-TABS-REPORT，哥哥 10/8 令）：每日三报告聚合 + 报告问答 + 私有群聊天。
+"""日常报告代理（MP-TABS-REPORT，哥哥 10/8 令）：每日四报告聚合 + 报告问答 + 私有群聊天。
 
-报告三源（全部走 GitHub raw，现有 GITHUB_RO_TOKEN 通道，不走 SSH）。
-亦菲 seq 2590 口径拍板（config 可改、以下为默认）：
+报告四源（全部走 GitHub raw，现有 GITHUB_RO_TOKEN 通道，不走 SSH）。
+亦菲 seq 2590 口径拍板（config 可改、以下为默认）+ MP-GOSSIP1 第四源（亦菲 seq 2893，
+哥哥 10/10 上午令「新增 gossip 专家调研每日娱乐八卦，日报上小程序」）：
 - aichip AI 全景摘要：xumuhua/aichip main 分支 ai_research/daily/YYYY-MM-DD_L2汇总.md
 - quant 量化日报：xumuhua/claude_stock main 分支 output/daily_report/quant_daily_YYYYMMDD.md
 - d4 人话版：xumuhua/claude_stock d4 分支 output/stockmodel/daily/YYYY-MM-DD_*.md
+- gossip 娱乐吃瓜日报：xumuhua/gossip main 分支 daily/YYYY-MM-DD_吃瓜日报.md（10/10 起）
+
+**config 可配路线**（MP-GOSSIP1）：源清单支持整段挪进 config——config.yaml 可选
+`report_sources:` 段（结构同下方 REPORT_SOURCES，见 config._load_report_sources），
+配了就整体替换内置默认（含顺序=前端卡片顺序）；不配则用下方默认四源。所以【加第五源
+可只改生产 config.local.yaml + 重启，不必改代码】；今晚 gossip 上线走默认，生产零配置改动。
 
 概述口径：零成本启发式（不烧 LLM 日限额）——md 一级/二级标题清单 + 首个非标题段落
 节选。拉取失败/当日未产出 → available=false + note，卡片渲染占位不报错（红线 §3）。
@@ -36,6 +43,7 @@ log = logging.getLogger("mp-backend.report")
 
 # ---------- 报告源登记（路径模板按日替换；失败即当日未产出，不炸接口） ----------
 # date_fmt: "plain"=YYYYMMDD / "dash"=YYYY-MM-DD
+# 内置默认四源；config.yaml 的可选 `report_sources:` 段可整段替换（见 _sources()）。
 REPORT_SOURCES = [
     {
         "key": "aichip",
@@ -58,7 +66,27 @@ REPORT_SOURCES = [
         # 亦菲 seq 2590：d4 分支 output/stockmodel/daily/YYYY-MM-DD_*.md（10/8 起六栏目新结构）
         "dir": "output/stockmodel/daily", "date_fmt": "dash",
     },
+    {
+        "key": "gossip",
+        "title": "娱乐吃瓜日报",
+        "owner": "xumuhua", "repo": "gossip", "branch": "main",
+        # MP-GOSSIP1（亦菲 seq 2893，哥哥 10/10 上午令）：gossip 专家每日娱乐八卦调研，
+        # 文件名 daily/YYYY-MM-DD_吃瓜日报.md（dash 日期）。20:30 首期试刊；仓未建/当日
+        # 未产出都走占位路径（available=false + note），接口与报告页均不炸（红线 §3）。
+        "dir": "daily", "date_fmt": "dash",
+    },
 ]
+
+
+def _sources(cfg):
+    """本次聚合用哪份源清单：config `report_sources` 段（config.py 已校验形态）优先，
+    缺省回落内置 REPORT_SOURCES 默认四源。
+
+    MP-GOSSIP1「config 可配路线」：加/改/停一个报告源可以只动生产 config.local.yaml
+    + 重启，不必改代码；生产不配则行为与本文件默认完全一致（零配置改动上线）。
+    cfg 为测试桩 dict 时可能没有该键，一律 .get() 取。"""
+    src = (cfg or {}).get("report_sources")
+    return src or REPORT_SOURCES
 
 REPORT_CACHE_TTL_S = 600          # 历史日期报告聚合缓存 10min（报告日产一次，变了拉下轮）
 # MP-PROBE-FIX④（亦菲 seq 2776，哥哥 10/9 实测「拉取失败」）：当日报告改 5min 短缓存——
@@ -187,11 +215,12 @@ def _make_summary(md_text):
 # ---------- GET /api/daily_report ----------
 
 async def collect_daily_report(cfg, date):
-    """聚合当日三源。单源失败只标该源 available=false，整体不炸。"""
+    """聚合当日四源（源清单见 _sources()：config report_sources 段可整体替换）。
+    单源失败只标该源 available=false，整体不炸。"""
     reports = []
     timeout_hdr = _gh_headers(cfg)
     async with aiohttp.ClientSession(headers=timeout_hdr) as session:
-        for src in REPORT_SOURCES:
+        for src in _sources(cfg):
             item = {"key": src["key"], "title": src["title"],
                     "available": False, "summary": "", "markdown": "", "note": ""}
             names, err = await _list_dir(session, cfg, src)

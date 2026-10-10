@@ -170,15 +170,18 @@ function deepTicks(n, done) {
   setImmediate(() => deepTicks(n - 1, done));
 }
 
-// 报告加载：三卡片渲染 + 未产出占位
+// 报告加载：四卡片渲染 + 未产出占位（MP-GOSSIP1 第四源 gossip，亦菲 seq 2893）
 apiHandler = () => Promise.resolve({ date: '20261008', reports: [
   { key: 'aichip', title: 'aichip AI 全景摘要', available: true, summary: 'S1', markdown: '# 标题\n正文段落\n\n## 章节一' },
   { key: 'quant', title: 'quant 量化日报', available: false, note: '当日未产出', summary: '', markdown: '' },
   { key: 'd4', title: 'd4 人话版', available: true, summary: 'S3', markdown: '# T' },
+  { key: 'gossip', title: '娱乐吃瓜日报', available: false, note: '当日未产出', summary: '', markdown: '' },
 ] });
 rp.onLoad();
 setImmediate(() => {
-  ok('T4.4 报告三卡片装载', rp.data.reports.length === 3 && rp.data.reports[1].available === false);
+  ok('T4.4 报告四卡片装载（MP-GOSSIP1：aichip/quant/d4/gossip）',
+     rp.data.reports.length === 4 && rp.data.reports[1].available === false
+     && rp.data.reports[3].key === 'gossip');
   ok('T4.5 未产出 note 透传', rp.data.reports[1].note === '当日未产出');
 
   // 展开懒解析
@@ -234,9 +237,14 @@ setImmediate(() => {
         const rpWxss = fs.readFileSync(path.join(MP, 'pages/daily_report/index.wxss'), 'utf8');
         const mBottom = rpWxss.match(/\.input-bar\s*\{[\s\S]*?bottom:\s*env\(safe-area-inset-bottom\)/);
         ok('T4b.1 输入条贴屏幕底（bottom=env(safe-area-inset-bottom)，tabBar 已钉顶）', !!mBottom);
-        const mPad = rpWxss.match(/\.page\s*\{[\s\S]*?padding-bottom:\s*(\d+)px/);
-        ok('T4b.2 页面底部让位 ≥ 输入条常态高（私有群含操作钮行）',
+        // MP-GOSSIP1（四卡后列表更长，尾卡被 fixed 输入条压住概率上升）：垫底须
+        // 含 env(safe-area-inset-bottom)——输入条 bottom 就是 env(...)，全面屏上它
+        // 实际占到距屏底 34+52px，旧 64px 定值盖不住尾卡。
+        const mPad = rpWxss.match(/\.page\s*\{[^}]*?padding-bottom:\s*calc\((\d+)px\s*\+\s*env\(safe-area-inset-bottom\)\)/);
+        ok('T4b.2 页面底部让位 ≥ 输入条常态高且含安全区（calc(Npx + env(safe-area-inset-bottom))）',
            !!mPad && parseInt(mPad[1], 10) >= 56);
+        ok('T4b.2b 页面底部让位无裸定值 padding-bottom 旧口径残留',
+           !/\.page\s*\{[^}]*?padding-bottom:\s*\d+px/.test(rpWxss));
 
         // ②私有群操作钮：登出小胶囊居左灰底（MP-HIST1① 哥哥 10/9 令）+返回报告页在右
         const rpWxml = fs.readFileSync(path.join(MP, 'pages/daily_report/index.wxml'), 'utf8');
@@ -838,8 +846,67 @@ setImmediate(() => {
                            /after_seq=0/.test(lastCall.path) && rp.data.pMsgs.length === 1
                            && rp.data.pMsgs[0].seq === 1 && rp.data.pLatestSeq === 1);
                         timers.forEach((t) => clearInterval(t));
-                        console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAIL`);
-                        process.exit(fail === 0 ? 0 : 1);
+
+                        /* ---------- T4r MP-GOSSIP1 三卡→四卡（亦菲 seq 2893，哥哥 10/10 令） ----------
+                           口径：卡片是【数据驱动】列表（wx:for reports），源增删零结构改动；
+                           当日未产出/源不可达走 rpt-none 占位不报错（红线 §3）；
+                           布局自适应=页面原生滚动（min-height 非定高、零 overflow 裁剪）
+                           + 垫底含安全区（T4b.2）。 */
+                        const rpWxmlR = fs.readFileSync(path.join(MP, 'pages/daily_report/index.wxml'), 'utf8');
+                        const rpWxssR = fs.readFileSync(path.join(MP, 'pages/daily_report/index.wxss'), 'utf8');
+                        const rpJsR = fs.readFileSync(path.join(MP, 'pages/daily_report/index.js'), 'utf8');
+                        ok('T4r.1 卡片列表 wx:for 数据驱动（零硬编码源 key，加源不改 wxml）',
+                           /wx:for="\{\{reports\}\}"[\s\S]{0,80}wx:key="key"/.test(rpWxmlR)
+                           && !/wx:if="\{\{[^}]*key === '(aichip|quant|d4|gossip)'/.test(rpWxmlR));
+                        ok('T4r.2 未产出/不可达走 rpt-none 占位（note 兜底文案，不报错）',
+                           /wx:else class="rpt-none"\>\{\{item\.note \|\| '当日未产出'\}\}/.test(rpWxmlR.replace(/<view /g, '<view ').replace(/"/g, '"'))
+                           || /class="rpt-none">\{\{item\.note \|\| '当日未产出'\}\}/.test(rpWxmlR));
+                        ok('T4r.3 报告视图零定高裁剪（.page min-height 非 height，页面原生滚动承载四卡）',
+                           /\.page\s*\{[^}]*?min-height:\s*100vh/.test(rpWxssR)
+                           && !/\.page\s*\{[^}]*?(^|[^-])height:\s*\d/.test(rpWxssR)
+                           && !/\.page\s*\{[^}]*?overflow:\s*hidden/.test(rpWxssR));
+                        ok('T4r.4 卡片骨架无「仅三张」假设（.card 无 nth-child/固定序号样式）',
+                           !/\.card:nth-child/.test(rpWxssR) && !/\.card\s*\.c[1-4]/.test(rpWxssR));
+                        ok('T4r.5 js 零硬编码源 key 清单（懒解析/展开态按 key 索引，四源同轨）',
+                           !/\[\s*'aichip'\s*,\s*'quant'\s*,\s*'d4'\s*\]/.test(rpJsR)
+                           && /this\._mdSource\[r\.key\]/.test(rpJsR));
+                        ok('T4r.6 绿点计数按 reports 过滤（源数变化自适应，非写死 3）',
+                           /filter\(\(x\) => x\.available\)\.length/.test(rpJsR)
+                           && !/avail\s*===?\s*3/.test(rpJsR));
+
+                        // 行为锁：四卡装载 + gossip 当日未产出占位 + 展开互不串台
+                        rp._bgQueue = [];
+                        rp.data.mode = 'report';
+                        apiHandler = () => Promise.resolve({ date: '20261010', reports: [
+                          { key: 'aichip', title: 'aichip AI 全景摘要', available: true, summary: 'S1', markdown: '# A\n\n正文A' },
+                          { key: 'quant', title: 'quant 量化日报', available: true, summary: 'S2', markdown: '# Q\n\n正文Q' },
+                          { key: 'd4', title: 'd4 人话版', available: true, summary: 'S3', markdown: '# D\n\n正文D' },
+                          { key: 'gossip', title: '娱乐吃瓜日报', available: false, note: '当日未产出', summary: '', markdown: '' },
+                        ] });
+                        rp.setData({ reports: [], reportErr: '', expanded: {}, mdBlocks: {} });
+                        rp.loadReports();
+                        setImmediate(() => {
+                          ok('T4r.7 四卡装载+顺序与后端一致（gossip 第四张）',
+                             rp.data.reports.length === 4
+                             && rp.data.reports.map((r) => r.key).join(',') === 'aichip,quant,d4,gossip'
+                             && rp.data.reports[3].title === '娱乐吃瓜日报');
+                          ok('T4r.8 gossip 当日未产出=占位态（available false + note 透传，零报错横幅）',
+                             rp.data.reports[3].available === false
+                             && rp.data.reports[3].note === '当日未产出'
+                             && rp.data.reportErr === '');
+                          ok('T4r.9 未产出卡不入 _mdSource（无全文可展开，与 T4m 剥离口径同轨）',
+                             Object.keys(rp._mdSource || {}).sort().join(',') === 'aichip,d4,quant');
+                          rp.toggleReport({ currentTarget: { dataset: { key: 'gossip' } } });
+                          ok('T4r.10 点未产出卡片不炸不产块（expanded 置位、mdBlocks 无该 key）',
+                             rp.data.expanded.gossip === true && !rp.data.mdBlocks.gossip);
+                          rp.toggleReport({ currentTarget: { dataset: { key: 'aichip' } } });
+                          ok('T4r.11 四卡场景懒解析仍按 key 精确入块（不串台）',
+                             Array.isArray(rp.data.mdBlocks.aichip) && rp.data.mdBlocks.aichip.length > 0
+                             && !rp.data.mdBlocks.d4 && !rp.data.mdBlocks.gossip);
+                          timers.forEach((t) => clearInterval(t));
+                          console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAIL`);
+                          process.exit(fail === 0 ? 0 : 1);
+                        });   // T4r 行为锁
                       });
                     });
                   });

@@ -10,6 +10,7 @@ token 安全约定：config.yaml 中任何 token 字段均可写 "env:VAR_NAME"�
 import hashlib
 import hmac
 import os
+import re
 import sys
 
 import yaml
@@ -40,6 +41,59 @@ def _resolve_optional(value):
     return value
 
 
+# 报告源 key 形态：前端按 key 索引展开态/懒解析缓存（mdBlocks/expanded），
+# 只允许小写字母数字下划线，防奇怪字符进 wxml 属性与 storage 键。
+_RE_SOURCE_KEY = re.compile(r"^[a-z0-9_]{1,32}$")
+_SOURCE_DATE_FMTS = ("plain", "dash")     # plain=YYYYMMDD / dash=YYYY-MM-DD
+_SOURCE_REQUIRED = ("title", "owner", "repo", "dir")
+
+
+def _load_report_sources(raw_list):
+    """MP-GOSSIP1（亦菲 seq 2893）报告源可配路线：解析 config.yaml 可选 `report_sources:` 段。
+
+    返回 None = 未配置 → report_proxy 用内置默认四源（生产零配置改动，行为完全不变）；
+    返回 list = 整体替换内置默认（含顺序，前端卡片顺序即此顺序）。
+    坏配置【拒启动】（与 users/agents 同口径）：报告源写错会让哥哥看不到日报，
+    静默回落默认更难查，不如启动即报。
+    字段：key/title/owner/repo/dir 必填，branch 缺省 main，date_fmt 缺省 dash。
+    """
+    if raw_list is None:
+        return None
+    if not isinstance(raw_list, list) or not raw_list:
+        raise ConfigError("report_sources: 须为非空列表（不需要覆盖就整段删掉，回落内置默认四源）")
+    out, seen = [], set()
+    for i, s in enumerate(raw_list):
+        f = f"report_sources[{i}]"
+        if not isinstance(s, dict):
+            raise ConfigError(f"{f}: 须为映射（key/title/owner/repo/branch/dir/date_fmt）")
+        key = s.get("key")
+        if not isinstance(key, str) or not _RE_SOURCE_KEY.match(key):
+            raise ConfigError(f"{f}.key: 须为 1-32 位小写字母/数字/下划线（前端按 key 索引展开态）")
+        if key in seen:
+            raise ConfigError(f"report_sources: key 重复登记 {key}")
+        seen.add(key)
+        for req in _SOURCE_REQUIRED:
+            v = s.get(req)
+            if not isinstance(v, str) or not v.strip():
+                raise ConfigError(f"{f}.{req}: 必填且为非空字符串")
+        fmt = s.get("date_fmt", "dash")
+        if fmt not in _SOURCE_DATE_FMTS:
+            raise ConfigError(f"{f}.date_fmt: 仅允许 {'/'.join(_SOURCE_DATE_FMTS)}")
+        branch = s.get("branch") or "main"
+        if not isinstance(branch, str) or not branch.strip():
+            raise ConfigError(f"{f}.branch: 须为非空字符串（缺省 main）")
+        out.append({
+            "key": key,
+            "title": s["title"].strip(),
+            "owner": s["owner"].strip(),
+            "repo": s["repo"].strip(),
+            "branch": branch.strip(),
+            "dir": s["dir"].strip().strip("/"),
+            "date_fmt": fmt,
+        })
+    return out
+
+
 def load_config(path):
     with open(path, "r", encoding="utf-8") as f:
         raw = yaml.safe_load(f)
@@ -61,6 +115,11 @@ def load_config(path):
     # 可选只读 PAT（方案 B，2026-08-24 哥哥拍板）：值写 "env:GITHUB_RO_TOKEN"；
     # env 未设置时返回 None = 匿名降级，不阻塞启动，行为与旧版完全一致
     cfg["gh_token"] = _resolve_optional(gh.get("token"))
+
+    # 报告源可配路线（MP-GOSSIP1，亦菲 seq 2893）：可选 `report_sources:` 段整段替换
+    # report_proxy 内置默认四源（aichip/quant/d4/gossip）；不配=None → 用内置默认，
+    # 生产零配置改动。加第五源从此只需改 config.local.yaml + 重启，不必动代码。
+    cfg["report_sources"] = _load_report_sources(raw.get("report_sources"))
 
     # AI 中转（D1 v2 §9 R-5/R-6/R-7；哥哥 2026-08-23 拍板 Q5 限额）
     # 红线：doubao key 只经 env 注入，不落代码/配置/GitHub；语音凭证为 openspeech
