@@ -854,3 +854,203 @@ def test_r13_all_sources_down_interface_still_200(monkeypatch):
     assert len(body["reports"]) == 4
     assert all(r["available"] is False and r["note"] for r in body["reports"])
     report_proxy._CACHE.clear()
+
+
+# ---------- R14 MP-GOSSIP2 第五源 douyin 抖音热点参考（亦菲 seq 2919，哥哥 10/10 令） ----------
+# 拍板：走 config 可配路线（6d3fe15 建成），第五源【不进内置默认】——生产
+# config.local.yaml 首次启用 report_sources 段（五源整体替换）+ restart 即上线。
+# 合同（与 gossip 侧任务书一字不差）：douyin = xumuhua/gossip main 分支
+# douyin/YYYY-MM-DD_抖音热点.md（dash），title=抖音热点参考，卡片顺序=第五张。
+# 本组锁：①生产将写入的五源 YAML 实样逐字段可解析且顺序/字段照单 ②douyin 文件名
+# 匹配 ③五源聚合全产出/未产出占位/douyin 目录不存在（试刊前天然态）不炸
+# ④五源 gather 并发不因第五源线性变慢（R13 口径延伸） ⑤五源坏配置拒启动。
+
+# 生产 config.local.yaml 将写入的 report_sources 段【实样】——部署文件与本锁同源，
+# 改任一侧另一侧必须同步（防「测试过的配置」与「部署的配置」漂移）。
+PROD_REPORT_SOURCES_YAML = """
+report_sources:
+  - key: aichip
+    title: aichip AI 全景摘要
+    owner: xumuhua
+    repo: aichip
+    branch: main
+    dir: ai_research/daily
+    date_fmt: dash
+  - key: quant
+    title: quant 量化日报
+    owner: xumuhua
+    repo: claude_stock
+    branch: main
+    dir: output/daily_report
+    date_fmt: plain
+  - key: d4
+    title: d4 人话版
+    owner: xumuhua
+    repo: claude_stock
+    branch: d4
+    dir: output/stockmodel/daily
+    date_fmt: dash
+  - key: gossip
+    title: 娱乐吃瓜日报
+    owner: xumuhua
+    repo: gossip
+    branch: main
+    dir: daily
+    date_fmt: dash
+  - key: douyin
+    title: 抖音热点参考
+    owner: xumuhua
+    repo: gossip
+    branch: main
+    dir: douyin
+    date_fmt: dash
+"""
+
+
+def _prod_five_sources():
+    """解析实样 YAML → 五源清单（走 config._load_report_sources 真实校验路径）。"""
+    import yaml
+    import config as cfg_mod
+    raw = yaml.safe_load(PROD_REPORT_SOURCES_YAML)
+    return cfg_mod._load_report_sources(raw["report_sources"])
+
+
+def test_r14_prod_yaml_parses_to_five_sources():
+    """生产实样五源齐全+顺序=卡片顺序（douyin 第五张）+逐字段照单。"""
+    srcs = _prod_five_sources()
+    assert [s["key"] for s in srcs] == ["aichip", "quant", "d4", "gossip", "douyin"]
+    dy = srcs[-1]
+    assert dy["title"] == "抖音热点参考"
+    assert (dy["owner"], dy["repo"], dy["branch"]) == ("xumuhua", "gossip", "main")
+    assert dy["dir"] == "douyin" and dy["date_fmt"] == "dash"
+    # 前四源须与内置默认逐字段一致（config 段是整体替换——抄错任一字段即静默漂移）
+    assert srcs[:4] == report_proxy.REPORT_SOURCES
+
+
+def test_r14_prod_yaml_end_to_end_via_load_config(tmp_path):
+    """实样段嵌进完整 config 走 load_config 全链路：五源可解析、坏配置拒启动口径不回归。"""
+    import config as cfg_mod
+    p = tmp_path / "prod_like.yaml"
+    p.write_text(_CFG_BASE + PROD_REPORT_SOURCES_YAML, encoding="utf-8")
+    cfg = cfg_mod.load_config(str(p))
+    assert len(cfg["report_sources"]) == 5
+    assert cfg["report_sources"][-1]["key"] == "douyin"
+
+
+def test_r14_pick_daily_file_douyin_dash():
+    """douyin 文件名 douyin/YYYY-MM-DD_抖音热点.md（dash）命中；同日多份取字典序最后；
+    当日无文件（试刊前）→ None = 未产出占位。"""
+    src = _prod_five_sources()[-1]
+    names = ["README.md", "2026-10-10_抖音热点.md", "2026-10-11_抖音热点.md"]
+    assert report_proxy._pick_daily_file(names, src, "20261011") == "douyin/2026-10-11_抖音热点.md"
+    assert report_proxy._pick_daily_file(["2026-10-10_抖音热点.md"], src, "20261011") is None
+    assert report_proxy._pick_daily_file(
+        ["2026-10-11_抖音热点.md", "2026-10-11_抖音热点_晚盘.md"], src, "20261011"
+    ) == "douyin/2026-10-11_抖音热点_晚盘.md"
+
+
+def _gh_routes_five_ok(date_plain="20261008", date_dash="2026-10-08"):
+    """四源路由（_gh_routes_all_ok）+ douyin 第五源两跳（contents/douyin + raw douyin/）。"""
+    routes = _gh_routes_all_ok(date_plain, date_dash)
+    md_y = "# 抖音热点参考\n\n今日热梗三则。\n\n## 舞蹈风格\n正文".encode()
+    routes["/repos/xumuhua/gossip/contents/douyin"] = FakeResp(200, [
+        {"name": f"{date_dash}_抖音热点.md"}, {"name": ".gitkeep"}])
+    routes["/gossip/main/douyin/"] = FakeResp(200, raw=md_y)
+    return routes
+
+
+def test_r14_collect_five_sources_all_available(monkeypatch):
+    """五源全产出（config 段整体替换生效）：reports 长度 5、顺序与 config 一致、
+    douyin 全文与概述都拿到。"""
+    session = FakeSession(_gh_routes_five_ok())
+    monkeypatch.setattr(report_proxy.aiohttp, "ClientSession", lambda **kw: session)
+    cfg = _cfg_with_sources(_prod_five_sources())
+    payload = asyncio.run(report_proxy.collect_daily_report(cfg, "20261008"))
+    assert len(payload["reports"]) == 5
+    assert [r["key"] for r in payload["reports"]] == ["aichip", "quant", "d4", "gossip", "douyin"]
+    dy = payload["reports"][-1]
+    assert dy["available"] is True and dy["title"] == "抖音热点参考"
+    assert dy["path"] == "douyin/2026-10-08_抖音热点.md"
+    assert "今日热梗三则" in dy["summary"] and dy["markdown"].startswith("# 抖音热点参考")
+
+
+def test_r14_douyin_dir_absent_placeholder_not_fatal(monkeypatch):
+    """douyin/ 目录还没建（gossip 试刊前天然态，contents 404）→ 只标该源占位，
+    接口 200 五卡齐全，其余四源零影响（红线 §3；任务书「source 登记可先行」依据）。"""
+    routes = _gh_routes_all_ok()          # 不含 douyin 路由 → contents/douyin 落 404 兜底
+    session = FakeSession(routes)
+    monkeypatch.setattr(report_proxy.aiohttp, "ClientSession", lambda **kw: session)
+    app = _mk_app(_cfg_with_sources(_prod_five_sources()))
+    report_proxy._CACHE.clear()
+    resp = asyncio.run(report_proxy.daily_report(FakeRequest(app, query={"date": "20261008"})))
+    assert resp.status == 200
+    body = json.loads(resp.text)
+    assert len(body["reports"]) == 5
+    dy = body["reports"][-1]
+    assert dy["available"] is False and dy["note"]
+    assert sum(1 for r in body["reports"] if r["available"]) == 4
+    report_proxy._CACHE.clear()
+
+
+def test_r14_douyin_unproduced_placeholder(monkeypatch):
+    """douyin/ 已建但当日无文件 → 「当日未产出」占位，与 gossip 未产出同口径。"""
+    routes = _gh_routes_five_ok()
+    routes["/repos/xumuhua/gossip/contents/douyin"] = FakeResp(200, [
+        {"name": ".gitkeep"}, {"name": "2026-10-01_抖音热点.md"}])
+    session = FakeSession(routes)
+    monkeypatch.setattr(report_proxy.aiohttp, "ClientSession", lambda **kw: session)
+    cfg = _cfg_with_sources(_prod_five_sources())
+    payload = asyncio.run(report_proxy.collect_daily_report(cfg, "20261008"))
+    dy = payload["reports"][-1]
+    assert dy["available"] is False and dy["note"] == "当日未产出"
+    assert dy["markdown"] == "" and dy["summary"] == ""
+
+
+def test_r14_five_sources_fetched_concurrently(monkeypatch):
+    """R13 口径延伸到五源：聚合期间在途 GitHub 请求峰值 >1（第五源不线性拉长时间，
+    最坏仍≈单源两跳）；gather 保序=五卡顺序即 config 登记顺序。"""
+    meter = {"n": 0, "max": 0}
+    routes = {k: _SlowResp(meter, v.status, v._payload, v._raw)
+              for k, v in _gh_routes_five_ok().items()}
+    session = FakeSession(routes)
+    monkeypatch.setattr(report_proxy.aiohttp, "ClientSession", lambda **kw: session)
+    cfg = _cfg_with_sources(_prod_five_sources())
+    payload = asyncio.run(report_proxy.collect_daily_report(cfg, "20261008"))
+    assert len(payload["reports"]) == 5
+    assert all(r["available"] for r in payload["reports"])
+    assert meter["max"] >= 2, f"未见并发（在途峰值={meter['max']}）"
+    assert [r["key"] for r in payload["reports"]] == ["aichip", "quant", "d4", "gossip", "douyin"]
+
+
+def test_r14_douyin_exception_isolated(monkeypatch):
+    """douyin 源抛意外异常不连坐其余四源（_collect_one 兜底 except，五源同轨）。"""
+    routes = _gh_routes_five_ok()
+    routes["/repos/xumuhua/gossip/contents/douyin"] = RuntimeError("boom")
+    session = FakeSession(routes)
+    monkeypatch.setattr(report_proxy.aiohttp, "ClientSession", lambda **kw: session)
+    cfg = _cfg_with_sources(_prod_five_sources())
+    payload = asyncio.run(report_proxy.collect_daily_report(cfg, "20261008"))
+    by_key = {r["key"]: r for r in payload["reports"]}
+    assert len(payload["reports"]) == 5
+    assert by_key["douyin"]["available"] is False
+    assert "RuntimeError" in by_key["douyin"]["note"]
+    assert by_key["gossip"]["available"] is True and by_key["aichip"]["available"] is True
+
+
+@pytest.mark.parametrize("bad,why", [
+    # 五源段里 douyin 条目各类写坏 → 拒启动（首次启用 config 段，坏配置防线必须实测）
+    (PROD_REPORT_SOURCES_YAML.replace("  - key: douyin", "  - key: Douyin"), "douyin key 大写"),
+    (PROD_REPORT_SOURCES_YAML.replace("  - key: douyin", "  - key: gossip"), "douyin 撞 gossip 重复 key"),
+    (PROD_REPORT_SOURCES_YAML.replace("    dir: douyin\n", ""), "douyin 缺 dir"),
+    # rsplit 锚最后一次出现=douyin 条目的 date_fmt（aichip/d4/gossip 同为 dash 不受累）
+    (PROD_REPORT_SOURCES_YAML.rsplit("date_fmt: dash", 1)[0] + "date_fmt: slash",
+     "douyin date_fmt 非法"),
+])
+def test_r14_bad_five_source_config_rejected(tmp_path, bad, why):
+    """五源坏配置【拒启动】——生产首次启用 report_sources 段，静默回落会让哥哥
+    看不到五卡且极难查（与 R12 八型同口径，本组按五源实样变形）。"""
+    import config as cfg_mod
+    p = tmp_path / "bad5.yaml"
+    p.write_text(_CFG_BASE + bad + "\n", encoding="utf-8")
+    with pytest.raises(cfg_mod.ConfigError):
+        cfg_mod.load_config(str(p))

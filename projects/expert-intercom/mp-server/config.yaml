@@ -19,9 +19,12 @@ github:
   # token: "env:GITHUB_RO_TOKEN"
 
 # 日常报告源（MP-GOSSIP1，亦菲 seq 2893「优先走 config 可配路线」）：本段【可选】。
-# 不配 → report_proxy.py 内置默认四源（aichip / quant / d4 / gossip）——生产现况即此，
-# 零配置改动。配了 → 整段替换内置默认（顺序即小程序报告页卡片顺序），加第五源从此
-# 只改本文件 + 重启 intercom-mp-backend，不必动代码。坏配置启动即拒（不静默回落）。
+# 不配 → report_proxy.py 内置默认四源（aichip / quant / d4 / gossip）。配了 → 整段
+# 替换内置默认（顺序即小程序报告页卡片顺序），加源从此只改本文件 + 重启
+# intercom-mp-backend，不必动代码。坏配置启动即拒（不静默回落）。
+# MP-GOSSIP2（亦菲 seq 2919，哥哥 10/10 令）：生产已启用本段（config.local.yaml）——
+# 第五源 douyin 抖音热点参考（xumuhua/gossip main douyin/YYYY-MM-DD_抖音热点.md，
+# 第五张卡），gossip 侧每日任务产出；生产口径以 config 五源为准，内置默认仍四源。
 # 字段：key（小写字母数字下划线，前端按它索引展开态）/ title（卡片标题）/ owner / repo /
 #       branch（缺省 main）/ dir（仓内目录）/ date_fmt（dash=YYYY-MM-DD，plain=YYYYMMDD）。
 # 匹配口径：dir 下文件名【含当日日期串】且以 .md 收尾即命中（同日多份取字典序最后一份）。
@@ -33,12 +36,19 @@ github:
 #     branch: main
 #     dir: ai_research/daily
 #     date_fmt: dash
-#   - key: gossip                       # 第四源（10/10 起，20:30 首期试刊）
+#   - key: gossip                       # 第四源（10/10 起，每日 05:00 前上传）
 #     title: 娱乐吃瓜日报
 #     owner: xumuhua
 #     repo: gossip
 #     branch: main
 #     dir: daily                        # daily/YYYY-MM-DD_吃瓜日报.md
+#     date_fmt: dash
+#   - key: douyin                       # 第五源（MP-GOSSIP2，10/10 起，config 路线首次实战）
+#     title: 抖音热点参考
+#     owner: xumuhua
+#     repo: gossip
+#     branch: main
+#     dir: douyin                       # douyin/YYYY-MM-DD_抖音热点.md
 #     date_fmt: dash
 
 # AI 中转（D1 v2 §9 R-5/R-6/R-7）。红线：doubao key 只走 env 注入，不落本文件/GitHub。

@@ -2,8 +2,9 @@
    MP-UX7 红线：卡片/横幅/输入条背景一律实色 HEX + @media 双态，禁 var() 背景。 */
 .page {
   /* 报告卡片是数据驱动列表（后端 reports 数组逐张渲染），三卡→四卡（MP-GOSSIP1
-     gossip 娱乐吃瓜日报）不改结构只变长——min-height（非 height）+ 无 overflow
-     裁剪 = 页面原生滚动承载任意张数卡片，布局自适应。 */
+     gossip）→五卡（MP-GOSSIP2 douyin 抖音热点参考，走后端 config 段前端零改动）
+     不改结构只变长——min-height（非 height）+ 无 overflow 裁剪 = 页面原生滚动
+     承载任意张数卡片，布局自适应。 */
   min-height: 100vh;
   /* MP-TABBAR-EMBED（哥哥 10/8 令）：tabBar 位由全局 page 垫顶（app.wxss）覆盖，
      此处只让位输入条（含私有群操作钮行 44+8 + 输入行 ≈48 + padding 16 ≈116px 上限，

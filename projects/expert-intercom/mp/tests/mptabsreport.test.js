@@ -857,7 +857,7 @@ setImmediate(() => {
                         const rpJsR = fs.readFileSync(path.join(MP, 'pages/daily_report/index.js'), 'utf8');
                         ok('T4r.1 卡片列表 wx:for 数据驱动（零硬编码源 key，加源不改 wxml）',
                            /wx:for="\{\{reports\}\}"[\s\S]{0,80}wx:key="key"/.test(rpWxmlR)
-                           && !/wx:if="\{\{[^}]*key === '(aichip|quant|d4|gossip)'/.test(rpWxmlR));
+                           && !/wx:if="\{\{[^}]*key === '(aichip|quant|d4|gossip|douyin)'/.test(rpWxmlR));
                         ok('T4r.2 未产出/不可达走 rpt-none 占位（note 兜底文案，不报错）',
                            /wx:else class="rpt-none"\>\{\{item\.note \|\| '当日未产出'\}\}/.test(rpWxmlR.replace(/<view /g, '<view ').replace(/"/g, '"'))
                            || /class="rpt-none">\{\{item\.note \|\| '当日未产出'\}\}/.test(rpWxmlR));
@@ -910,9 +910,65 @@ setImmediate(() => {
                           ok('T4r.11 四卡场景懒解析仍按 key 精确入块（不串台）',
                              Array.isArray(rp.data.mdBlocks.aichip) && rp.data.mdBlocks.aichip.length > 0
                              && !rp.data.mdBlocks.d4 && !rp.data.mdBlocks.gossip);
-                          timers.forEach((t) => clearInterval(t));
-                          console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAIL`);
-                          process.exit(fail === 0 ? 0 : 1);
+
+                          /* ---------- T4s MP-GOSSIP2 四卡→五卡（亦菲 seq 2919，哥哥 10/10 令） ----------
+                             口径：第五源 douyin（抖音热点参考）走后端 config report_sources 段，
+                             前端【零改动零硬编码】——第五张卡纯由 reports 数组数据驱动；
+                             绿点计数=reports 中 available 数（T4r.6 filter 锁），源数自适应；
+                             垫底/滚动为常量口径与卡数无关（T4b.2/T4r.3 已锁），五卡只变长。 */
+                          ok('T4s.0 前端零硬编码 douyin（js/wxml 无引号 douyin 字面量，注释提及不算代码）',
+                             !/['"]douyin['"]/.test(rpJsR) && !/['"]douyin['"]/.test(rpWxmlR));
+                          ok('T4s.0b 绿点计数无写死源数比较（5 源自适应：avail 无 === 常量判定）',
+                             !/avail\s*===?\s*\d/.test(rpJsR)
+                             && /filter\(\(x\) => x\.available\)\.length/.test(rpJsR));
+                          rp._bgQueue = [];
+                          apiHandler = () => Promise.resolve({ date: '20261010', reports: [
+                            { key: 'aichip', title: 'aichip AI 全景摘要', available: true, summary: 'S1', markdown: '# A\n\n正文A' },
+                            { key: 'quant', title: 'quant 量化日报', available: true, summary: 'S2', markdown: '# Q\n\n正文Q' },
+                            { key: 'd4', title: 'd4 人话版', available: true, summary: 'S3', markdown: '# D\n\n正文D' },
+                            { key: 'gossip', title: '娱乐吃瓜日报', available: true, summary: 'S4', markdown: '# G\n\n正文G' },
+                            { key: 'douyin', title: '抖音热点参考', available: false, note: '当日未产出', summary: '', markdown: '' },
+                          ] });
+                          rp.setData({ reports: [], reportErr: '', expanded: {}, mdBlocks: {} });
+                          rp.loadReports();
+                          setImmediate(() => {
+                            ok('T4s.1 五卡装载+顺序与后端一致（douyin 第五张，title 抖音热点参考）',
+                               rp.data.reports.length === 5
+                               && rp.data.reports.map((r) => r.key).join(',') === 'aichip,quant,d4,gossip,douyin'
+                               && rp.data.reports[4].title === '抖音热点参考');
+                            ok('T4s.2 douyin 当日未产出=占位态（available false + note 透传 + 零报错横幅）',
+                               rp.data.reports[4].available === false
+                               && rp.data.reports[4].note === '当日未产出'
+                               && rp.data.reportErr === '');
+                            ok('T4s.3 五卡场景未产出卡不入 _mdSource（仅四张已产出源 key）',
+                               Object.keys(rp._mdSource || {}).sort().join(',') === 'aichip,d4,gossip,quant');
+                            rp.toggleReport({ currentTarget: { dataset: { key: 'douyin' } } });
+                            ok('T4s.4 点第五张占位卡不炸不产块（expanded 置位、mdBlocks 无该 key）',
+                               rp.data.expanded.douyin === true && !rp.data.mdBlocks.douyin);
+                            // gossip 试刊落地后的形态：douyin 产出 → 第五卡可展开全文、懒解析不串台
+                            apiHandler = () => Promise.resolve({ date: '20261010', reports: [
+                              { key: 'aichip', title: 'aichip AI 全景摘要', available: true, summary: 'S1', markdown: '# A\n\n正文A' },
+                              { key: 'quant', title: 'quant 量化日报', available: true, summary: 'S2', markdown: '# Q\n\n正文Q' },
+                              { key: 'd4', title: 'd4 人话版', available: true, summary: 'S3', markdown: '# D\n\n正文D' },
+                              { key: 'gossip', title: '娱乐吃瓜日报', available: true, summary: 'S4', markdown: '# G\n\n正文G' },
+                              { key: 'douyin', title: '抖音热点参考', available: true, summary: 'S5', markdown: '# Y\n\n今日热梗三则。' },
+                            ] });
+                            rp.setData({ reports: [], reportErr: '', expanded: {}, mdBlocks: {} });
+                            rp.loadReports();
+                            setImmediate(() => {
+                              ok('T4s.5 五源全产出装载（markdown 剥离口径五卡同轨，_mdSource 五键）',
+                                 rp.data.reports.length === 5
+                                 && rp.data.reports.every((r) => r.available === true)
+                                 && Object.keys(rp._mdSource || {}).sort().join(',') === 'aichip,d4,douyin,gossip,quant');
+                              rp.toggleReport({ currentTarget: { dataset: { key: 'douyin' } } });
+                              ok('T4s.6 douyin 产出后懒解析按 key 精确入块（第五卡全文可展开，不串台）',
+                                 Array.isArray(rp.data.mdBlocks.douyin) && rp.data.mdBlocks.douyin.length > 0
+                                 && !rp.data.mdBlocks.gossip && !rp.data.mdBlocks.aichip);
+                              timers.forEach((t) => clearInterval(t));
+                              console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAIL`);
+                              process.exit(fail === 0 ? 0 : 1);
+                            });   // T4s 第二轮（douyin 产出态）
+                          });   // T4s 五卡行为锁
                         });   // T4r 行为锁
                       });
                     });

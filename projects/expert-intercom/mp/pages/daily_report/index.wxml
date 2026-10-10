@@ -23,10 +23,11 @@
       </view>
     </scroll-view>
 
-    <!-- 报告概述卡片（当日四份：aichip / quant / d4 / gossip 娱乐吃瓜日报，MP-GOSSIP1
-         亦菲 seq 2893）——卡片【数据驱动】：wx:for 逐张渲染后端 reports 数组，源增删
-         零结构改动，页面原生滚动承载任意张数（布局自适应）；未产出/源不可达一律
-         rpt-none 占位不报错（红线 §3） -->
+    <!-- 报告概述卡片（当日五份：aichip / quant / d4 / gossip 娱乐吃瓜日报 / douyin
+         抖音热点参考，MP-GOSSIP1 亦菲 seq 2893 + MP-GOSSIP2 亦菲 seq 2919，第五源
+         走后端 config report_sources 段）——卡片【数据驱动】：wx:for 逐张渲染后端
+         reports 数组，源增删零结构改动，页面原生滚动承载任意张数（布局自适应）；
+         未产出/源不可达一律 rpt-none 占位不报错（红线 §3） -->
     <view class="sec-title">📋 {{date}} 每日报告</view>
     <view wx:if="{{reportErr}}" class="banner-err">{{reportErr}}</view>
     <view wx:if="{{!reports.length && !reportErr}}" class="empty">加载中…</view>

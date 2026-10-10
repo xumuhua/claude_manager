@@ -1,7 +1,10 @@
 // pages/daily_report — MP-TABS-REPORT 日常报告页（哥哥 10/8 令）
 // 三功能：①LLM 对话框（问报告细节，POST /ai/report_chat，上下文=当日报告全文）
-//         ②每日四报告概述卡片（GET /api/daily_report，点卡片展开内嵌 markdown 全文）
+//         ②每日报告概述卡片（GET /api/daily_report，点卡片展开内嵌 markdown 全文）
 //           MP-GOSSIP1（亦菲 seq 2893，哥哥 10/10 令）：第四源 gossip 娱乐吃瓜日报
+//           MP-GOSSIP2（亦菲 seq 2919，哥哥 10/10 令）：第五源 douyin 抖音热点参考
+//           ——走后端 config report_sources 段（生产现况五源五卡），前端【零改动零
+//           硬编码】第五张卡纯由 reports 数组驱动。
 //           ——卡片 wx:for 数据驱动，源增删零结构改动（布局/滚动自适应）；当日未产出
 //           或源不可达一律占位不报错（红线 §3）。
 //         ③暗号 2505 → 切私有用户聊天群视图（GET/POST /api/pgroup/messages），
@@ -25,7 +28,7 @@ const DRAFT_KEY = 'daily_report';  // store 草稿键（按页面分轨）
 const HISTORY_PAGE_DAYS = 7;       // MP-HIST1②（哥哥 10/9 令）：单次加载天数（控制单次刷新条目）
 const HISTORY_MAX_DAYS = 30;       // 历史日期上限（近 30 天封顶）
 // MP-PROBE-FIX（亦菲 seq 2776，哥哥 10/9 实测报告页「拉取失败」）：单日探测
-// 超时拉长到 60s + 失败自动重试一次——每路探测后端都要 GitHub 四源往返，
+// 超时拉长到 60s + 失败自动重试一次——每路探测后端都要 GitHub 多源往返（生产五源），
 // 移动网络下 30s 贴线间歇超时是「拉取失败」根因之一。
 const PROBE_TIMEOUT_MS = 60000;    // 单日探测超时（30s 贴线间歇超时教训，与问答同档）
 // MP-TIER1 分级拉取（亦菲 seq 2778，哥哥 10/9 原话「我们要做分级拉取，不能一下拉太多。
@@ -243,7 +246,7 @@ Page({
   },
 
   // 点历史日期：切换选中日期 → 报告区+问答上下文+对话历史随日期整体切换
-  // MP-JANK1 顺手修：mdBlocks 同步清空——key 是 aichip/quant/d4/gossip 四键跨日期复用，
+  // MP-JANK1 顺手修：mdBlocks 同步清空——key 按源 key 跨日期复用（生产现况五键，含 douyin），
   // 不清的话切日期后展开同 key 卡片会渲染【旧日期】的全文（懒解析缓存污染）
   pickDate(e) {
     const date = e.currentTarget.dataset.date;
@@ -258,11 +261,11 @@ Page({
   // ---------- 报告区 ----------
   // MP-PROBE-FIX③（亦菲 seq 2776）：报告区与日期条探测错误口径分轨——探测失败只影响
   // 绿点（avail=-1），本函数独立请求独立 catch，探测全挂也不阻塞当前日期报告装载；
-  // 超时同档拉长 60s（移动网络 GitHub 四源往返 30s 贴线间歇超时教训）。
+  // 超时同档拉长 60s（移动网络 GitHub 多源往返 30s 贴线间歇超时教训）。
   // MP-TIER1：本函数是分级拉取第一级（首屏当天/点页签单日两级入口共用）；
   // settle 后置 _reportSettled 并点火后台慢拉（②③：当天渲染完后历史才开拉）。
   // MP-JANK1②（哥哥 10/9 实测「进去很快但好卡」）：reports 进 setData 前剥掉
-  // markdown 全文（四份 50KB+ 整包过渲染层是大 jank 源——fb34901 修好拉取后大
+  // markdown 全文（多份 50KB+ 整包过渲染层是大 jank 源——fb34901 修好拉取后大
   // reports 第一次真正渲染，本页才卡），全文收 this._mdSource 实例字段，
   // toggleReport 展开时按 key 懒解析（mdBlocks 渲染层口径不变）。
   loadReports(done) {

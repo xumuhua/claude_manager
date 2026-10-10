@@ -13,6 +13,14 @@
 配了就整体替换内置默认（含顺序=前端卡片顺序）；不配则用下方默认四源。所以【加第五源
 可只改生产 config.local.yaml + 重启，不必改代码】；gossip 上线走默认，生产零配置改动。
 
+MP-GOSSIP2（亦菲 seq 2919，哥哥 10/10 令）第五源 douyin 抖音热点参考【首次实战走
+config 路线】：生产 config.local.yaml 加 report_sources 五源段 + 重启即上线，本文件
+内置默认保持四源不动（拍板理由见回执：config 路线为此而建、生产触面最小=只动 config；
+config 段整体丢失会回落四源属设计行为，靠备份纪律+部署冒烟「五卡齐全」断言兜底）。
+合同（与 gossip 侧任务书一字不差）：douyin = xumuhua/gossip main 分支
+douyin/YYYY-MM-DD_抖音热点.md（dash），title 抖音热点参考，卡片顺序=第五张；
+仓里没文件=当日未产出占位（红线 §3 天然容错，source 登记可先行）。
+
 **四源并发聚合**（MP-GOSSIP1 加固，见 collect_daily_report）：加第四源同时把串行 for
 改成 asyncio.gather——串行最坏 4×(列目录+拉全文)=120s 会顶穿 nginx 90s/前端 60s 超时
 （哥哥 10/9「拉取失败」同源风险），并发后最坏≈单源两跳。gather 保序=卡片顺序不变。
