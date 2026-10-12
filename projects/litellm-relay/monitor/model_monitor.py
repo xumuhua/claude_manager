@@ -75,6 +75,10 @@ INITIAL_LOG_TAIL_BYTES = int(os.environ.get("MON_LOG_INIT_TAIL_BYTES", str(64 * 
 KEEP_DAYS = int(os.environ.get("MON_KEEP_DAYS", "14"))
 ROTATE_EXPECT_MIN = int(os.environ.get("MON_ROTATE_EXPECT_MIN", "177"))  # rotator INTERVAL_MIN
 E2E_ENABLED = os.environ.get("MON_E2E", "0") == "1"   # 默认关：探测行会落 spendlogs
+# 链头切换告警降噪（2026-10-13 落地，亦菲 seq 3086 批准）：rotator ~176min 一轮属设计内
+# 行为，逐条告警一天 ~8 条信息密度低 → 默认改「每 24h 一条日汇总」；=0 回滚到逐条告警
+HEADSWITCH_DAILY = os.environ.get("MON_HEADSWITCH_DAILY", "1") == "1"
+HEADSWITCH_DIGEST_H = int(os.environ.get("MON_HEADSWITCH_DIGEST_H", "24"))
 
 # 告警（hub 与中转站同机，走 127.0.0.1；dm_yifei 在 hub 配置里不存在，
 # coder↔yifei 的信道就是 dm_coder，与 rotator 告警同口径同信道）
@@ -745,8 +749,13 @@ def check_chain(conn, alerts):
             meta_set(conn, "rotator_head", head)
             eid = add_event(conn, "head_switch", "rotator", prev_head, head,
                             f"rotator 链头 {prev_head} → {head}（last_rotate={st.get('last_rotate')}）")
-            alerts.append({"kind": "head_switch", "event_id": eid, "target": "rotator",
-                           "line": f"· 链头切换｜{prev_head} → {head}（rotator last_rotate={st.get('last_rotate')}）"})
+            if HEADSWITCH_DAILY:
+                # 降噪口径：事件照常落库（alerted=0），逐条告警改 24h 日汇总
+                #（maybe_send_headswitch_digest 处）；=0 时保留旧逐条告警行为
+                log(f"[降噪] 链头切换 {prev_head} → {head} 只落库，进日汇总")
+            else:
+                alerts.append({"kind": "head_switch", "event_id": eid, "target": "rotator",
+                               "line": f"· 链头切换｜{prev_head} → {head}（rotator last_rotate={st.get('last_rotate')}）"})
     meta_set(conn, "rotator_last_rotate", st.get("last_rotate") or "")
     # 轮转停摆（rotator 挂了/被 flock 卡住）：超过预期间隔 1.5 倍没轮转
     lr = st.get("last_rotate")
@@ -863,6 +872,45 @@ def build_status_line(conn, head=None):
     return s
 
 
+def maybe_send_headswitch_digest(conn, alerts):
+    """链头切换日汇总（降噪落地，seq 3086 批准）。
+
+    事件表即真值源：不另设计数器，发送成功才把 meta 水位推到「本次汇总覆盖的
+    最新事件时点」并给覆盖到的 head_switch 事件补 alerted=1——发送失败下轮
+    重试，事件零丢失。过去 24h 无未汇总切换则不发。
+    """
+    if not HEADSWITCH_DAILY:
+        return None
+    last = meta_get(conn, "headswitch_digest_sent")     # 上次日汇总覆盖到的时点
+    since = last or (datetime.now() - timedelta(hours=HEADSWITCH_DIGEST_H)) \
+        .strftime("%Y-%m-%d %H:%M:%S")
+    if last:
+        try:
+            age_h = (datetime.now() - datetime.fromisoformat(last)).total_seconds() / 3600.0
+        except Exception:
+            age_h = None
+        if age_h is not None and age_h < HEADSWITCH_DIGEST_H:
+            return None      # 上条日汇总未满 24h：切换事件继续攒着，到点一起汇总
+    rows = conn.execute(
+        "SELECT id,ts,prev,cur FROM event WHERE kind='head_switch' AND ts > ?"
+        " AND alerted=0 ORDER BY ts", (since,)).fetchall()
+    if not rows:
+        return None
+    path = " → ".join(dict.fromkeys(
+        [r["prev"] for r in rows if r["prev"]] + [r["cur"] for r in rows if r["cur"]]))
+    line = (f"· 链头切换日汇总｜{len(rows)} 次（{path}），当前链头 {meta_get(conn, 'rotator_head')}")
+
+    def on_sent():
+        conn.execute("UPDATE event SET alerted=1 WHERE kind='head_switch' AND ts > ?",
+                     (since,))
+        meta_set(conn, "headswitch_digest_sent", rows[-1]["ts"])
+        conn.commit()
+
+    alerts.append({"kind": "headswitch_digest", "event_id": rows[-1]["id"],
+                   "target": "rotator", "line": line, "on_sent": on_sent})
+    return None
+
+
 def run_cycle(conn, only=None, dry_run=False, no_alert=False, e2e=None, demo=False):
     """跑一轮：发现目标 → 探测 → 落库 → 事件 → 合并告警。返回本轮结果 dict。"""
     ts = now_iso()
@@ -918,6 +966,7 @@ def run_cycle(conn, only=None, dry_run=False, no_alert=False, e2e=None, demo=Fal
 
     check_chain(conn, alerts)
     check_config_health(conn, seen_names, problems, alerts)
+    maybe_send_headswitch_digest(conn, alerts)
     n_log = scan_log(conn, RELAY_LOG_PATH, "log_off:relay", "relay", alerts)
     n_rot = scan_log(conn, ROTATOR_LOG_PATH, "log_off:rotator", "rotator", alerts)
     meta_set(conn, "last_cycle", ts)
@@ -943,6 +992,10 @@ def run_cycle(conn, only=None, dry_run=False, no_alert=False, e2e=None, demo=Fal
         if sent and (sent.get("ok") or sent.get("dry_run")):
             for a in alerts:
                 conn.execute("UPDATE event SET alerted=1 WHERE id=?", (a["event_id"],))
+            for a in alerts:
+                cb = a.get("on_sent")
+                if cb:
+                    cb()          # 日汇总：推水位+覆盖到的 head_switch 补 alerted=1
             conn.commit()
     elif alerts and no_alert:
         log(f"[no-alert] 本轮 {len(alerts)} 项异常未发送")
@@ -1131,6 +1184,7 @@ def selftest(verbose=True):
 
     global CONFIG_PATH, RELAY_ENV_PATH, ROTATOR_STATE_PATH, RELAY_LOG_PATH, ROTATOR_LOG_PATH
     global DB_PATH, LOG_PATH, LOCK_PATH, RELAY_LIVELINESS_URL, HUB_URL, ALERT_TOKEN_FILE
+    global HEADSWITCH_DAILY
 
     fails = []
     total = [0]
@@ -1318,8 +1372,8 @@ def selftest(verbose=True):
            "target_vanished" in kinds, kinds)
         ck("3.25 消失目标标 in_config=0（下轮不再探不再报）",
            target_get(conn, "doubao")["in_config"] == 0)
-        ck("3.26 同轮两类事件合并成一条 dm（防刷屏）",
-           len(hits) == 1 and "链头切换" in hits[0]["body"] and "上游消失" in hits[0]["body"]
+        ck("3.26 同轮事件合并成一条 dm（防刷屏；链头切换走日汇总行）",
+           len(hits) == 1 and "链头切换日汇总" in hits[0]["body"] and "上游消失" in hits[0]["body"]
            and hits[0]["body"].count("·") == 2, [h["body"][:90] for h in hits])
 
         json.dump({"head": "qwen", "last_rotate": (datetime.now() - timedelta(minutes=400)).isoformat()},
@@ -1331,6 +1385,49 @@ def selftest(verbose=True):
         hits.clear()
         run_cycle(conn)
         ck("3.28 停摆持续中不重复告警（一次性）", len(hits) == 0, len(hits))
+
+        print("[3f] 链头切换降噪：24h 日汇总（seq 3086 批准的方向）")
+        ck("3.34a 3.26 轮日汇总已发送：覆盖的 head_switch 事件补 alerted=1+水位落位",
+           conn.execute("SELECT COUNT(*) c FROM event WHERE kind='head_switch' AND alerted=1"
+                        ).fetchone()["c"] >= 1
+           and meta_get(conn, "headswitch_digest_sent") is not None)
+        json.dump({"head": "zhipu", "last_rotate": datetime.now().isoformat()},
+                  open(ROTATOR_STATE_PATH, "w"))
+        hits.clear()
+        run_cycle(conn)
+        ck("3.34b 24h 内新切换只落库不告警（攒着等日汇总；恢复事件不告警）",
+           len(hits) == 0
+           and conn.execute("SELECT COUNT(*) c FROM event WHERE kind='head_switch' AND alerted=0"
+                            ).fetchone()["c"] == 1,
+           (len(hits), [h["body"][:70] for h in hits]))
+        # 模拟上次日汇总已在 25h 前 → 本轮到点，把攒着的切换并成一条汇总发出
+        conn.execute("UPDATE meta SET v=? WHERE k='headswitch_digest_sent'",
+                     ((datetime.now() - timedelta(hours=25)).strftime("%Y-%m-%d %H:%M:%S"),))
+        conn.commit()
+        json.dump({"head": "qwen", "last_rotate": datetime.now().isoformat()},
+                  open(ROTATOR_STATE_PATH, "w"))
+        hits.clear()
+        run_cycle(conn)
+        ck("3.34c 到点日汇总：攒着的切换并成一条 dm（次数+路径+当前链头）",
+           len(hits) == 1 and "链头切换日汇总" in hits[0]["body"] and "2 次" in hits[0]["body"]
+           and "当前链头 qwen" in hits[0]["body"], [h["body"][:110] for h in hits])
+        latest_ts = conn.execute("SELECT ts FROM event WHERE kind='head_switch'"
+                                 " ORDER BY id DESC LIMIT 1").fetchone()["ts"]
+        ck("3.34d 汇总发出后覆盖事件补 alerted=1、水位推到最新事件时点",
+           conn.execute("SELECT COUNT(*) c FROM event WHERE kind='head_switch' AND alerted=0"
+                        ).fetchone()["c"] == 0
+           and meta_get(conn, "headswitch_digest_sent") == latest_ts,
+           (meta_get(conn, "headswitch_digest_sent"), latest_ts))
+        # 回滚开关：=0 恢复旧逐条告警行为
+        HEADSWITCH_DAILY = False
+        json.dump({"head": "zhipu", "last_rotate": datetime.now().isoformat()},
+                  open(ROTATOR_STATE_PATH, "w"))
+        hits.clear()
+        run_cycle(conn)
+        ck("3.34e MON_HEADSWITCH_DAILY=0 回滚到逐条告警（单次切换单条 dm）",
+           len(hits) == 1 and "链头切换｜" in hits[0]["body"] and "日汇总" not in hits[0]["body"],
+           [h["body"][:110] for h in hits])
+        HEADSWITCH_DAILY = True
 
         print("[3d] 告警链路容错")
         hits.clear()

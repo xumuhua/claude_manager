@@ -127,6 +127,8 @@ EOF
 | `MON_ALERT_CONV` | dm_coder | 告警会话 |
 | `MON_ALERT_TAG` | [模型监测] | 告警正文前缀（便于群里一眼认出/过滤） |
 | `MON_ROTATE_EXPECT_MIN` | 177 | rotator 预期轮转间隔（分钟）；超 1.5× 未轮转报「轮转停摆」 |
+| `MON_HEADSWITCH_DAILY` | 1 | 链头切换告警降噪（2026-10-13，seq 3086 批准）：rotator ~176min 一轮属设计内行为，逐条告警一天 ~8 条信息密度低 → **1=改 24h 一条日汇总**（切换事件照常落库）；**0=回滚逐条告警**（旧行为） |
+| `MON_HEADSWITCH_DIGEST_H` | 24 | 日汇总最小间隔小时数 |
 | `MON_E2E` | 0 | 是否额外跑一发**经中转站**的端到端探测。默认关：它会落一行 spendlogs、可能触发 cooldown，且中转站故障已由 liveliness 那一路覆盖 |
 | `MON_ENTRY_ALIAS` | kimi-han | rotator 维护的浮动入口别名（不当探测目标，只登记指向） |
 
