@@ -6,6 +6,9 @@
 - 根目录：/data/workspace/share/mp_reports/YYYY-MM-DD/<key>.md（key=报告源 key，单份）
 - 内容 = 仓内 raw md 全文；同日多份取字典序最后（与 report_proxy._pick_daily_file 同口径）
 - >7 天的日期目录整目录清除（03:0x cron 波次）
+- 拉全文双通道（MIRROR-FETCH2，亦菲 seq 3164）：raw 主通道超时/失败自动改走
+  api.github.com contents 单文件（base64 解码，同 GITHUB_RO_TOKEN），两通道都败
+  才算失败——raw 慢抖窗镜像不再留缺口（后端 GitHub fallback 压力/哥哥 499 同减）
 
 落盘三波（贴各源完成点，亦菲定）：
 - ~09:45：aichip（09:30）/ douyin（07:45）
@@ -29,6 +32,7 @@
 退出码：0=正常（含「当日零产出」——未产出不是错误）；2=参数错；3=网络/上游异常。
 """
 import argparse
+import base64
 import datetime
 import hashlib
 import json
@@ -131,8 +135,34 @@ def mirror_dir(date_dash):
     return os.path.join(MIRROR_ROOT, date_dash)
 
 
+def _fetch_raw_via_api(token, src, path):
+    """MIRROR-FETCH2（亦菲 seq 3164）：raw.githubusercontent 慢抖备胎通道——
+    api.github.com contents 单文件接口（同 GITHUB_RO_TOKEN），响应 JSON 的
+    content 字段是 base64（GitHub 每 60 字符折行，b64decode 默认丢弃非字母表
+    字符即可）。中文文件名 URL 编码由 _http_get 内 _quote_url 统一处理
+    （与 raw 通道同款，urllib 不自动编码非 ASCII 的老坑）。
+    返回 (bytes|None, err|None)。"""
+    url = (f"{_API_BASE}/repos/{src['owner']}/{src['repo']}"
+           f"/contents/{path}?ref={src['branch']}")
+    data, err = _http_get(url, token)
+    if err:
+        return None, err
+    try:
+        obj = json.loads(data)
+        if not isinstance(obj, dict) or obj.get("encoding") != "base64" \
+                or "content" not in obj:
+            return None, "api 响应非 base64 单文件"
+        return base64.b64decode(obj["content"]), None
+    except (ValueError, TypeError) as e:
+        return None, f"api 响应解析失败 {e.__class__.__name__}"
+    except Exception as e:                         # noqa: BLE001 —— b64 坏数据等
+        return None, f"api base64 解码失败 {e.__class__.__name__}"
+
+
 def fetch_source(token, src, date):
-    """列目录+选文件+拉全文 → (path, bytes) | (None, reason)。reason: none=未产出。"""
+    """列目录+选文件+拉全文 → (path, bytes) | (None, reason)。reason: none=未产出。
+    拉全文双通道（MIRROR-FETCH2）：raw 主通道超时/失败后自动改走 api contents
+    备胎，两通道都败才算失败（raw 慢抖窗镜像不再留缺口）。"""
     url = (f"{_API_BASE}/repos/{src['owner']}/{src['repo']}"
            f"/contents/{src['dir']}?ref={src['branch']}")
     data, err = _http_get(url, token)
@@ -152,7 +182,11 @@ def fetch_source(token, src, date):
     raw, err2 = _http_get(f"{_RAW_BASE}/{src['owner']}/{src['repo']}"
                           f"/{src['branch']}/{path}", token)
     if err2:
-        return None, f"raw {err2}"
+        # 备胎通道：api.github.com contents 单文件（base64）
+        raw, err3 = _fetch_raw_via_api(token, src, path)
+        if err3:
+            return None, f"raw {err2}; api {err3}"
+        _log(f"  {src['key']:8s} raw 失败（{err2}）→ api 备胎成功 {path}")
     if len(raw) > MAX_MD_BYTES:
         raw = raw[:MAX_MD_BYTES]
     return path, raw
@@ -255,6 +289,25 @@ def _selftest():
     assert pick_daily_file(names, {"date_fmt": "dash"}, "20261010") == \
         "2026-10-10_吃瓜日报_v2.md"
     assert pick_daily_file(["无关.md"], {"date_fmt": "dash"}, "20261010") is None
+    # MIRROR-FETCH2：api 备胎通道 base64 解码（stub _http_get 零网络）
+    old_get = globals()["_http_get"]
+    try:
+        body = "# 抖音热点\n\n正文".encode()
+        globals()["_http_get"] = lambda url, token: (json.dumps(
+            {"encoding": "base64",
+             "content": base64.b64encode(body).decode()}).encode(), None)
+        got, err = _fetch_raw_via_api("t", SOURCES[4],
+                                      "douyin/2026-10-13_抖音热点.md")
+        assert err is None and got == body, (got, err)
+        # 坏响应（非 base64 单文件形态）收口成 err 不抛穿
+        globals()["_http_get"] = lambda url, token: (b"[]", None)
+        got, err = _fetch_raw_via_api("t", SOURCES[4], "x.md")
+        assert got is None and "非 base64" in err, (got, err)
+        globals()["_http_get"] = lambda url, token: (None, "net: TimeoutError")
+        got, err = _fetch_raw_via_api("t", SOURCES[4], "x.md")
+        assert got is None and "net" in err, (got, err)
+    finally:
+        globals()["_http_get"] = old_get
     global MIRROR_ROOT
     old_root = MIRROR_ROOT
     try:

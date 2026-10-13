@@ -8,10 +8,14 @@
 - R-M4 sync 幂等：内容一致跳写、新内容原子替换（.tmp + os.replace）、未产出零动作、
       全源失败退出码 3 / 单源失败不炸整轮
 - R-M5 退出码协议：GITHUB_RO_TOKEN 缺失=3、--date 非法=2
+- R-M7 api 备胎双通道（MIRROR-FETCH2，亦菲 seq 3164）：raw 挂 api 通→取件成功、
+      两通道都败才失败（reason 双段）、cmd_sync 端到端 raw 全挂五源仍齐、
+      中文文件名 api 通道 URL 百分号编码（urllib 不自动编码非 ASCII 老坑）
 
 跑法：/tmp/mpmsg1_venv/bin/python -m pytest tests/test_mpmirror.py（mp-server 目录下）。
 零网络：_http_get 全 stub（模块级 _API_BASE/_RAW_BASE 指本地桩值+fetch 打桩）。
 """
+import base64
 import importlib.util
 import json
 import os
@@ -250,3 +254,106 @@ def test_rm6_raw_truncated(mirror, monkeypatch):
     path, raw = mirror.fetch_source("t", src, "20261010")
     assert path == "ai_research/daily/2026-10-10_x.md"
     assert len(raw) == mirror.MAX_MD_BYTES
+
+
+# ---------- R-M7 api 备胎双通道（MIRROR-FETCH2，亦菲 seq 3164） ----------
+
+def _api_file_payload(body_bytes):
+    """api.github.com contents 单文件响应实样（base64 每 60 字符折行——GitHub 真实形态）。"""
+    b64 = base64.b64encode(body_bytes).decode()
+    folded = "\n".join(b64[i:i + 60] for i in range(0, len(b64), 60)) + "\n"
+    return json.dumps({"encoding": "base64", "content": folded}).encode()
+
+
+def test_rm7_raw_dead_api_alive(mirror, monkeypatch):
+    """验收①核心断言：raw 通道挂（TimeoutError），api contents 备胎通→取件成功，
+    base64 折行内容正确解码（与 raw 通道字节级同体）。"""
+    body = "# 抖音热点\n\n正文内容".encode()
+    def fake_get(url, token):
+        if "/contents/" in url and url.split("?")[0].endswith(".md"):
+            return _api_file_payload(body), None     # api 单文件备胎
+        if "/contents/" in url:
+            return json.dumps([{"name": "2026-10-13_抖音热点.md"}]).encode(), None
+        if "raw.githubusercontent.com" in url:
+            return None, "net: TimeoutError"         # raw 慢抖挂
+        return None, "unstubbed"
+    monkeypatch.setattr(mirror, "_http_get", fake_get)
+    path, raw = mirror.fetch_source("t", mirror.SOURCES[4], "20261013")
+    assert path == "douyin/2026-10-13_抖音热点.md"
+    assert raw == body
+
+
+def test_rm7_both_channels_dead_reports_both(mirror, monkeypatch):
+    """两通道都败才算失败：reason 同时携带 raw 与 api 两段错误（排查抓手不丢）。"""
+    def fake_get(url, token):
+        if "/contents/" in url and url.split("?")[0].endswith(".md"):
+            return None, "net: TimeoutError"
+        if "/contents/" in url:
+            return json.dumps([{"name": "2026-10-13_x.md"}]).encode(), None
+        return None, "net: TimeoutError"
+    monkeypatch.setattr(mirror, "_http_get", fake_get)
+    path, res = mirror.fetch_source("t", mirror.SOURCES[0], "20261013")
+    assert path is None
+    assert "raw" in res and "api" in res
+
+
+def test_rm7_api_bad_shape_not_crash(mirror, monkeypatch):
+    """api 响应非 base64 单文件形态（如目录 list/坏 JSON）→ 收口成 err 不抛穿。"""
+    def fake_get(url, token):
+        if "/contents/" in url and url.split("?")[0].endswith(".md"):
+            return b"[]", None                        # 单文件口拿到 list 形态
+        if "/contents/" in url:
+            return json.dumps([{"name": "2026-10-13_x.md"}]).encode(), None
+        return None, "unstubbed"
+    monkeypatch.setattr(mirror, "_http_get", fake_get)
+    path, res = mirror.fetch_source("t", mirror.SOURCES[0], "20261013")
+    assert path is None and "api" in res
+
+
+def test_rm7_sync_raw_all_dead_five_sources_via_api(mirror, monkeypatch):
+    """端到端：raw 全挂（模拟 07:5x 慢抖窗），五源全走 api 备胎，sync 五卡齐落盘 RC=0。"""
+    date, dash = "20261012", "2026-10-12"
+    bodies = {}
+    def fake_get(url, token):
+        if url.startswith(mirror._RAW_BASE):
+            return None, "net: TimeoutError"          # raw 通道判死
+        if "/contents/" in url:
+            for src in mirror.SOURCES:
+                marker = f"/contents/{src['dir']}"
+                if marker not in url:
+                    continue
+                rest = url.split(marker, 1)[1]
+                v = mirror.date_variants(src["date_fmt"], date)[0]
+                name = f"{v}_{src['key']}.md"
+                if rest.startswith("?"):              # 列目录
+                    return json.dumps([{"name": name}]).encode(), None
+                body = f"# {src['key']}\n\napi 备胎正文".encode()
+                bodies[src["key"]] = body
+                return _api_file_payload(body), None  # 单文件备胎
+        return None, "unstubbed"
+    monkeypatch.setattr(mirror, "_http_get", fake_get)
+    rc = mirror.cmd_sync(date)
+    assert rc == 0
+    d = os.path.join(mirror.MIRROR_ROOT, dash)
+    assert sorted(os.listdir(d)) == sorted(f"{s['key']}.md" for s in mirror.SOURCES)
+    for key, body in bodies.items():
+        assert open(os.path.join(d, f"{key}.md"), "rb").read() == body
+
+
+def test_rm7_api_channel_chinese_filename_percent_encoded(mirror, monkeypatch):
+    """中文文件名走 api 备胎通道：出网 URL 必须已百分号编码（urllib 不自动编码
+    非 ASCII，MP-RPTSPLIT-1 同款坑）——urlopen 层截获 Request 实证纯 ASCII。"""
+    captured = {}
+    body = "# 吃瓜\n\n正文".encode()
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        return _StubResp(_api_file_payload(body))
+    monkeypatch.setattr(mirror.urllib.request, "urlopen", fake_urlopen)
+    got, err = mirror._fetch_raw_via_api(
+        "stub-token", mirror.SOURCES[3], "daily/2026-10-13_吃瓜日报.md")
+    assert err is None and got == body
+    url = captured["url"]
+    assert url.isascii(), url                         # 非 ASCII 裸 URL 会 UnicodeEncodeError
+    assert "%E5%90%83%E7%93%9C" in url                # 「吃瓜」已编码
+    assert url.startswith(mirror._API_BASE + "/repos/xumuhua/gossip/contents/")
+    assert "ref=main" in url                          # 分支参数保留
