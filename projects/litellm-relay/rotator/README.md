@@ -40,6 +40,33 @@ grace 内自然 drain 不 SIGKILL／新进程起不来必须 FAIL 让上层回�
 以 MainPID 换新为准／严格核身四型（③）／litellm_pids 抗 pgrep 污染／冷启动 40s 也等够／
 服务已停不发信号／老进程在世期间零探测／参数与源码口径锁。
 
+## v2.3 实战档位（ROTATOR-FIX1 受控真轮转实测，2026-10-13 10:55）
+
+selftest 是 mock 档（零网络零进程操作），10:55 受控真轮转是实战档——两档对应关系与
+实测数据（全文在 relay 机 `/data/workspace/litellm_relay/rotator.log`；六时刻原始
+量测归档 `report.json`/`report.txt`）：
+
+| 时刻（实测） | 事件 | 与 selftest mock 的对应 |
+| --- | --- | --- |
+| 10:55:00.25 | T0 调 `rotate()`（v2.2 首战） | T12 参数口径锁的活体 |
+| 10:55:00.01 | `bounce: SIGTERM -> [580367]` | T3 剧情开头（SIGTERM 发出） |
+| 10:55:05.01 | grace 5s 到期未退 → **SIGKILL** | T3「drain 死扛→SIGKILL ≈5s」同款时序 |
+| 10:55:05.22 | 老进程全部消失 | T6/T11 的前提条件在实战成立 |
+| 10:55:05.28 | 在飞长流式请求断流（IncompleteRead，已流 575 块/在飞 25s） | T3 代价侧：超 grace 在飞被瞬杀，客户端 CC 重试兜住 |
+| 10:55:10 | systemd 拉起新进程（restart counter 27→28） | T5/T9 冷启动等待段 |
+| 10:55:28.29 | health 200 首过（`t_health200=28.28s`） | T9「冷启动 40s 也等够」实战 18.3s 等到 |
+| 10:55:28.54 | `RESULT ok=True new_pid=588624 downtime_s=28.3` + ROTATE OK | ②假阳性根治：OK 时刻=新进程真 ready（journal Started 10:55:10 后 18s） |
+
+**客户端感知（本档新事实，mock 档测不到）**：CC 式重试客户端（1s 一发小请求）在
+轮转窗内 **零失败**——T0 后第一发（10:55:00.30 发起）于 10:55:01.92 成功，此后 27s
+持续成功（fallbacks 顶包）；health 探针口径的不可用 28.52s 只是「入口别名换头+新进程
+冷启动」的服务端账，**对客户端的换头代价 ≈ 单发请求时延 1.6~2.6s**。对比今晨旧版：
+服务端 250s 且客户端真死 6 会话。
+
+结论：downtime_s=28.3 全部花在 systemd RestartSec(5s)+litellm 冷启动（journal
+Started 10:55:10 → ready 10:55:28），SIGTERM→SIGKILL 段只占前 5.2s——与缺陷①修法
+的预算分解一致。**18:22 换头正撞盘后链时，各 CC 感知即 ≈2s 抖动。**
+
 ## 排查抓手
 
 `rotator.log` 每次换头留一条机读时间线：
