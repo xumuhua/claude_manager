@@ -1,7 +1,7 @@
 #!/data/workspace/litellm_relay/venv/bin/python3
 # -*- coding: utf-8 -*-
 """
-中转站轮转控制器 v2.2（哥哥 2026-09-23 令：177 分钟轮转链头，doubao 踢出池）
+中转站轮转控制器 v2.4（哥哥 2026-09-23 令：177 分钟轮转链头，doubao 踢出池）
 
 v1 教训：只调换 model_list 顺序是无效操作——客户端固定请求 "kimi-han" 别名，
 LiteLLM 按 model_name 路由，YAML 顺序不影响路由。
@@ -56,10 +56,42 @@ v2.2（ROTATOR-FIX1，2026-10-13，亦菲 seq 3198 派单）：换头不再宕�
   另：--selftest 加 12 枚零网络零进程操作断言（mock 假世界跑 bounce 状态机）；
   守护方式/cron/MON1 一概不动。
 
+v2.4（ROTATOR-FIX2，2026-10-14，亦菲 seq 3271 派单）：换头避让在飞长流——静默窗/defer 机制。
+  两个实证边界（v2.2 上线后）：
+    · 10-13 18:23 轮转 SIGKILL 瞬杀在飞长流 → 真 CC 会话 exit-1 阵亡 1 例（trace #11，
+      产物已落地仅丢收尾）——「客户端 0 中断」只对小请求成立（README v2.3 措辞已如实拆分）；
+    · 10-13 21:03 亦菲手动杀 daemon 保护盘后链，21:30 即被 crontab */30 看门狗复活并轮转
+      （侥幸零伤亡）——手动暂停不可作常态保护（≤30min 必复活），避让逻辑必须长在 rotator 体内。
+  机制：到点轮转先过 safety_check，不安全 → defer 延迟重试，安全才进 rotate()：
+    (a) blackout 静默窗：默认工作日（周一~五）17:00-21:30 盘后链窗。ROTATOR_BLACKOUT
+        可配（格式 "0-4:1700-2130"，dow 0=周一..6=周日，逗号分隔多窗，仅支持当日窗
+        start<end；坏条目跳过+ERROR log 不崩 daemon）。窗内无条件 defer 到窗口末端
+        （BLACKOUT_RETRY_S=300s 分段睡、末段精确落末端复检）= 把亦菲「停 daemon 至
+        21:35」的手动配方自动化。晨批窗默认不入列：短请求为主（FIX1 实证小请求 0 中断）
+        且在飞探测已精确覆盖，加窗会平移轮转网格——需要时 env 追加即可。
+    (b) 在飞流探测：ss -H -tni 对 9536 established 连接双采样差分（间隔 PROBE_GAP_S=3s）
+        ——bytes_sent/bytes_received 增长或采样窗内新建的连接 = 活跃流 → defer，
+        每 DEFER_RETRY_S=60s 重试。idle keepalive 字节零增量天然排除（活体验证：
+        在飞流 Δbytes_sent=+7226/3s 必中、idle 连接连 bytes 字段都不出现 Δ=0）。
+  上限语义（护配额轮转本意的兜底，defer/FORCE 全落 log 行）：
+    · inflight defer 自原到点起超 DEFER_MAX_S=3600s → FORCE 强制轮转（亦菲口径 ≤60min）；
+    · blackout defer 上限=窗口末端（确定性有界 ≤4.5h；对窗内 FORCE 等于复刻 18:23 事故，
+      故不套 60min），另设 BLACKOUT_FUSE_S=6h 病理配置保险丝（到期 FORCE）；
+    · 探测失败按 clear 处置（传感器 best-effort，留 PROBE ERROR 行；blackout 静态保护仍在，
+      坏传感器不该把配额轮转永久停摆）。
+  紧急回滚：touch /data/workspace/litellm_relay/rotator_nodefer（即时生效免重启，每次判定
+  动态检查）或 env ROTATOR_DEFER_DISABLED=1。--once 手动轮转不走 defer（显式意图=立即执行）。
+  ④ grace 5s→30s 评估结论：不改。六次自然轮转 t_old_gone≤0.41s、sigkill=[]——无长流时
+  drain 秒完 grace 用不上；有长流时 30s 也送不完（CC 长流分钟级），只把 downtime 预算
+  28.3s→53s 顶破 ≤30s 验收门。defer 生效后「轮转时刻恰有长流」概率已大降，边际价值为负。
+
 用法：
-  rotator.py            守护模式（flock 单实例，循环 sleep 177min）
-  rotator.py --once     立即轮转一次并退出（测试/手动用）
+  rotator.py            守护模式（flock 单实例，循环 sleep 177min，到点先过静默窗检查）
+  rotator.py --once     立即轮转一次并退出（测试/手动用；不走 defer）
   rotator.py --selftest 跑内置自测（不取 flock，可与在跑 daemon 并存；零副作用）
+  rotator.py --check-safe [--at 2026-10-14T18:10]
+                        只读 dry-run：打印当前（或 --at 假想时刻的 blackout）安全判定
+                        JSON 并退出，不轮转不写状态（探测部分始终为活体实时采样）
 """
 import json, os, re, signal, subprocess, sys, time, fcntl, urllib.request, uuid
 from datetime import datetime
@@ -90,6 +122,17 @@ GRACEFUL_GRACE_S = 5.0     # SIGTERM 后给在飞请求 drain 的上限，到期
 OLD_GONE_TIMEOUT_S = 15.0  # SIGKILL 后等老进程从进程表消失的上限（超时不死等，改以 MainPID 换新为准）
 BOUNCE_DEADLINE_S = 90.0   # 等「新进程 + health 200」的上限（含 systemd RestartSec=5 + litellm 冷启动）
 HEALTH_POLL_S = 0.5        # 就绪轮询步长（旧版 3s，粒度太粗白等）
+
+# --- v2.4 静默窗/defer 口径（ROTATOR-FIX2）---
+DEFAULT_BLACKOUT = "0-4:1700-2130"  # 工作日 17:00-21:30 盘后链窗（dow 0=周一；晨批窗默认不入列，理由见 docstring）
+PROBE_PORT = int(os.environ.get("ROTATOR_PROBE_PORT", "9536"))
+PROBE_GAP_S = float(os.environ.get("ROTATOR_PROBE_GAP_S", "3"))
+DEFER_RETRY_S = float(os.environ.get("ROTATOR_DEFER_RETRY_S", "60"))       # inflight 重试间隔
+DEFER_MAX_S = float(os.environ.get("ROTATOR_DEFER_MAX_S", "3600"))         # inflight defer 上限 → FORCE（亦菲口径 ≤60min）
+BLACKOUT_RETRY_S = float(os.environ.get("ROTATOR_BLACKOUT_RETRY_S", "300"))
+BLACKOUT_FUSE_S = float(os.environ.get("ROTATOR_BLACKOUT_FUSE_S", "21600"))  # 病理配置保险丝（6h）→ FORCE
+DEFER_BEAT_S = float(os.environ.get("ROTATOR_DEFER_BEAT_S", "900"))        # defer 期间心跳 log 间隔（防刷屏亦防静默）
+NODEFER_FLAG = os.path.join(RELAY_DIR, "rotator_nodefer")                  # touch 即回滚旧行为（免重启）
 
 
 def _alert_token():
@@ -413,6 +456,231 @@ def bounce():
     return True
 
 
+# ---------------------------------------------------------------------------
+# v2.4 静默窗/defer（ROTATOR-FIX2）：到点先探安全，不安全推迟轮转避让在飞长流
+# ---------------------------------------------------------------------------
+def _defer_disabled():
+    """紧急回滚开关（每次判定动态检查，touch 旗标文件即时生效免重启）。"""
+    return (os.environ.get("ROTATOR_DEFER_DISABLED", "0") == "1"
+            or os.path.exists(NODEFER_FLAG))
+
+
+def parse_blackout(spec):
+    """'0-4:1700-2130,5:1800-2200' → [(frozenset({0,1,2,3,4}), 1020, 1290), ...]
+
+    dow：0=周一..6=周日（Python weekday()）；时刻 HHMM；仅支持当日窗（start<end）。
+    坏条目跳过 + ERROR log（daemon 不崩，其余窗照常生效）——调用侧经
+    _blackout_windows() 按 spec 缓存，同一条坏配置只报一次不刷屏。
+    """
+    wins = []
+    for part in (spec or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            dows_s, span = part.split(":")
+            legs = span.split("-")
+            if len(legs) != 2:
+                raise ValueError("时刻段须为 HHMM-HHMM")
+            sh, sm = _hhmm(legs[0])
+            eh, em = _hhmm(legs[1])
+            if sh * 60 + sm >= eh * 60 + em:
+                raise ValueError("仅支持当日窗 start<end（跨午夜窗请拆两条）")
+            if not re.fullmatch(r"[\d-]+", dows_s):
+                raise ValueError(f"dow 段含非法字符 {dows_s!r}")
+            dows = set()
+            for m in re.finditer(r"(\d)(?:-(\d))?", dows_s):
+                lo = int(m.group(1))
+                hi = int(m.group(2)) if m.group(2) is not None else lo
+                if not (0 <= lo <= 6 and lo <= hi <= 6):
+                    raise ValueError(f"dow 段 {m.group(0)!r} 越界或倒序")
+                dows.update(range(lo, hi + 1))
+            if not dows:
+                raise ValueError("dow 集为空")
+            wins.append((frozenset(dows), sh * 60 + sm, eh * 60 + em))
+        except Exception as e:
+            log(f"blackout: 坏条目 {part!r} 跳过（{e}）")
+    return wins
+
+
+def _hhmm(s):
+    s = s.strip()
+    if not re.fullmatch(r"\d{3,4}", s):
+        raise ValueError(f"HHMM 形态非法 {s!r}")
+    v = int(s)
+    h, m = v // 100, v % 100
+    if not (0 <= h <= 23 and 0 <= m <= 59):
+        raise ValueError(f"时分越界 {s!r}")
+    return h, m
+
+
+_bw_cache = {"spec": None, "wins": None}
+
+
+def _blackout_windows():
+    """按 spec 缓存解析结果（含坏条目 ERROR log 去重——daemon 每 5min 复检不刷屏）。"""
+    spec = os.environ.get("ROTATOR_BLACKOUT", DEFAULT_BLACKOUT)
+    if _bw_cache["spec"] != spec:
+        _bw_cache["wins"] = parse_blackout(spec)
+        _bw_cache["spec"] = spec
+    return _bw_cache["wins"]
+
+
+def blackout_until(now, windows):
+    """now 落在任一窗内 → 返回该窗当日末端 datetime（不含末端：21:30:00 已出窗）；否则 None。"""
+    hm = now.hour * 60 + now.minute
+    for dows, start, end in windows:
+        if now.weekday() in dows and start <= hm < end:
+            return now.replace(hour=end // 60, minute=end % 60, second=0, microsecond=0)
+    return None
+
+
+# ss 双采样差分：连接行（Recv-Q Send-Q local peer，state 过滤态省略 State 列）+ 缩进 info 行
+_CONN_RE = re.compile(r"^(?:[A-Z][A-Za-z-]*\s+)?(\d+)\s+(\d+)\s+(\S+)\s+(\S+)$")
+_BSENT_RE = re.compile(r"\bbytes_sent:(\d+)")
+_BRCV_RE = re.compile(r"\bbytes_received:(\d+)")
+
+
+def parse_ss_ti(text):
+    """ss -H -tni 输出 → {(local, peer): {"sent": int, "recv": int}}。
+
+    实测形态（iproute2-6.1.0，manager 身份对非自有 socket 同样可见）：
+    零数据 idle 连接的 info 行【没有】bytes_sent/bytes_received 字段 → 记 0，
+    双采样差分天然排除 idle keepalive（10-14 04:02 活体勘察定案）。
+    """
+    conns = {}
+    cur = None
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if raw[:1] in ("\t", " "):
+            if cur is not None:
+                m = _BSENT_RE.search(line)
+                if m:
+                    conns[cur]["sent"] = int(m.group(1))
+                m = _BRCV_RE.search(line)
+                if m:
+                    conns[cur]["recv"] = int(m.group(1))
+            continue
+        m = _CONN_RE.match(line)
+        if m:
+            cur = (m.group(3), m.group(4))
+            conns.setdefault(cur, {"sent": 0, "recv": 0})
+        else:
+            cur = None
+    return conns
+
+
+def _ss_snapshot(port):
+    r = subprocess.run(
+        ["ss", "-H", "-tni", "state", "established", f"sport = :{port}"],
+        capture_output=True, text=True, timeout=10)
+    return parse_ss_ti(r.stdout)
+
+
+def _diff_active(s1, s2):
+    """二次采样差分 → [(key, kind)]：kind=grew（字节增长=活跃收发）/new（窗内新建）。
+    s1 有 s2 无的（采样间完结的短请求）不计——正是「小请求 0 中断」的受益者。"""
+    act = []
+    for k, v in s2.items():
+        o = s1.get(k)
+        if o is None:
+            act.append((k, "new"))
+        elif v["sent"] > o["sent"] or v["recv"] > o["recv"]:
+            act.append((k, "grew"))
+    return act
+
+
+def active_streams(port=None, gap_s=None):
+    """在飞流探测 → (active_list, total_conns)。探测失败按无活跃处置（best-effort
+    传感器：留 PROBE ERROR 行，blackout 静态保护仍在；坏传感器不该把配额轮转永久停摆）。"""
+    port = port if port is not None else PROBE_PORT
+    gap = gap_s if gap_s is not None else PROBE_GAP_S
+    try:
+        s1 = _ss_snapshot(port)
+        time.sleep(gap)
+        s2 = _ss_snapshot(port)
+    except Exception as e:
+        log(f"probe: ERROR {e.__class__.__name__}: {e} —— 本次探测按 clear 处置（blackout 窗仍守护）")
+        return [], 0
+    return _diff_active(s1, s2), len(s2)
+
+
+def safety_check(now=None):
+    """→ (verdict, reason, detail)：
+    ('safe','clear',总连接数) / ('safe','disabled',0)
+    ('defer','blackout',窗口末端 datetime) / ('defer','inflight',(active_list,总连接数))
+    blackout 优先于探测（窗内探测无意义——盘后链在飞近乎连续）。"""
+    if _defer_disabled():
+        return "safe", "disabled", 0
+    now = now or datetime.now()
+    end = blackout_until(now, _blackout_windows())
+    if end is not None:
+        return "defer", "blackout", end
+    actives, total = active_streams()
+    if actives:
+        return "defer", "inflight", (actives, total)
+    return "safe", "clear", total
+
+
+def wait_until_safe():
+    """到点轮转前的静默窗（ROTATOR-FIX2 核心）。返回 (deferred_s, forced)。
+
+    - blackout：defer 到窗口末端（BLACKOUT_RETRY_S 分段睡、末段精确落末端复检；
+      病理配置由 BLACKOUT_FUSE_S 保险丝兜底 → FORCE）；
+    - inflight：每 DEFER_RETRY_S 重试，自原到点起超 DEFER_MAX_S → FORCE（配额本意兜底）；
+    - 可观测性：到点即 SAFE 单行 / defer 首条全量 + 每 DEFER_BEAT_S 心跳 + reason 变化一条 /
+      放行 CLEAR / 强转 FORCE——全部落 rotator.log。
+    - daemon 中途被杀由看门狗拉起后 defer 状态无需持久化：到点已过 → wait=max(60,..) →
+      重进本函数重新判定，保护语义不丢（cap 计时随进程重启回卷，可接受，注释留痕）。
+    时间源全部走模块级 time/datetime 引用——selftest 可 patch 假时钟。"""
+    t0 = time.time()
+    n_defer = 0
+    last_reason = None
+    last_beat = 0.0
+    while True:
+        verdict, reason, detail = safety_check()
+        if verdict == "safe":
+            if n_defer == 0:
+                log(f"due: SAFE reason={reason} conns={detail} → rotate")
+            else:
+                log(f"defer: CLEAR reason={reason} probes={n_defer} "
+                    f"deferred_s={time.time() - t0:.0f} → rotate")
+            return time.time() - t0, False
+        n_defer += 1
+        now_ts = time.time()
+        if reason == "blackout":
+            end_ts = detail.timestamp()
+            fuse = t0 + BLACKOUT_FUSE_S
+            if end_ts > fuse:  # 病理配置（如全天窗）→ 配额保险丝
+                cap, capkind = fuse, "blackout_fuse"
+            else:
+                cap, capkind = end_ts, "window_end"
+            nap = max(min(BLACKOUT_RETRY_S, cap - now_ts), 1.0)
+            dstr = (f"until={detail:%Y-%m-%d %H:%M} cap={capkind} "
+                    f"left={max(cap - now_ts, 0):.0f}s")
+        else:
+            actives, total = detail
+            cap, capkind = t0 + DEFER_MAX_S, "defer_max"
+            nap = DEFER_RETRY_S
+            peers = ",".join(f"{kind}:{k[1]}" for k, kind in actives[:3])
+            dstr = f"active={len(actives)}/{total} [{peers}]"
+        if now_ts >= cap:
+            if capkind == "window_end":
+                # 到窗口末端：回环顶复检（blackout 自然解除，转在飞探测），不算 FORCE；
+                # 垫 1s 防「末端已到却仍报 blackout」的畸形剧情打成热循环
+                time.sleep(1.0)
+                continue
+            log(f"defer: FORCE reason={reason} {dstr} deferred_s={now_ts - t0:.0f} "
+                f"cap={capkind} 到顶 —— 强制轮转（护配额轮转本意）")
+            return now_ts - t0, True
+        if n_defer == 1 or reason != last_reason or now_ts - last_beat >= DEFER_BEAT_S:
+            log(f"defer: {reason.upper()} {dstr} retry_in={nap:.0f}s "
+                f"deferred_s={now_ts - t0:.0f}s")
+            last_beat = now_ts
+            last_reason = reason
+        time.sleep(nap)
+
+
 def apply_new_config(new_text):
     """原子写配置（v2.1 三道校验裹挟）→ kill litellm 让 systemd 拉起 → 健康检查 → 失败回滚+告警。"""
     backup = CONFIG + ".rotator-backup"
@@ -493,7 +761,11 @@ def rotate():
 
 
 # ---------------------------------------------------------------------------
-# --selftest：v2.2 bounce 状态机 12 枚断言（mock 假世界，零网络/零进程/零文件写入）
+# --selftest：24 枚断言（mock 假世界，零网络/零进程/零文件写入）
+#   T1-T12 = v2.2 bounce 关停状态机（ROTATOR-FIX1）
+#   T13-T24 = v2.4 静默窗/defer（ROTATOR-FIX2）：配置解析/窗口边界/ss 解析/差分五形态/
+#             defer 三剧情（blackout 落地+保险丝 FORCE+inflight 放行与 FORCE）/回滚开关/
+#             探测失败 fail-safe/参数口径锁
 # ---------------------------------------------------------------------------
 class _FakeClock:
     """假时钟：sleep 即推进时间，让 90s deadline 分支能瞬间跑完。"""
@@ -647,7 +919,7 @@ def _run_world(mod, world):
 
 
 def selftest():
-    """12 枚断言，全 mock（零网络/零进程操作/零文件写入）。RC=0 即 ALL PASS。"""
+    """24 枚断言，全 mock（零网络/零进程操作/零文件写入）。RC=0 即 ALL PASS。"""
     mod = sys.modules.get("__main__")
     if mod is None or not hasattr(mod, "bounce"):
         mod = sys.modules[__name__]
@@ -821,6 +1093,241 @@ def selftest():
         assert "_is_litellm_proc" in src, "严格核身必须在源码里"
     case("T12 参数口径锁（grace≤5s/步长≤1s/SIGKILL+新 PID 判据+核身在位）", t12)
 
+    # ---------------- v2.4 静默窗/defer（ROTATOR-FIX2）新增 T13-T24 ----------------
+
+    # T13 blackout 配置解析正例
+    def t13():
+        wins = mod.parse_blackout("0-4:1700-2130")
+        assert wins == [(frozenset({0, 1, 2, 3, 4}), 17 * 60, 21 * 60 + 30)], f"实得 {wins}"
+        wins2 = mod.parse_blackout("0-4:1700-2130,56:1800-2200")
+        assert len(wins2) == 2 and wins2[1][0] == frozenset({5, 6}), f"多窗/周末段解析错 {wins2}"
+        assert mod.parse_blackout("") == [] and mod.parse_blackout(None) == []
+        assert mod.DEFAULT_BLACKOUT == "0-4:1700-2130", "默认窗=工作日盘后链（亦菲 seq 3271 口径）"
+    case("T13 blackout 解析正例（默认窗/多窗/周末段/空）", t13)
+
+    # T14 坏条目跳过不崩（daemon 不许因配置笔误 crash-loop）
+    def t14():
+        logs = []
+        saved = mod.log
+        mod.log = logs.append
+        try:
+            wins = mod.parse_blackout("0-4:2130-1700,garbage,7:0900-1000,0-4:0900-1100")
+        finally:
+            mod.log = saved
+        assert len(wins) == 1 and wins[0][1] == 540, f"应只剩末条好窗，实得 {wins}"
+        bad = [m for m in logs if "坏条目" in m]
+        assert len(bad) == 3, f"三条坏条目各留一行 ERROR log，实得 {bad}"
+    case("T14 blackout 坏条目跳过+ERROR log（倒序/乱码/dow 越界）", t14)
+
+    # T15 blackout_until 边界：起点含、末端不含、周末出窗
+    def t15():
+        wins = mod.parse_blackout("0-4:1700-2130")
+        wed = datetime(2026, 10, 14)  # 周三 weekday()=2
+        assert mod.blackout_until(wed.replace(hour=16, minute=59), wins) is None
+        e = mod.blackout_until(wed.replace(hour=17, minute=0), wins)
+        assert e == wed.replace(hour=21, minute=30), f"17:00 整入窗、末端=21:30，实得 {e}"
+        assert mod.blackout_until(wed.replace(hour=21, minute=29, second=59), wins) == wed.replace(hour=21, minute=30)
+        assert mod.blackout_until(wed.replace(hour=21, minute=30), wins) is None, "末端不含（21:30:00 即可轮转）"
+        sat = datetime(2026, 10, 17)  # 周六
+        assert mod.blackout_until(sat.replace(hour=18), wins) is None, "周末无盘后链，不许入窗"
+        wins2 = mod.parse_blackout("0-4:0900-1100,0-4:1700-2130")
+        assert mod.blackout_until(wed.replace(hour=10), wins2) == wed.replace(hour=11)
+    case("T15 blackout_until 边界（起点含/末端不含/周末出窗/多窗）", t15)
+
+    # T16 ss 输出解析（夹具=10-14 04:02 生产活体勘察原样：idle 连接无 bytes 字段）
+    def t16():
+        fix = ("0      0      127.0.0.1:9536 127.0.0.1:51750\n"
+               "\t cubic wscale:7,7 rto:205 rtt:0.013/0.006 mss:32768 pmtu:65535 rcvmss:536"
+               " advmss:65483 cwnd:10 segs_in:2 send 201649230769bps lastsnd:7981 lastrcv:7981"
+               " lastack:7981 delivered:1 app_limited minrtt:0.013 snd_wnd:65536\n"
+               "0      0      127.0.0.1:9536 127.0.0.1:51756\n"
+               "\t cubic wscale:7,7 rto:201 ato:40 mss:45248 cwnd:10 bytes_sent:20223"
+               " bytes_acked:20223 bytes_received:454 segs_out:61 segs_in:63 lastsnd:10\n"
+               "ESTAB 0 0 10.0.0.1:9536 1.2.3.4:5678\n"
+               "\t cubic bytes_sent:7 bytes_received:9\n")
+        got = mod.parse_ss_ti(fix)
+        k1 = ("127.0.0.1:9536", "127.0.0.1:51750")
+        k2 = ("127.0.0.1:9536", "127.0.0.1:51756")
+        k3 = ("10.0.0.1:9536", "1.2.3.4:5678")
+        assert got[k1] == {"sent": 0, "recv": 0}, f"idle 连接无 bytes 字段应记 0，实得 {got[k1]}"
+        assert got[k2] == {"sent": 20223, "recv": 454}, f"实得 {got[k2]}"
+        assert got[k3] == {"sent": 7, "recv": 9}, f"ESTAB 前缀形态（无 state 过滤）也要认，实得 {got.get(k3)}"
+        assert len(got) == 3
+    case("T16 ss -H -tni 解析（生产活体夹具：idle 无 bytes 字段/ESTAB 前缀兼容）", t16)
+
+    # T17 双采样差分五形态：sent 增/recv 增/新建 计活跃；平坦 idle/已消失 不计
+    def t17():
+        A = (":9536", "a:1"); B = (":9536", "b:2"); C = (":9536", "c:3")
+        D = (":9536", "d:4"); E = (":9536", "e:5")
+        s1 = {A: {"sent": 100, "recv": 10}, B: {"sent": 0, "recv": 0},
+              C: {"sent": 5, "recv": 5}, E: {"sent": 0, "recv": 100}}
+        s2 = {A: {"sent": 500, "recv": 10}, B: {"sent": 0, "recv": 0},
+              D: {"sent": 1, "recv": 1}, E: {"sent": 0, "recv": 900}}
+        act = dict((k, kind) for k, kind in mod._diff_active(s1, s2))
+        assert act.get(A) == "grew", "bytes_sent 增长=活跃流（18:23 事故的探测目标）"
+        assert act.get(E) == "grew", "bytes_received 增长（请求上传段）也要认"
+        assert act.get(D) == "new", "采样窗内新建连接=刚起飞的请求，宁可多等 60s"
+        assert B not in act, "idle keepalive 字节零增量必须排除（亦菲口径：防误报）"
+        assert C not in act, "采样间完结的短请求不计——小请求 0 中断的受益者"
+    case("T17 差分五形态（sent增/recv增/新建→活跃；平坦idle/已消失→排除）", t17)
+
+    # --- defer 循环假世界（FakeClock+剧情化 safety_check，patch 全走模块级引用）---
+    def _run_defer(scenario, **consts):
+        clock = _FakeClock()
+        logs, checks = [], []
+
+        class _T:
+            @staticmethod
+            def time():
+                return clock.t
+
+            @staticmethod
+            def sleep(s):
+                clock.t += max(float(s), 0.0)
+
+        def _check():
+            checks.append(clock.t)
+            return scenario(clock.t)
+
+        keys = ("time", "safety_check", "log", "DEFER_RETRY_S", "DEFER_MAX_S",
+                "BLACKOUT_RETRY_S", "BLACKOUT_FUSE_S", "DEFER_BEAT_S")
+        saved = {k: getattr(mod, k) for k in keys}
+        mod.time = _T
+        mod.safety_check = _check
+        mod.log = logs.append
+        vals = dict(DEFER_RETRY_S=60.0, DEFER_MAX_S=3600.0, BLACKOUT_RETRY_S=300.0,
+                    BLACKOUT_FUSE_S=21600.0, DEFER_BEAT_S=900.0)
+        vals.update(consts)
+        for k, v in vals.items():
+            setattr(mod, k, v)
+        try:
+            res = mod.wait_until_safe()
+        finally:
+            for k, v in saved.items():
+                setattr(mod, k, v)
+        return res, logs, checks, clock
+
+    # T18 defer 主剧情：18:10 到点撞 blackout → 分段 defer → 21:30 窗口末端精确落地轮转
+    def t18():
+        t0 = 1000.0
+        end_ts = t0 + (3 * 3600 + 20 * 60)  # 18:10 → 21:30 = 3h20m = 12000s
+        end_dt = datetime.fromtimestamp(end_ts)
+
+        def scen(t):
+            if t < end_ts:
+                return ("defer", "blackout", end_dt)
+            return ("safe", "clear", 2)
+
+        (deferred, forced), logs, checks, clock = _run_defer(scen)
+        assert forced is False, "窗口末端放行不是 FORCE"
+        assert deferred == 12000.0, f"应恰好 defer 到 21:30（12000s），实测 {deferred}"
+        assert clock.t == end_ts, "末段 sleep 必须精确落在窗口末端（不冲过不短睡）"
+        text = "\n".join(logs)
+        assert "defer: BLACKOUT" in text and "until=" in text, "首条 defer 要带窗口末端时刻"
+        assert "defer: CLEAR" in text and "→ rotate" in text, "放行要有 CLEAR 行"
+        assert "FORCE" not in text, "正常出窗不许出现 FORCE"
+        assert text.count("defer: BLACKOUT") >= 10, \
+            f"3h20m defer 期间每 15min 一条心跳（可观测性），实得 {text.count('defer: BLACKOUT')}"
+        assert len(checks) == 41, f"300s×40 段+末端复检=41 次判定，实测 {len(checks)}"
+    case("T18 defer 主剧情：blackout 18:10→21:30 精确落地+心跳 log+无 FORCE", t18)
+
+    # T19 病理配置保险丝：全天窗（末端遥不可及）→ BLACKOUT_FUSE_S 到顶 FORCE（配额兜底）
+    def t19():
+        t0 = 1000.0
+        far = datetime.fromtimestamp(t0 + 999999.0)
+
+        def scen(t):
+            return ("defer", "blackout", far)
+
+        (deferred, forced), logs, _c, _k = _run_defer(scen, BLACKOUT_FUSE_S=600.0,
+                                                      BLACKOUT_RETRY_S=300.0)
+        assert forced is True and deferred == 600.0, f"保险丝 600s 到顶必须 FORCE，实测 {deferred}/{forced}"
+        text = "\n".join(logs)
+        assert "defer: FORCE" in text and "blackout_fuse" in text, "FORCE 行要带保险丝归因"
+    case("T19 病理配置保险丝：末端不可达→FUSE 到顶 FORCE（配额轮转本意兜底）", t19)
+
+    # T20 inflight defer→放行：探测两次忙、第三次干净 → 60s×2 后轮转
+    def t20():
+        t0 = 1000.0
+        busy = ([(( "10.0.0.1:9536", "1.2.3.4:5678"), "grew")], 5)
+
+        def scen(t):
+            return ("defer", "inflight", busy) if t < t0 + 120 else ("safe", "clear", 5)
+
+        (deferred, forced), logs, _c, _k = _run_defer(scen, DEFER_RETRY_S=60.0)
+        assert forced is False and deferred == 120.0, f"实测 {deferred}/{forced}"
+        text = "\n".join(logs)
+        assert "defer: INFLIGHT" in text and "active=1/5" in text and "1.2.3.4:5678" in text, \
+            "defer 行要带活跃数/对端（排查抓手）"
+        assert "defer: CLEAR" in text and "probes=2" in text, \
+            f"两次忙探测后放行，CLEAR 行带 probes=2，实得 {text}"
+    case("T20 inflight defer→60s 重试→干净放行（log 带活跃对端）", t20)
+
+    # T21 inflight 持续忙：DEFER_MAX_S 到顶 → FORCE（护配额，≤60min 亦菲口径）
+    def t21():
+        busy = ([((":9536", "x:1"), "new")], 3)
+
+        def scen(t):
+            return ("defer", "inflight", busy)
+
+        (deferred, forced), logs, _c, _k = _run_defer(scen, DEFER_MAX_S=300.0, DEFER_RETRY_S=60.0)
+        assert forced is True and deferred == 300.0, f"60s×5 到顶必须 FORCE，实测 {deferred}/{forced}"
+        text = "\n".join(logs)
+        assert "defer: FORCE" in text and "defer_max" in text
+        assert mod.DEFER_MAX_S <= 3600, "生产默认 cap 不许超亦菲口径 60min"
+    case("T21 inflight 持续忙→DEFER_MAX_S 到顶 FORCE（配额兜底 ≤60min）", t21)
+
+    # T22 紧急回滚开关：disabled → 零探测直接 safe（旧行为），传感器一律不被调用
+    def t22():
+        called = []
+        saved_d, saved_p, saved_b = mod._defer_disabled, mod.active_streams, mod._blackout_windows
+        mod._defer_disabled = lambda: True
+        mod.active_streams = lambda *a, **k: called.append("probe") or ([], 0)
+        mod._blackout_windows = lambda: called.append("blackout") or []
+        try:
+            v, r, d = mod.safety_check()
+        finally:
+            mod._defer_disabled, mod.active_streams, mod._blackout_windows = saved_d, saved_p, saved_b
+        assert (v, r) == ("safe", "disabled"), f"实得 {(v, r)}"
+        assert not called, f"disabled 时传感器零调用，实调 {called}"
+    case("T22 回滚开关：rotator_nodefer/DISABLED → 零探测直接放行（旧行为）", t22)
+
+    # T23 探测失败 fail-safe：ss 挂 → PROBE ERROR 行 + 按 clear 处置（不许把轮转永久停摆）
+    def t23():
+        logs = []
+        saved = (mod._ss_snapshot, mod.log, mod._defer_disabled, mod._blackout_windows, mod.time)
+        clock = _FakeClock()
+        mod._ss_snapshot = lambda port: (_ for _ in ()).throw(RuntimeError("ss not found"))
+        mod.log = logs.append
+        mod._defer_disabled = lambda: False
+        mod._blackout_windows = lambda: []
+        mod.time = clock
+        try:
+            act, total = mod.active_streams(gap_s=0)
+            v, r, d = mod.safety_check()
+        finally:
+            (mod._ss_snapshot, mod.log, mod._defer_disabled,
+             mod._blackout_windows, mod.time) = saved
+        assert act == [] and total == 0, "探测失败按无活跃处置"
+        assert any("probe: ERROR" in m and "RuntimeError" in m for m in logs), \
+            f"必须留 PROBE ERROR 行（含异常类型），实得 {logs}"
+        assert (v, r) == ("safe", "clear"), "坏传感器不该停摆配额轮转（blackout 静态保护仍在）"
+    case("T23 探测失败 fail-safe：PROBE ERROR 留痕+按 clear（轮转不停摆）", t23)
+
+    # T24 v2.4 参数/源码口径锁
+    def t24():
+        assert DEFER_MAX_S <= 3600, f"inflight cap={DEFER_MAX_S} 超亦菲口径 60min"
+        assert BLACKOUT_FUSE_S <= 6 * 3600, f"保险丝={BLACKOUT_FUSE_S} 过长"
+        assert DEFER_RETRY_S <= 120 and BLACKOUT_RETRY_S <= 600, "重试间隔过粗"
+        assert PROBE_GAP_S <= 5, "采样间隔过长会漏掉短流"
+        assert GRACEFUL_GRACE_S <= 5.0, "④评估结论=grace 维持 5s（README v2.4 节），不许悄悄加长"
+        src = open(os.path.abspath(__file__), encoding="utf-8").read()
+        for frag in ("def " + "wait_until_safe(", "def " + "safety_check(",
+                     "defer: FORCE", "due: SAFE", "rotator_nodefer", "--check-safe"):
+            assert frag in src, f"v2.4 关键件缺失: {frag}"
+        assert src.count("def " + "wait_until_safe(") == 1, "defer 循环只应有一份实现（禁双轨）"
+    case("T24 v2.4 参数口径锁（cap≤60min/保险丝≤6h/grace 维持 5s/关键件在位）", t24)
+
     print(f"\nselftest: {len(total_cases) - len(fails)}/{len(total_cases)} PASS"
           + ("  ALL PASS" if not fails else f"  FAILED={[f[0] for f in fails]}"))
     return 0 if not fails else 1
@@ -831,16 +1338,46 @@ def main():
     if "--selftest" in sys.argv:
         # 自测不取 flock：在跑 daemon 持锁时也要能验（否则会静默 exit 0 拿不到结果）
         sys.exit(selftest())
+    if "--check-safe" in sys.argv:
+        # 只读 dry-run：不取 flock 不轮转不写状态；--at 只注入 blackout 假想时刻，探测始终活体
+        at = None
+        if "--at" in sys.argv:
+            i = sys.argv.index("--at")
+            if i + 1 >= len(sys.argv):
+                print("--at 缺时刻参数（形如 2026-10-14T18:10）", file=sys.stderr)
+                sys.exit(2)
+            try:
+                at = datetime.fromisoformat(sys.argv[i + 1])
+            except ValueError as e:
+                print(f"--at 时刻形态非法: {e}", file=sys.stderr)
+                sys.exit(2)
+        v, r, d = safety_check(now=at)
+        out = {"verdict": v, "reason": r,
+               "at": (at or datetime.now()).isoformat(timespec="seconds"),
+               "defer_disabled": _defer_disabled(),
+               "blackout_spec": os.environ.get("ROTATOR_BLACKOUT", DEFAULT_BLACKOUT)}
+        if r == "blackout":
+            out["until"] = d.isoformat(timespec="seconds")
+        elif r == "inflight":
+            out["active"] = [f"{kind}:{k[0]}<-{k[1]}" for k, kind in d[0]]
+            out["conns"] = d[1]
+        elif r == "clear":
+            out["conns"] = d
+        print(json.dumps(out, ensure_ascii=False))
+        sys.exit(0)
     lockfd = open(os.path.join(RELAY_DIR, "rotator.lock"), "w")
     try:
         fcntl.flock(lockfd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         sys.exit(0)  # 已有实例在跑
     if once:
-        rotate()
+        rotate()  # 手动/测试显式意图：立即执行，不走 defer
         return
-    log(f"rotator v2.2 start, interval={INTERVAL_MIN}min, pool={POOL}, "
-        f"shutdown=SIGTERM+{GRACEFUL_GRACE_S:.0f}s→SIGKILL, ready=new_pid+health200")
+    log(f"rotator v2.4 start, interval={INTERVAL_MIN}min, pool={POOL}, "
+        f"shutdown=SIGTERM+{GRACEFUL_GRACE_S:.0f}s→SIGKILL, ready=new_pid+health200, "
+        f"defer=blackout[{os.environ.get('ROTATOR_BLACKOUT', DEFAULT_BLACKOUT)}]"
+        f"+probe(:{PROBE_PORT} gap{PROBE_GAP_S:.0f}s retry{DEFER_RETRY_S:.0f}s "
+        f"cap{DEFER_MAX_S:.0f}s→FORCE)")
     while True:
         st = load_state()
         last = st.get("last_rotate")
@@ -853,6 +1390,7 @@ def main():
                 pass
         time.sleep(wait)
         try:
+            wait_until_safe()  # v2.4 静默窗：不安全 defer（上限兜底 FORCE），安全才轮转
             rotate()
         except Exception as e:
             log(f"ROTATE ERROR: {e!r}")
