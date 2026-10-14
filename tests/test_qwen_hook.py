@@ -89,25 +89,25 @@ def test_t1_kimi_han_entry_qwen_model_small_mt_raised():
     mod = _load_hook()
     with _mk(mod) as hook:
         out = _pre(hook, {"model": "kimi-han", "max_tokens": 8192})
-        assert out["max_tokens"] == 16000
+        assert out["max_tokens"] == 65536
 
 def test_t2_missing_mt_filled():
     mod = _load_hook()
     with _mk(mod) as hook:
         out = _pre(hook, {"model": "kimi-han"})
-        assert out["max_tokens"] == 16000
+        assert out["max_tokens"] == 65536
 
 def test_t3_full_model_string_matched():
     mod = _load_hook()
     with _mk(mod) as hook:
         out = _pre(hook, {"model": "anthropic/qwen3.8-max", "max_tokens": 1024})
-        assert out["max_tokens"] == 16000
+        assert out["max_tokens"] == 65536
 
 def test_t4_client_bigger_value_kept():
     mod = _load_hook()
     with _mk(mod) as hook:
-        out = _pre(hook, {"model": "kimi-han", "max_tokens": 32000})
-        assert out["max_tokens"] == 32000
+        out = _pre(hook, {"model": "kimi-han", "max_tokens": 128000})
+        assert out["max_tokens"] == 128000
 
 # ---------------------------------------------------------------- ②非目标直通
 def test_t5_non_qwen_model_untouched():
@@ -123,7 +123,7 @@ def test_t5b_entry_alias_head_qwen():
     mod = _load_hook()
     with _mk(mod, head="qwen") as hook:
         out = _pre(hook, {"model": "kimi-han", "max_tokens": 8192})
-        assert out["max_tokens"] == 16000
+        assert out["max_tokens"] == 65536
 
 def test_t5c_entry_alias_head_other():
     """kimi-han 入口 + state head=zhipu → 不命中（fail-safe 不误伤）。"""
@@ -180,7 +180,7 @@ def test_t10_env_garbage_falls_back_default():
     try:
         hook = mod.QwenMaxTokensHook()
         out = _pre(hook, {"model": "qwen", "max_tokens": 8192})
-        assert out["max_tokens"] == 16000
+        assert out["max_tokens"] == 65536
     finally:
         del os.environ["QWEN_MAX_TOKENS"]
 
@@ -207,7 +207,7 @@ def test_t12_oneshot_confirm_log():
             builtins.print = orig
         hits = [p for p in printed if p and "qwen-max-tokens-hook" in str(p[0])]
         assert len(hits) == 1, "ONE-SHOT 自证日志应恰好打一次，实际 %d" % len(hits)
-        assert "ACTIVE" in hits[0][0] and "16000" in hits[0][0]
+        assert "ACTIVE" in hits[0][0] and "65536" in hits[0][0]
 
 def test_t13_head_cache_ttl():
     """60s head 缓存：state 文件在缓存窗内变更不重读（对轮转足够），过期后重读。"""
@@ -231,7 +231,7 @@ def test_t13_head_cache_ttl():
         c = mod._current_head._cache
         mod._current_head._cache = (c[0] - 61.0, c[1], c[2])
         out3 = _pre(hook, {"model": "kimi-han", "max_tokens": 8192})
-        assert out3["max_tokens"] == 16000, "缓存过期后应读到新 head=qwen"
+        assert out3["max_tokens"] == 65536, "缓存过期后应读到新 head=qwen"
     finally:
         if old_state is None:
             os.environ.pop("QWEN_ROTATOR_STATE", None)

@@ -9,8 +9,8 @@
   实证 litellm config 朴素 max_tokens 注入【不覆盖】客户端小值——客户端值胜出，
   故必须在钩子层改写。
 - 活体探测实证上游接纳 16000（输出 15171 完整 tool_use）与 4000（110k prompt
-  正常出）；quant 10/10 探测「大 max_tokens 显著降低截断概率」。
-- 65k 档风险未探（测试预算上限 16k），本钩子上限取 QWEN_MAX_TOKENS（默认 16000），
+  正常出）；11:56 两发 65536 小输出请求均 200 end_turn（65k 档接纳实证）。
+- 本钩子上限取 QWEN_MAX_TOKENS（默认 65536，qwen3.8-max 文档输出上限档），
   只对 qwen 上游生效（判定=显式 qwen 别名 / kimi-han 入口当前指向 qwen 头）。
 
 接线（生产 /data/workspace/litellm_relay/config.yaml）：
@@ -27,11 +27,11 @@ litellm get_instance_fn 对 config 同目录相对名做文件加载（1.99.0 �
 
 行为：
 - async_pre_call_hook：命中且 max_tokens 缺失或 < QWEN_MAX_TOKENS 时抬到
-  QWEN_MAX_TOKENS；客户端更大值不降级。data 返回值 litellm 只在非 None 时采用，
-  故始终返回 data。
+  QWEN_MAX_TOKENS（默认 65536）；客户端更大值不降级。data 返回值 litellm 只在
+  非 None 时采用，故始终返回 data。
 - async_moderation_hook：部署后首个 qwen 请求打一行 ONE-SHOT 部署自证日志
   （relay.log grep 锚点，天然完成「已装载且生效」验收，无需额外探针）。
-- 数值经 QWEN_MAX_TOKENS env 可调（默认 16000）；0 或负值=自动禁用（紧急逃生）。
+- 数值经 QWEN_MAX_TOKENS env 可调（默认 65536）；0 或负值=自动禁用（紧急逃生）。
 - 任何异常只 ERROR 日志不抛穿——坏钩子不该挡全站请求（v2.4 defer 探测 fail-safe 同口径）。
 
 QWEN-TRUNC1 交付；rotator POOL 与轮转零改动；回滚=config 删 callbacks 行+restart。
@@ -50,9 +50,9 @@ HEAD_CACHE_TTL_S = 60.0  # head 缓存：轮转周期 177min，60s 缓存足够�
 
 def _cfg_max_tokens() -> int:
     try:
-        return int(os.environ.get("QWEN_MAX_TOKENS", "16000"))
+        return int(os.environ.get("QWEN_MAX_TOKENS", "65536"))
     except (TypeError, ValueError):
-        return 16000
+        return 65536
 
 
 def _current_head() -> str:
