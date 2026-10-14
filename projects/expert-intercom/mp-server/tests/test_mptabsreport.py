@@ -10,6 +10,8 @@
   R9 pgroup 落盘持久化：append 落 jsonl；重启加载历史 seq 接续；内存环形热窗与落盘全量分轨；坏行跳过
   R12 MP-GOSSIP1 第四源 gossip（亦菲 seq 2893）：源登记形态/四源聚合/仓未建 404 不炸/
      config report_sources 可配路线（整体替换+缺省回落默认+坏配置拒启动）
+  R18 MP-REQLOG1 按登录用户记请求日志（亦菲 seq 3372）：REQ user= 三档/路径白名单/
+     query 安全白名单/轮询节流 xN/异常 500 记行/MP_REQLOG=0 关断
 用法：pytest tests/test_mptabsreport.py（venv 见 /tmp/mpmsg1_venv）
 """
 import asyncio
@@ -1200,3 +1202,173 @@ def test_r17_mirror_config_validation(tmp_path):
         with pytest.raises(cfg_mod.ConfigError) as ei:
             cfg_mod.load_config(str(p))
         assert why in str(ei.value)
+
+
+# ==================== R18 MP-REQLOG1 按登录用户记请求日志（亦菲 seq 3372，哥哥拍板） ====================
+# 口径：REQ user=<login_user|agent:X|-> METHOD path[?安全query] status [xN]
+# 锁六点：①user 三档解析（login_user 优先/agent 旁路/- 兜底）②路径前缀白名单
+# （扫描器随机路径与 /healthz 机探不进 REQ 层）③query 仅 conversation_id/date 白名单随行，
+# token 类绝不落行（隐私红线）④高频轮询 GET 60s 节流 xN 合并、非 2xx/POST 不节流
+# ⑤handler 抛穿按 500 记行不吞 ⑥MP_REQLOG=0 关断开关
+
+
+class RLReq(dict):
+    """REQ 日志测试桩：dict 语义=aiohttp request mapping（login_user/agent 注入形态同 require_agent）。"""
+
+    def __init__(self, method="GET", path="/api/daily_report", query=None,
+                 login_user=None, agent=None, store=None):
+        super().__init__()
+        if login_user is not None:
+            self["login_user"] = login_user
+        if agent is not None:
+            self["agent"] = agent
+        self.method = method
+        self.path = path
+        self.query = query or {}
+        self.app = {"req_log": {} if store is None else store}
+
+
+class _RLLog:
+    def __init__(self):
+        self.lines = []
+
+    def info(self, fmt, *a):
+        self.lines.append(fmt % a)
+
+    def debug(self, fmt, *a):
+        pass
+
+
+@pytest.fixture
+def rl_log(monkeypatch):
+    import app as app_mod
+    stub = _RLLog()
+    monkeypatch.setattr(app_mod, "log", stub)
+    return stub
+
+
+def test_r18_user_resolution(rl_log):
+    """user 三档：login_user 精确身份优先 > agent:<名>（token 旁路）> -（无身份）。"""
+    import app as app_mod
+    app_mod._log_req(RLReq(login_user="nana", agent={"name": "gege"}), 200)
+    app_mod._log_req(RLReq(agent={"name": "gege"}), 200)
+    app_mod._log_req(RLReq(), 401)
+    assert rl_log.lines[0].startswith("REQ user=nana GET /api/daily_report 200")
+    assert rl_log.lines[1].startswith("REQ user=agent:gege GET /api/daily_report 200")
+    assert rl_log.lines[2].startswith("REQ user=- GET /api/daily_report 401")
+    # grep 'user=nana' 不误命中 agent 行（前缀互斥）
+    assert sum(1 for ln in rl_log.lines if "user=nana" in ln) == 1
+
+
+def test_r18_path_whitelist(rl_log):
+    """只记真人操作面：扫描器随机路径/PROPFIND//healthz 机探不进 REQ（aiohttp.access 已有全量）。"""
+    import app as app_mod
+    for path, method, status in [("/", "GET", 404), ("/", "PROPFIND", 404),
+                                 ("/healthz", "GET", 200), ("/favicon.ico", "GET", 404),
+                                 ("/wsother", "GET", 404)]:
+        app_mod._log_req(RLReq(method=method, path=path), status)
+    assert rl_log.lines == []
+    app_mod._log_req(RLReq(path="/api/status/tabs"), 200)
+    app_mod._log_req(RLReq(path="/gh/xumuhua/gossip/tree"), 200)
+    app_mod._log_req(RLReq(method="POST", path="/ai/report_chat"), 200)
+    app_mod._log_req(RLReq(method="POST", path="/login"), 200)
+    app_mod._log_req(RLReq(path="/ws"), 101)
+    assert len(rl_log.lines) == 5
+
+
+def test_r18_query_whitelist_no_secret(rl_log):
+    """query 仅 conversation_id/date 随行；token/密码类参数绝不落行（红线⑤）。"""
+    import app as app_mod
+    app_mod._log_req(RLReq(path="/api/daily_report",
+                           query={"date": "20261014", "token": "SEKRET"}), 200)
+    assert rl_log.lines[0] == "REQ user=- GET /api/daily_report?date=20261014 200"
+    app_mod._log_req(RLReq(path="/api/messages",
+                           query={"conversation_id": "grp_mp", "after_seq": "3300",
+                                  "token": "SEKRET2"}), 200)
+    assert "conversation_id=grp_mp" in rl_log.lines[1]
+    assert "after_seq" not in rl_log.lines[1]
+    assert "SEKRET" not in rl_log.lines[0] and "SEKRET2" not in rl_log.lines[1]
+    # WS 的 token 在 query——/ws 行绝不带 query
+    app_mod._log_req(RLReq(path="/ws", query={"token": "SEKRET3"}), 101)
+    assert rl_log.lines[2] == "REQ user=- GET /ws 101" and "SEKRET3" not in rl_log.lines[2]
+
+
+def test_r18_throttle_window_and_bypass(rl_log):
+    """高频轮询 GET 节流：60s 窗口一条+抑制数 xN 合并；非 2xx 与 POST 不节流。"""
+    import app as app_mod
+    store = {}
+    req = RLReq(path="/api/messages", query={"conversation_id": "grp_mp"},
+                login_user="nana", store=store)
+    app_mod._log_req(req, 200)                       # 窗口首条：立即记，无后缀
+    assert len(rl_log.lines) == 1 and "x" not in rl_log.lines[0].split()[-1]
+    app_mod._log_req(req, 200)
+    app_mod._log_req(req, 200)                       # 窗内两发被抑制
+    assert len(rl_log.lines) == 1
+    key = ("nana", "GET", "/api/messages?conversation_id=grp_mp")
+    assert store[key][1] == 2
+    store[key][0] -= app_mod.REQ_LOG_THROTTLE_S + 1  # 拨过窗口
+    app_mod._log_req(req, 200)                       # 窗口过期：本条+抑制 2 发合并 x3
+    assert rl_log.lines[-1].endswith(" 200 x3")
+    assert store[key][1] == 0
+    # 非 2xx 不节流（错误永不被吞）：连发三发 403 三条行
+    n = len(rl_log.lines)
+    for _ in range(3):
+        app_mod._log_req(req, 403)
+    assert len(rl_log.lines) == n + 3
+    # POST 不节流（真人发言必记）
+    preq = RLReq(method="POST", path="/api/pgroup/messages", login_user="nana", store=store)
+    n = len(rl_log.lines)
+    for _ in range(3):
+        app_mod._log_req(preq, 200)
+    assert len(rl_log.lines) == n + 3
+    # 不同用户/会话分键互不抑制
+    req2 = RLReq(path="/api/messages", query={"conversation_id": "dm_yifei"},
+                 login_user="nana", store=store)
+    n = len(rl_log.lines)
+    app_mod._log_req(req2, 200)
+    assert len(rl_log.lines) == n + 1
+
+
+def test_r18_middleware_status_and_exception(rl_log):
+    """中间件按响应 status 记行；handler 抛穿按 500 记行后原样上抛（不吞异常）。"""
+    import app as app_mod
+
+    class RLResp:
+        def __init__(self, status):
+            self.status = status
+
+    async def h_ok(request):
+        request["login_user"] = "nana"               # require_agent 内层注入，中间件外层可见
+        return RLResp(204)
+
+    req = RLReq(path="/api/status/models")
+    asyncio.run(app_mod.req_log_middleware(req, h_ok))
+    assert rl_log.lines[-1] == "REQ user=nana GET /api/status/models 204"
+
+    async def h_boom(request):
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(app_mod.req_log_middleware(RLReq(path="/api/daily_report"), h_boom))
+    assert rl_log.lines[-1].endswith(" 500")
+
+
+def test_r18_kill_switch():
+    """MP_REQLOG 缺省启用+显式 0 关断（回滚开关）。"""
+    import app as app_mod
+    assert app_mod.req_log_enabled({}) is True
+    assert app_mod.req_log_enabled({"MP_REQLOG": "1"}) is True
+    assert app_mod.req_log_enabled({"MP_REQLOG": "0"}) is False
+
+
+def test_r18_wiring_source_lock():
+    """接线结构锁：中间件注册+节流表初始化+ws_handler 注入 agent 身份（三处缺一即红）。"""
+    import app as app_mod
+    with open(app_mod.__file__, encoding="utf-8") as f:
+        src = f.read()
+    assert 'app["req_log"] = {}' in src
+    assert "app.middlewares.append(req_log_middleware)" in src
+    ws_seg = src.split("async def ws_handler", 1)[1].split("async def", 1)[0]
+    assert 'request["agent"] = agent' in ws_seg
+    # 隐私红线结构锁：REQ 行格式串固定五段（user/method/path/status[/xN]）
+    assert 'log.info("REQ user=%s %s %s %s%s"' in src

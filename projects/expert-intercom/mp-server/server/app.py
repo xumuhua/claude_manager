@@ -72,6 +72,86 @@ def require_agent(handler):
     return wrapper
 
 
+# ---------- MP-REQLOG1 按登录用户记请求日志（seq 3372，哥哥拍板「加一行按用户记请求的日志」） ----------
+# 目标：「nana 最近有没有在用小程序、看了什么」一条命令可查：
+#   journalctl -t intercom-mp-backend | grep 'user=nana'
+# 口径：①user= login_user（X-Login-User 验签注入，require_agent 在中间件内层写入，
+#          handler 返回后可见）> agent:<名>（token 旁路无凭证）> -（鉴权失败/免鉴权路径）
+#       ②只记真人操作面（/login /ws /api/* /ai/* /gh/*）；/healthz 机探与扫描器随机路径
+#          404/PROPFIND 不进 REQ 层（aiohttp.access 已有全量，REQ 只加 user 维度并降噪）
+#       ③高频轮询 GET（messages/conversations 类）节流：同 (user,method,path) 60s 窗口
+#          记一条，窗内抑制数并入 xN 后缀；非 2xx 不节流（错误永不被吞）；POST 不节流
+#       ④query 仅白名单 conversation_id/date 随行（定位看了哪个会话/哪天报告）；
+#          token/密码/请求体绝不落日志（隐私红线）
+#       ⑤MP_REQLOG=0 一键关断（回滚开关，重启生效）
+REQ_LOG_EXACT = frozenset(("/login", "/ws"))               # 精确匹配（防 /wsother 类前缀误命中）
+REQ_LOG_PREFIXES = ("/api/", "/ai/", "/gh/")                # 前缀匹配
+REQ_LOG_THROTTLE_GETS = {"/api/messages", "/api/dm/messages",
+                         "/api/pgroup/messages", "/api/conversations"}
+REQ_LOG_THROTTLE_S = 60.0
+REQ_LOG_QUERY_WHITELIST = ("conversation_id", "date")
+REQ_LOG_STORE_MAX = 4096     # 节流表病态增长保险（键空间=user×路径本就有限）
+
+
+def req_log_enabled(env=None):
+    """MP_REQLOG 缺省启用；=0 显式关断（「缺省启用+显式关闭」标准形态）。"""
+    return (os.environ if env is None else env).get("MP_REQLOG", "1") != "0"
+
+
+def _req_user(request):
+    lu = request.get("login_user")
+    if lu:
+        return lu
+    ag = request.get("agent")
+    if ag:
+        return "agent:" + str(ag.get("name", "?"))
+    return "-"
+
+
+def _req_shown_path(request):
+    """path + 白名单安全 query（绝不带 token/密码类参数）。"""
+    q = request.query
+    parts = [f"{k}={q[k]}" for k in REQ_LOG_QUERY_WHITELIST if k in q]
+    return request.path + ("?" + "&".join(parts) if parts else "")
+
+
+def _log_req(request, status):
+    path = request.path
+    if path not in REQ_LOG_EXACT and not path.startswith(REQ_LOG_PREFIXES):
+        return
+    user = _req_user(request)
+    shown = _req_shown_path(request)
+    suffix = ""
+    if request.method == "GET" and request.path in REQ_LOG_THROTTLE_GETS and status < 300:
+        store = request.app["req_log"]
+        if len(store) > REQ_LOG_STORE_MAX:
+            store.clear()
+        key = (user, request.method, shown)
+        now = time.time()
+        ent = store.get(key)
+        if ent is not None and now - ent[0] < REQ_LOG_THROTTLE_S:
+            ent[1] += 1                      # 窗口内抑制，不落行
+            return
+        if ent is not None and ent[1]:
+            suffix = f" x{ent[1] + 1}"       # 窗口过期：本条+窗内抑制数合并成一条
+        store[key] = [now, 0]
+    log.info("REQ user=%s %s %s %s%s", user, request.method, shown, status, suffix)
+
+
+@web.middleware
+async def req_log_middleware(request, handler):
+    status = 500                             # handler 抛穿按 500 记（aiohttp 兜底同口径）
+    try:
+        resp = await handler(request)
+        status = resp.status
+        return resp
+    finally:
+        try:
+            _log_req(request, status)
+        except Exception as e:               # 日志层永不影响业务
+            log.debug("REQ 日志失败: %s: %s", e.__class__.__name__, e)
+
+
 def check_conv_visible(request, conversation_id):
     """可见性红线（F1 v1.3 §5.2 会话成员制语义，经 HubWSBridge.conv_visible 统一判定）：
     role=gege 全会话可见（含各 dm_<expert>）；其余 token dm_yifei 需 dm scope、
@@ -267,6 +347,7 @@ async def ws_handler(request):
     agent = get_agent(request)
     if agent is None:
         return _unauthorized()
+    request["agent"] = agent   # MP-REQLOG1：WS 建连 REQ 行带 agent 身份（token 在 query，绝不随行落日志）
     ws = web.WebSocketResponse(heartbeat=30)
     await ws.prepare(request)
     bridge = request.app["bridge"]
@@ -373,6 +454,9 @@ def main():
     app = web.Application()
     app["cfg"] = cfg
     app["started_at"] = time.time()
+    app["req_log"] = {}  # MP-REQLOG1 节流表 (user,method,path) -> [窗口起点, 抑制数]
+    if req_log_enabled():
+        app.middlewares.append(req_log_middleware)
     app["bridge"] = HubWSBridge(cfg, args.state)
     app["tts_cache"] = {}  # R-7 同文本短缓存（内存 LRU 32 条，D1 §6.2 允许）
     app["login_fails"] = {}  # F7 防爆破：ip -> [失败时间戳]（内存态，重启清零）
