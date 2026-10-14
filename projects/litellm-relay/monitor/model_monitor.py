@@ -80,6 +80,18 @@ E2E_ENABLED = os.environ.get("MON_E2E", "0") == "1"   # 默认关：探测行会
 HEADSWITCH_DAILY = os.environ.get("MON_HEADSWITCH_DAILY", "1") == "1"
 HEADSWITCH_DIGEST_H = int(os.environ.get("MON_HEADSWITCH_DIGEST_H", "24"))
 
+# MON1-AWARE1（2026-10-14，亦菲 seq 3387 小单）：rotator_stall 检测器感知 v2.4 静默窗 defer。
+# 10-14 20:47 假告警实例：19:15 到点轮转被 BLACKOUT defer 押至 21:30 窗末，age 266min>1.5×177min
+# 判据触发「轮转停摆」——实为设计内避让（rotator.log defer 心跳每 900s 一条整）。
+# 口径（她裁定）：读 defer 行的 until= 字段，未到期不告警，到期未轮转才告警（更准）；
+# 真 stall 鉴别别丢——「心跳断+无 ROTATE」才是真停摆（daemon 死时 defer 心跳会断）；
+# FORCE 语义：deferred_s 超 cap 后必有 FORCE 或 ROTATE 行，超 cap 仍只见心跳=异常要告。
+DEFER_AWARE = os.environ.get("MON_DEFER_AWARE", "1") == "1"          # =0 回滚旧判据
+DEFER_FRESH_S = int(os.environ.get("MON_DEFER_FRESH_S", "1200"))     # 心跳新鲜窗（BEAT 900s+裕量）
+DEFER_UNTIL_GRACE_S = int(os.environ.get("MON_DEFER_UNTIL_GRACE_S", "300"))  # 窗末落地复检宽限
+DEFER_INFLIGHT_CAP_S = int(os.environ.get("MON_DEFER_INFLIGHT_CAP_S", "3600"))  # rotator DEFER_MAX_S 同源
+DEFER_TAIL_BYTES = int(os.environ.get("MON_DEFER_TAIL_BYTES", str(64 * 1024)))
+
 # 告警（hub 与中转站同机，走 127.0.0.1；dm_yifei 在 hub 配置里不存在，
 # coder↔yifei 的信道就是 dm_coder，与 rotator 告警同口径同信道）
 HUB_URL = os.environ.get("MON_HUB_URL", "http://127.0.0.1:8765/messages")
@@ -736,8 +748,121 @@ def read_rotator_state():
         return {"head": None, "last_rotate": None}
 
 
+# --- MON1-AWARE1：rotator.log defer 证据（只读，与 scan_log 偏移机制无关的尾部扫描）---
+_LOG_TS_RE = re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]")
+_BEAT_RE = re.compile(r"defer: (BLACKOUT|INFLIGHT) ")          # 心跳行（v2.4 wait_until_safe）
+_END_RE = re.compile(r"defer: (FORCE|CLEAR)")                  # 终态行（放行/强转，其后必有轮转）
+_ROTATE_OK_RE = re.compile(r"ROTATE OK")
+_UNTIL_RE = re.compile(r"until=(\d{4}-\d{2}-\d{2} \d{2}:\d{2})")
+_DEFS_RE = re.compile(r"deferred_s=(\d+)")
+
+
+def read_defer_evidence(path=None):
+    """tail rotator.log 提取最后一轮 defer 判定证据（只读；生产行实样：
+    `[2026-10-14 20:47:39] defer: BLACKOUT until=2026-10-14 21:30 cap=window_end
+    left=2540s retry_in=300s deferred_s=5400s`）。
+
+    返回 {"readable", "beat_ts","beat_reason","beat_until","beat_deferred_s",
+          "end_kind","end_ts","rotate_ts"}——时间均 datetime，缺失为 None。
+    beat=最后一条心跳；end=最后一条终态（FORCE/CLEAR）；rotate=最后一条 ROTATE OK。
+    """
+    path = path or ROTATOR_LOG_PATH
+    ev = {"readable": False, "beat_ts": None, "beat_reason": None, "beat_until": None,
+          "beat_deferred_s": None, "end_kind": None, "end_ts": None, "rotate_ts": None}
+    try:
+        size = os.path.getsize(path)
+        off = max(0, size - DEFER_TAIL_BYTES)
+        with open(path, "rb") as f:
+            f.seek(off)
+            chunk = f.read()
+    except Exception as e:
+        log(f"[defer] rotator.log 读取失败 {e.__class__.__name__}: {e}（按证据缺失处置）")
+        return ev
+    ev["readable"] = True
+    text = ANSI_RE.sub("", chunk.decode("utf-8", "replace"))
+    lines = text.splitlines()
+    if off > 0 and lines:
+        lines = lines[1:]          # 首行可能被 seek 截半，丢弃
+    for line in lines:
+        m_ts = _LOG_TS_RE.match(line)
+        if not m_ts:
+            continue
+        try:
+            ts = datetime.strptime(m_ts.group(1), "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            continue
+        m_beat = _BEAT_RE.search(line)
+        if m_beat:
+            ev["beat_ts"] = ts
+            ev["beat_reason"] = m_beat.group(1)
+            m_u = _UNTIL_RE.search(line)
+            try:
+                ev["beat_until"] = datetime.strptime(m_u.group(1), "%Y-%m-%d %H:%M") if m_u else None
+            except ValueError:
+                ev["beat_until"] = None
+            m_d = _DEFS_RE.search(line)
+            ev["beat_deferred_s"] = int(m_d.group(1)) if m_d else None
+            continue
+        m_end = _END_RE.search(line)
+        if m_end:
+            ev["end_kind"], ev["end_ts"] = m_end.group(1), ts
+            continue
+        if _ROTATE_OK_RE.search(line):
+            ev["rotate_ts"] = ts
+    return ev
+
+
+def defer_verdict(ev, now=None):
+    """MON1-AWARE1 核心判据。→ (suppress: bool, ep_key: str|None, note: str)
+
+    - suppress=True：设计内 defer 进行中（心跳新鲜且未越上限），不告警；
+      ep_key=本 defer 集标识（同集只落一次事件）。
+    - suppress=False：真 stall（心跳断+无 ROTATE）或 defer 异常（until 过期/cap 超顶
+      仍无 FORCE/ROTATE 落地）——照告警，note 带证据归因。
+    鉴别铁律（亦菲口径）：真停摆（daemon 死）时 defer 心跳会断，「心跳断+无 ROTATE」才是真 stall。
+    """
+    now = now or datetime.now()
+    if not DEFER_AWARE:
+        return False, None, "defer 感知已关（MON_DEFER_AWARE=0，按旧判据）"
+    if not ev["readable"]:
+        return False, None, "rotator.log 不可读，defer 证据缺失（按旧判据告警）"
+    beat_ts = ev["beat_ts"]
+    # 终态行（FORCE/CLEAR/ROTATE OK）晚于最后心跳 → 该 defer 集已放行落地，不再是「defer 中」
+    landed = max([t for t in (ev["end_ts"], ev["rotate_ts"]) if t] or [datetime.min])
+    if beat_ts is None:
+        return False, None, "rotator.log 无 defer 心跳证据（daemon 未进入 defer 或日志缺失）"
+    if landed > beat_ts:
+        tail = f"（终态 {ev['end_kind'] or 'ROTATE OK'} @ {landed:%H:%M:%S} 后未见轮转落地）"
+        return False, None, f"defer 已放行仍未轮转{tail}——轮转失败？"
+    beat_age_s = (now - beat_ts).total_seconds()
+    if beat_age_s > DEFER_FRESH_S:
+        return False, None, (f"defer 心跳断（最后 {ev['beat_reason']} 行 {int(beat_age_s // 60)}min 前，"
+                             f"心跳周期 {DEFER_FRESH_S // 60}min 内应有新行）+无 ROTATE——daemon 死疑")
+    # 心跳新鲜 = daemon 活着且在避让；再核上限语义防「活着但卡死」
+    beat_str = f"{ev['beat_reason']} 心跳 {int(beat_age_s)}s 前"
+    # ep_key 只给集内恒定前缀，调用方拼 lr（同一 defer 集 last_rotate 不变）做去重标识——
+    # 含心跳时刻/deferred_s 的键会随时间漂移致重复落事件
+    if ev["beat_reason"] == "BLACKOUT":
+        until = ev["beat_until"]
+        if until is None:
+            return True, "BLACKOUT|until=?", f"defer 中（{beat_str}，until 解析失败按心跳新鲜抑制）"
+        if now < until + timedelta(seconds=DEFER_UNTIL_GRACE_S):
+            return True, f"BLACKOUT|{until:%Y%m%d%H%M}", \
+                f"defer 中（BLACKOUT 静默窗至 {until:%H:%M}，{beat_str}）"
+        return False, None, (f"defer 异常：BLACKOUT until={until:%H:%M} 已过 "
+                             f"{int((now - until).total_seconds() // 60)}min 仍未落地（心跳仍新鲜）——卡死疑，查 rotator.log")
+    # INFLIGHT：cap=DEFER_MAX_S 到顶必有 FORCE/ROTATE；超 cap+宽限仍只见心跳=异常
+    ds = ev["beat_deferred_s"]
+    if ds is None:
+        return True, "INFLIGHT|ds=?", f"defer 中（{beat_str}，deferred_s 解析失败按心跳新鲜抑制）"
+    if ds <= DEFER_INFLIGHT_CAP_S + DEFER_UNTIL_GRACE_S:
+        return True, "INFLIGHT", f"defer 中（INFLIGHT 避让在飞长流 deferred_s={ds}，{beat_str}）"
+    return False, None, (f"defer 异常：INFLIGHT deferred_s={ds} 已超 cap {DEFER_INFLIGHT_CAP_S}s+"
+                         f"宽限仍无 FORCE/ROTATE——FORCE 语义失效疑，查 rotator.log")
+
+
 def check_chain(conn, alerts):
-    """只读 rotator 状态文件：链头切换 / 轮转停摆。"""
+    """只读 rotator 状态文件：链头切换 / 轮转停摆（MON1-AWARE1 起 defer 感知）。"""
     st = read_rotator_state()
     head = st.get("head")
     prev_head = meta_get(conn, "rotator_head")
@@ -757,22 +882,47 @@ def check_chain(conn, alerts):
                 alerts.append({"kind": "head_switch", "event_id": eid, "target": "rotator",
                                "line": f"· 链头切换｜{prev_head} → {head}（rotator last_rotate={st.get('last_rotate')}）"})
     meta_set(conn, "rotator_last_rotate", st.get("last_rotate") or "")
-    # 轮转停摆（rotator 挂了/被 flock 卡住）：超过预期间隔 1.5 倍没轮转
+    # 轮转停摆（rotator 挂了/被 flock 卡住）：超过预期间隔 1.5 倍没轮转，
+    # 且 MON1-AWARE1 起先过 defer 判据——设计内避让（BLACKOUT 静默窗/INFLIGHT 在飞长流）不算停摆
     lr = st.get("last_rotate")
     stalled = meta_get(conn, "rotator_stalled", "0")
     if lr:
         try:
             dt = datetime.fromisoformat(lr)
             age_min = (datetime.now() - dt).total_seconds() / 60.0
-            if age_min > ROTATE_EXPECT_MIN * 1.5 and stalled != "1":
-                meta_set(conn, "rotator_stalled", "1")
-                eid = add_event(conn, "rotator_stall", "rotator", None, None,
-                                f"链头 {head} 已 {int(age_min)}min 未轮转（预期 {ROTATE_EXPECT_MIN}min）——rotator 停摆？")
-                alerts.append({"kind": "rotator_stall", "event_id": eid, "target": "rotator",
-                               "line": f"· 轮转停摆｜链头 {head} 已 {int(age_min)}min 未轮转（预期 {ROTATE_EXPECT_MIN}min）"})
-            elif age_min <= ROTATE_EXPECT_MIN * 1.5 and stalled == "1":
-                meta_set(conn, "rotator_stalled", "0")
-                add_event(conn, "recovered", "rotator", "stall", "rotate_ok", "轮转恢复")
+            if age_min > ROTATE_EXPECT_MIN * 1.5:
+                suppress, ep_key, note = defer_verdict(read_defer_evidence())
+                if suppress:
+                    if stalled == "1":
+                        # 撤销既往误报的边沿态（10-14 20:47 实例）：不复位则本次 defer 期内
+                        # daemon 真死时边沿触发会压住真告警
+                        meta_set(conn, "rotator_stalled", "0")
+                        add_event(conn, "stall_retracted", "rotator", "stall", "defer",
+                                  f"轮转停摆告警撤销：识别为设计内 defer——{note}")
+                        log(f"[defer] 停摆告警撤销（{note}）")
+                    ep_full = f"{ep_key}|{lr}" if ep_key else None
+                    if ep_full and meta_get(conn, "rotator_defer_ep") != ep_full:
+                        meta_set(conn, "rotator_defer_ep", ep_full)
+                        add_event(conn, "rotator_defer", "rotator", None, None,
+                                  f"轮转 defer 进行中（设计内避让，不告警）：{note}；"
+                                  f"age={int(age_min)}min 预期 {ROTATE_EXPECT_MIN}min")
+                        log(f"[defer] {note}（事件落库不告警）")
+                    meta_set(conn, "rotator_defer_note", note)
+                elif stalled != "1":
+                    meta_set(conn, "rotator_stalled", "1")
+                    eid = add_event(conn, "rotator_stall", "rotator", None, None,
+                                    f"链头 {head} 已 {int(age_min)}min 未轮转（预期 {ROTATE_EXPECT_MIN}min）——{note}")
+                    alerts.append({"kind": "rotator_stall", "event_id": eid, "target": "rotator",
+                                   "line": f"· 轮转停摆｜链头 {head} 已 {int(age_min)}min 未轮转"
+                                           f"（预期 {ROTATE_EXPECT_MIN}min）｜{note}"})
+            else:
+                if stalled == "1":
+                    meta_set(conn, "rotator_stalled", "0")
+                    add_event(conn, "recovered", "rotator", "stall", "rotate_ok", "轮转恢复")
+                if meta_get(conn, "rotator_defer_ep"):
+                    # 轮转已落地：defer 集收口（事件头寸清掉，--report 不再显示 defer 中）
+                    meta_set(conn, "rotator_defer_ep", "")
+                    meta_set(conn, "rotator_defer_note", "")
         except Exception:
             pass
 
@@ -1019,12 +1169,14 @@ def report(conn, as_json=False):
     rows = conn.execute("SELECT * FROM target ORDER BY kind, name").fetchall()
     n_ev = conn.execute("SELECT COUNT(*) c FROM event").fetchone()["c"]
     n_pr = conn.execute("SELECT COUNT(*) c FROM probe").fetchone()["c"]
+    defer_note = meta_get(conn, "rotator_defer_note") or None   # MON1-AWARE1：defer 中状态透出
     if as_json:
         out = {
             "generated_at": now_iso(),
             "chain_head": head,
             "entry_alias": json.loads(entry) if entry else None,
             "last_cycle": meta_get(conn, "last_cycle"),
+            "rotator_defer": defer_note,
             "targets": [dict(r) for r in rows],
             "counts": {"events": n_ev, "probes": n_pr},
         }
@@ -1036,6 +1188,8 @@ def report(conn, as_json=False):
         print(f"链头 rotator head = {head}   入口别名 {e.get('name','-')} → {e.get('model','-')} @ {e.get('api_base','-')}")
     except Exception:
         print(f"链头 rotator head = {head}")
+    if defer_note:
+        print(f"--- ⏸ rotator {defer_note}（设计内避让，轮转停摆告警已抑制；MON1-AWARE1）")
     print(f"{'目标':<14}{'类型':<11}{'状态':<22}{'HTTP':<6}{'耗时':<8}{'起于':<21}摘要")
     for r in rows:
         star = "*" if r["manual_flag"] else ""
@@ -1184,7 +1338,7 @@ def selftest(verbose=True):
 
     global CONFIG_PATH, RELAY_ENV_PATH, ROTATOR_STATE_PATH, RELAY_LOG_PATH, ROTATOR_LOG_PATH
     global DB_PATH, LOG_PATH, LOCK_PATH, RELAY_LIVELINESS_URL, HUB_URL, ALERT_TOKEN_FILE
-    global HEADSWITCH_DAILY
+    global HEADSWITCH_DAILY, DEFER_AWARE
 
     fails = []
     total = [0]
@@ -1428,6 +1582,106 @@ def selftest(verbose=True):
            len(hits) == 1 and "链头切换｜" in hits[0]["body"] and "日汇总" not in hits[0]["body"],
            [h["body"][:110] for h in hits])
         HEADSWITCH_DAILY = True
+
+        print("[3g] MON1-AWARE1：rotator_stall 检测器感知 v2.4 defer（seq 3387 小单）")
+
+        def _rot_log(*lines):
+            with open(ROTATOR_LOG_PATH, "w") as f:
+                for ln in lines:
+                    f.write(ln + "\n")
+
+        def _beat(mins_ago, reason="BLACKOUT", until_min=40, ds=0):
+            ts = (datetime.now() - timedelta(minutes=mins_ago)).strftime("%Y-%m-%d %H:%M:%S")
+            if reason == "BLACKOUT":
+                u = (datetime.now() + timedelta(minutes=until_min)).strftime("%Y-%m-%d %H:%M")
+                return (f"[{ts}] defer: BLACKOUT until={u} cap=window_end "
+                        f"left={max(until_min * 60, 0)}s retry_in=300s deferred_s={ds}s")
+            return (f"[{ts}] defer: INFLIGHT active=2/3 [grew:127.0.0.1:38774,grew:127.0.0.1:54244] "
+                    f"retry_in=60s deferred_s={ds}s")
+
+        # 夹具=10-14 晚生产 rotator.log 活体原文（BLACKOUT defer 押 19:15→21:30 窗末实录）
+        _rot_log("[2026-10-14 16:20:39] ROTATE OK: head zhipu -> kimi-xia",
+                 "[2026-10-14 20:47:39] defer: BLACKOUT until=2026-10-14 21:30 cap=window_end "
+                 "left=2540s retry_in=300s deferred_s=5400s")
+        ev = read_defer_evidence()
+        ck("3.35a 生产活体行解析五字段全对（ts/reason/until/deferred_s/rotate_ts）",
+           ev["readable"] and ev["beat_reason"] == "BLACKOUT" and ev["beat_deferred_s"] == 5400
+           and ev["beat_until"] == datetime(2026, 10, 14, 21, 30)
+           and ev["beat_ts"] == datetime(2026, 10, 14, 20, 47, 39)
+           and ev["rotate_ts"] == datetime(2026, 10, 14, 16, 20, 39), ev)
+        s1, k1, n1 = defer_verdict(ev, now=datetime(2026, 10, 14, 20, 50))
+        ck("3.35b 活体剧情①：20:50 探测（心跳 3min 前+until 未到）→ 抑制（当晚 20:47 假告警不再发）",
+           s1 and "defer 中" in n1 and k1 == "BLACKOUT|202610142130", (s1, k1, n1))
+        s2, _, n2 = defer_verdict(ev, now=datetime(2026, 10, 14, 22, 10))
+        ck("3.35c 活体剧情②：22:10 仍无落地（心跳 83min 断）→ 真 stall 照告（鉴别铁律不丢）",
+           not s2 and "心跳断" in n2, n2)
+        # until 已过+心跳仍新鲜 = 卡死疑（她口径「到期未轮转才告警」）
+        _rot_log(_beat(5, until_min=-20, ds=5400))
+        s3, _, n3 = defer_verdict(read_defer_evidence())
+        ck("3.35d until 已过 15min+心跳仍新鲜 → defer 异常不抑制（窗末卡死疑）",
+           not s3 and "defer 异常" in n3, n3)
+        # 端到端：check_chain 抑制+事件落库+集内去重
+        json.dump({"head": "zhipu", "last_rotate": (datetime.now() - timedelta(minutes=400)).isoformat()},
+                  open(ROTATOR_STATE_PATH, "w"))
+        _rot_log(_beat(2, until_min=40, ds=6300))
+        al = []
+        check_chain(conn, al)
+        ck("3.35e age 400min 超阈但 defer 中 → 零告警+rotator_defer 事件落库 alerted=0（可追溯不吵人）",
+           al == [] and conn.execute("SELECT COUNT(*) c FROM event WHERE kind='rotator_defer'"
+                                     " AND alerted=0").fetchone()["c"] == 1, [a["line"] for a in al])
+        check_chain(conn, al)
+        ck("3.35f 同 defer 集重复探测不重复落事件（ep 去重）",
+           al == [] and conn.execute("SELECT COUNT(*) c FROM event WHERE kind='rotator_defer'"
+                                     ).fetchone()["c"] == 1)
+        meta_set(conn, "rotator_stalled", "1")     # 模拟旧版已误报的边沿态（当晚 20:47 实况）
+        check_chain(conn, al)
+        ck("3.35g 既往误报撤销：stalled 复位 0+stall_retracted 事件（否则 defer 期内真 stall 被边沿压住）",
+           meta_get(conn, "rotator_stalled") == "0" and al == []
+           and conn.execute("SELECT COUNT(*) c FROM event WHERE kind='stall_retracted'"
+                            ).fetchone()["c"] == 1, meta_get(conn, "rotator_stalled"))
+        _rot_log(_beat(45, until_min=-30, ds=9000))    # 心跳 45min 前（超新鲜窗）→ daemon 死疑
+        al.clear()
+        check_chain(conn, al)
+        ck("3.35h 心跳断+无 ROTATE → 真 stall 告警且正文带归因；撤销后边沿态可再次告警",
+           len(al) == 1 and al[0]["kind"] == "rotator_stall" and "心跳断" in al[0]["line"]
+           and meta_get(conn, "rotator_stalled") == "1", [a["line"][:90] for a in al])
+        # INFLIGHT cap 语义（FORCE 语义：超 cap 必有 FORCE/ROTATE）
+        _rot_log(_beat(2, reason="INFLIGHT", ds=1800))
+        ck("3.35i INFLIGHT deferred_s=1800 ≤ cap → 抑制", defer_verdict(read_defer_evidence())[0])
+        _rot_log(_beat(2, reason="INFLIGHT", ds=4200))
+        s4, _, n4 = defer_verdict(read_defer_evidence())
+        ck("3.35j INFLIGHT deferred_s=4200 超 cap+宽限仍无 FORCE → 告警（FORCE 语义失效）",
+           not s4 and "defer 异常" in n4, n4)
+        # 终态放行后仍未落地 = 轮转失败，照告
+        _rot_log(_beat(30, until_min=10, ds=600),
+                 f"[{(datetime.now() - timedelta(minutes=28)).strftime('%Y-%m-%d %H:%M:%S')}]"
+                 " defer: CLEAR reason=clear probes=9 deferred_s=700 → rotate")
+        s5, _, n5 = defer_verdict(read_defer_evidence())
+        ck("3.35k CLEAR 放行后无 ROTATE 落地 → 不抑制（轮转失败可见）", not s5 and "放行" in n5, n5)
+        # 回滚开关+日志缺失 fail-safe
+        meta_set(conn, "rotator_stalled", "0")
+        DEFER_AWARE = False
+        _rot_log(_beat(2, until_min=40, ds=6300))
+        al.clear()
+        check_chain(conn, al)
+        ck("3.35l MON_DEFER_AWARE=0 回滚 → defer 中也按旧判据告警（一键回滚有效）",
+           len(al) == 1 and al[0]["kind"] == "rotator_stall" and "MON_DEFER_AWARE=0" in al[0]["line"],
+           [a["line"][:90] for a in al])
+        DEFER_AWARE = True
+        meta_set(conn, "rotator_stalled", "0")
+        os.remove(ROTATOR_LOG_PATH)
+        al.clear()
+        check_chain(conn, al)
+        ck("3.35m rotator.log 缺失 → 不炸、按旧判据告警（fail-safe 宁多报不漏报）",
+           len(al) == 1 and "不可读" in al[0]["line"], [a["line"][:90] for a in al])
+        # 现场还原：状态复位+空日志重建，后续节（3d/3e/4/5/6）在干净边沿态下跑
+        open(ROTATOR_LOG_PATH, "w").write("")
+        json.dump({"head": "zhipu", "last_rotate": datetime.now().isoformat()},
+                  open(ROTATOR_STATE_PATH, "w"))
+        meta_set(conn, "rotator_stalled", "0")
+        meta_set(conn, "rotator_defer_ep", "")
+        meta_set(conn, "rotator_defer_note", "")
+        conn.commit()
 
         print("[3d] 告警链路容错")
         hits.clear()

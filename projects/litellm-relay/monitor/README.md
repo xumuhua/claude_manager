@@ -126,11 +126,32 @@ EOF
 | `MON_LOG_INIT_TAIL_BYTES` | 65536 | 首次启动只从日志尾部这么多字节起扫（relay.log 有 30MB 历史，从头扫等于把几天前的旧错回放成新事件） |
 | `MON_ALERT_CONV` | dm_coder | 告警会话 |
 | `MON_ALERT_TAG` | [模型监测] | 告警正文前缀（便于群里一眼认出/过滤） |
-| `MON_ROTATE_EXPECT_MIN` | 177 | rotator 预期轮转间隔（分钟）；超 1.5× 未轮转报「轮转停摆」 |
+| `MON_ROTATE_EXPECT_MIN` | 177 | rotator 预期轮转间隔（分钟）；超 1.5× 未轮转报「轮转停摆」（先过 defer 判据，见下节） |
+| `MON_DEFER_AWARE` | 1 | **MON1-AWARE1**（2026-10-14，seq 3387）：轮转停摆检测感知 v2.4 静默窗 defer；0=回滚旧判据 |
+| `MON_DEFER_FRESH_S` | 1200 | defer 心跳新鲜窗秒（rotator 心跳每 900s 一条，超窗=心跳断） |
+| `MON_DEFER_UNTIL_GRACE_S` | 300 | BLACKOUT until 到期后的落地复检宽限秒 |
+| `MON_DEFER_INFLIGHT_CAP_S` | 3600 | INFLIGHT defer 上限秒（与 rotator `DEFER_MAX_S` 同源）；超 cap+宽限仍无 FORCE/ROTATE=异常告警 |
 | `MON_HEADSWITCH_DAILY` | 1 | 链头切换告警降噪（2026-10-13，seq 3086 批准）：rotator ~176min 一轮属设计内行为，逐条告警一天 ~8 条信息密度低 → **1=改 24h 一条日汇总**（切换事件照常落库）；**0=回滚逐条告警**（旧行为） |
 | `MON_HEADSWITCH_DIGEST_H` | 24 | 日汇总最小间隔小时数 |
 | `MON_E2E` | 0 | 是否额外跑一发**经中转站**的端到端探测。默认关：它会落一行 spendlogs、可能触发 cooldown，且中转站故障已由 liveliness 那一路覆盖 |
 | `MON_ENTRY_ALIAS` | kimi-han | rotator 维护的浮动入口别名（不当探测目标，只登记指向） |
+
+## 轮转停摆检测的 defer 感知（MON1-AWARE1，2026-10-14）
+
+rotator v2.4（ROTATOR-FIX2）到点轮转会先过静默窗：BLACKOUT（工作日 17:00-21:30 盘后链）押至窗口末端、在飞长流押至流毕——**设计内避让会让 `last_rotate` 年龄合法地超过 1.5× 判据**。10-14 20:47 实例：19:15 到点被 defer 押至 21:30，266min>265.5min 触发假告警。
+
+停摆判定前先读 `rotator.log` 尾部的 defer 证据（只读，心跳行实样 `[2026-10-14 20:47:39] defer: BLACKOUT until=2026-10-14 21:30 cap=window_end left=2540s retry_in=300s deferred_s=5400s`）：
+
+| 证据形态 | 判定 |
+| --- | --- |
+| 心跳新鲜（≤`MON_DEFER_FRESH_S`）且 BLACKOUT `until=`+宽限未到期 | **defer 中，抑制**；落 `rotator_defer` 事件（alerted=0 可追溯，同集只落一次），`--report` 显示「⏸ defer 中」 |
+| 心跳新鲜且 INFLIGHT `deferred_s` ≤ cap+宽限 | 同上（在飞避让） |
+| **心跳断**（超新鲜窗无新行）+ 无 ROTATE | **真停摆，告警**——daemon 死时 defer 心跳会断，这条鉴别铁律不丢（亦菲口径） |
+| until 已过期 / deferred_s 超 cap 仍只见心跳（FORCE 语义：超 cap 必有 FORCE 或 ROTATE 行） | **defer 异常，告警**（卡死疑） |
+| 心跳后有 FORCE/CLEAR 终态行但未轮转落地 | 告警（轮转失败可见） |
+| rotator.log 不可读 / 无心跳证据 | 按旧判据告警（fail-safe 宁多报不漏报） |
+
+既往误报的边沿态会自动撤销：识别为 defer 中时把 `rotator_stalled` 复位 0 并落 `stall_retracted` 事件——否则 defer 期内 daemon 真死时，边沿触发会把真告警压住。回滚=`MON_DEFER_AWARE=0`+restart。
 
 ## 红线（写死在代码里，改之前先想）
 
@@ -141,4 +162,4 @@ EOF
 
 ## 自测
 
-`python3 model_monitor.py --selftest` → **88 条 ALL PASS**，零外网零生产写入（上游与 hub 都用本地 stub，库与日志落临时目录）。覆盖：分类器 15 条（含真 403-额度报文）/ 配置解析与动态发现 10 条 / 全链路 34 条（去抖、边沿触发、恢复、合并、链头切换、上游消失、轮转停摆、hub 不可达容错、demo 演练路径）/ 日志增量扫描 10 条（ANSI 剥离、偏移续读、轮转归零、首次只吃尾部窗口不回放历史）/ 只读纪律与保留期 6 条 / 人工说明位 13 条（老库在线迁移、redact、不改写真值、IGNORE 抑制仍可追溯、SUSPECT 随告警发出）。
+`python3 model_monitor.py --selftest` → **106 条 ALL PASS**，零外网零生产写入（上游与 hub 都用本地 stub，库与日志落临时目录）。覆盖：分类器 15 条（含真 403-额度报文）/ 配置解析与动态发现 10 条 / 全链路 34 条（去抖、边沿触发、恢复、合并、链头切换、上游消失、轮转停摆、hub 不可达容错、demo 演练路径）/ 链头切换日汇总 5 条 / **defer 感知 13 条（MON1-AWARE1：夹具=10-14 晚生产 rotator.log 活体原文行，覆盖 抑制·集内去重·假告警撤销·心跳断真停摆·until 过期异常·INFLIGHT cap·终态放行未落地·回滚开关·日志缺失 fail-safe）**/ 日志增量扫描 10 条（ANSI 剥离、偏移续读、轮转归零、首次只吃尾部窗口不回放历史）/ 只读纪律与保留期 6 条 / 人工说明位 13 条（老库在线迁移、redact、不改写真值、IGNORE 抑制仍可追溯、SUSPECT 随告警发出）。
