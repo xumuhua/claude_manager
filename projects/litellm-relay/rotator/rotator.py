@@ -1,7 +1,7 @@
 #!/data/workspace/litellm_relay/venv/bin/python3
 # -*- coding: utf-8 -*-
 """
-中转站轮转控制器 v2.4（哥哥 2026-09-23 令：177 分钟轮转链头，doubao 踢出池）
+中转站轮转控制器 v2.5（哥哥 2026-09-23 令：177 分钟轮转链头，doubao 踢出池）
 
 v1 教训：只调换 model_list 顺序是无效操作——客户端固定请求 "kimi-han" 别名，
 LiteLLM 按 model_name 路由，YAML 顺序不影响路由。
@@ -74,7 +74,8 @@ v2.4（ROTATOR-FIX2，2026-10-14，亦菲 seq 3271 派单）：换头避让在�
         每 DEFER_RETRY_S=60s 重试。idle keepalive 字节零增量天然排除（活体验证：
         在飞流 Δbytes_sent=+7226/3s 必中、idle 连接连 bytes 字段都不出现 Δ=0）。
   上限语义（护配额轮转本意的兜底，defer/FORCE 全落 log 行）：
-    · inflight defer 自原到点起超 DEFER_MAX_S=3600s → FORCE 强制轮转（亦菲口径 ≤60min）；
+    · inflight defer 自预算起点起超 DEFER_MAX_S=3600s → FORCE 强制轮转（亦菲口径 ≤60min；
+      v2.5/FIX3 起预算起点在 BLACKOUT 窗末→在飞转档瞬间满额重算，见 v2.5 节）；
     · blackout defer 上限=窗口末端（确定性有界 ≤4.5h；对窗内 FORCE 等于复刻 18:23 事故，
       故不套 60min），另设 BLACKOUT_FUSE_S=6h 病理配置保险丝（到期 FORCE）；
     · 探测失败按 clear 处置（传感器 best-effort，留 PROBE ERROR 行；blackout 静态保护仍在，
@@ -84,6 +85,22 @@ v2.4（ROTATOR-FIX2，2026-10-14，亦菲 seq 3271 派单）：换头避让在�
   ④ grace 5s→30s 评估结论：不改。六次自然轮转 t_old_gone≤0.41s、sigkill=[]——无长流时
   drain 秒完 grace 用不上；有长流时 30s 也送不完（CC 长流分钟级），只把 downtime 预算
   28.3s→53s 顶破 ≤30s 验收门。defer 生效后「轮转时刻恰有长流」概率已大降，边际价值为负。
+
+v2.5（ROTATOR-FIX3，2026-10-14，亦菲 seq 3393 裁定）：窗末转档在飞预算满额重算（t0 重算）。
+  活证缺陷（10-14 21:30:03）：19:15:54 到点轮转被 BLACKOUT defer 押至窗末，押送 2h15m
+  已履行配额让路义务；窗末复检转在飞探测时 inflight cap 预算（自原到点起算 3600s）早已
+  耗尽 → 零宽限立即 FORCE → SIGKILL 杀在飞流（grew:127.0.0.1:33924），downtime_s=40.4
+  为七次轮转最高——「保护窗结束瞬间反而最暴力」，恰杀链尾。
+  修法：BLACKOUT defer → 在飞探测的转档瞬间，在飞预算起点重置（新 t0=窗末时刻，满额
+  DEFER_MAX_S=3600s）。两 cap 目的不同：inflight cap 护「配额轮转不被无限拖延」，而
+  blackout 押送已是更强的履行；重算后最坏 22:30 FORCE，仍有界。与哥哥 A/B/C 三案裁定
+  兼容（裁 C 夜链消失无损；裁 A/B 链尾跨窗获保护）。
+  日志口径：INFLIGHT 档 deferred_s=当前预算档内耗时（另带 total_s=自原到点总时长），
+  BLACKOUT/CLEAR 档 deferred_s 仍=自原到点总时长——MON1-AWARE1 监测件的
+  「INFLIGHT deferred_s≤cap+宽限」判据不因窗末重算误报 defer 异常（0fe16c8 契约）。
+  转档留 `defer: BUDGET_RESET` 行（监测件不解析，人读抓手）。
+  回滚：env ROTATOR_T0_RESET=0（+daemon 重启）恢复旧判据（窗末零宽限 FORCE）；
+  改前正本 bak-rotfix3。
 
 用法：
   rotator.py            守护模式（flock 单实例，循环 sleep 177min，到点先过静默窗检查）
@@ -133,6 +150,9 @@ BLACKOUT_RETRY_S = float(os.environ.get("ROTATOR_BLACKOUT_RETRY_S", "300"))
 BLACKOUT_FUSE_S = float(os.environ.get("ROTATOR_BLACKOUT_FUSE_S", "21600"))  # 病理配置保险丝（6h）→ FORCE
 DEFER_BEAT_S = float(os.environ.get("ROTATOR_DEFER_BEAT_S", "900"))        # defer 期间心跳 log 间隔（防刷屏亦防静默）
 NODEFER_FLAG = os.path.join(RELAY_DIR, "rotator_nodefer")                  # touch 即回滚旧行为（免重启）
+
+# --- v2.5 窗末 t0 重算口径（ROTATOR-FIX3，亦菲 seq 3393 裁定）---
+T0_RESET_ON_INFLIGHT = os.environ.get("ROTATOR_T0_RESET", "1") == "1"      # BLACKOUT→在飞转档瞬间在飞预算满额重算；=0 回滚旧判据（窗末零宽限 FORCE，需重启 daemon）
 
 
 def _alert_token():
@@ -623,17 +643,26 @@ def safety_check(now=None):
 
 
 def wait_until_safe():
-    """到点轮转前的静默窗（ROTATOR-FIX2 核心）。返回 (deferred_s, forced)。
+    """到点轮转前的静默窗（ROTATOR-FIX2 核心；FIX3 起窗末转档在飞预算满额重算）。
+    返回 (deferred_s, forced)，deferred_s=自原到点总时长。
 
     - blackout：defer 到窗口末端（BLACKOUT_RETRY_S 分段睡、末段精确落末端复检；
       病理配置由 BLACKOUT_FUSE_S 保险丝兜底 → FORCE）；
-    - inflight：每 DEFER_RETRY_S 重试，自原到点起超 DEFER_MAX_S → FORCE（配额本意兜底）；
+    - inflight：每 DEFER_RETRY_S 重试，自预算起点起超 DEFER_MAX_S → FORCE（配额本意兜底）。
+      FIX3（v2.5，亦菲 seq 3393 裁定）：预算起点 t_budget 在 BLACKOUT→在飞的窗末转档
+      瞬间重置为当下（满额 3600s，最坏窗末+60min FORCE 仍有界）——blackout 押送已履行
+      配额让路义务，窗末零宽限 FORCE 恰杀链尾（10-14 21:30:03 活证，downtime 40.4s）。
+      ROTATOR_T0_RESET=0 回滚旧判据（t_budget 恒= t0）。
     - 可观测性：到点即 SAFE 单行 / defer 首条全量 + 每 DEFER_BEAT_S 心跳 + reason 变化一条 /
-      放行 CLEAR / 强转 FORCE——全部落 rotator.log。
+      转档 BUDGET_RESET / 放行 CLEAR / 强转 FORCE——全部落 rotator.log。
+      deferred_s 口径=当前 cap 预算档内耗时（INFLIGHT 档自 t_budget，其余自 t0）；
+      重算后 INFLIGHT 行另带 total_s=自原到点总时长——MON1-AWARE1 监测件按
+      「INFLIGHT deferred_s≤cap+宽限」判 defer 异常，预算档口径保证不误报。
     - daemon 中途被杀由看门狗拉起后 defer 状态无需持久化：到点已过 → wait=max(60,..) →
       重进本函数重新判定，保护语义不丢（cap 计时随进程重启回卷，可接受，注释留痕）。
     时间源全部走模块级 time/datetime 引用——selftest 可 patch 假时钟。"""
     t0 = time.time()
+    t_budget = t0  # FIX3：在飞预算起点（BLACKOUT→在飞转档瞬间重置；BLACKOUT 档 cap 仍锚 t0）
     n_defer = 0
     last_reason = None
     last_beat = 0.0
@@ -658,24 +687,36 @@ def wait_until_safe():
             nap = max(min(BLACKOUT_RETRY_S, cap - now_ts), 1.0)
             dstr = (f"until={detail:%Y-%m-%d %H:%M} cap={capkind} "
                     f"left={max(cap - now_ts, 0):.0f}s")
+            ds_base = t0
         else:
+            if last_reason == "blackout" and T0_RESET_ON_INFLIGHT:
+                # FIX3 转档瞬间：在飞预算满额重算（新 t0=窗末时刻，旧预算不继承——seq 3393 裁定）
+                t_budget = now_ts
+                log(f"defer: BUDGET_RESET reason=window_end→inflight 在飞预算满额重算 "
+                    f"{DEFER_MAX_S:.0f}s（新 t0={datetime.fromtimestamp(now_ts):%Y-%m-%d %H:%M:%S}"
+                    f"=窗末时刻；blackout 押送已履行配额让路义务，最坏 +{DEFER_MAX_S / 60:.0f}min "
+                    f"FORCE 仍有界）deferred_s=0s total_s={now_ts - t0:.0f}s")
             actives, total = detail
-            cap, capkind = t0 + DEFER_MAX_S, "defer_max"
+            cap, capkind = t_budget + DEFER_MAX_S, "defer_max"
             nap = DEFER_RETRY_S
             peers = ",".join(f"{kind}:{k[1]}" for k, kind in actives[:3])
             dstr = f"active={len(actives)}/{total} [{peers}]"
+            ds_base = t_budget
+        # FIX3 口径：deferred_s=当前 cap 预算档内耗时；重算后另带 total_s=自原到点总时长
+        # （ds_base==t0 时两值相同，total_s 省略——v2.4 行形态字节级不变，MON1-AWARE1 契约稳）
+        _tot = f" total_s={now_ts - t0:.0f}" if ds_base != t0 else ""
         if now_ts >= cap:
             if capkind == "window_end":
                 # 到窗口末端：回环顶复检（blackout 自然解除，转在飞探测），不算 FORCE；
                 # 垫 1s 防「末端已到却仍报 blackout」的畸形剧情打成热循环
                 time.sleep(1.0)
                 continue
-            log(f"defer: FORCE reason={reason} {dstr} deferred_s={now_ts - t0:.0f} "
+            log(f"defer: FORCE reason={reason} {dstr} deferred_s={now_ts - ds_base:.0f}{_tot} "
                 f"cap={capkind} 到顶 —— 强制轮转（护配额轮转本意）")
             return now_ts - t0, True
         if n_defer == 1 or reason != last_reason or now_ts - last_beat >= DEFER_BEAT_S:
             log(f"defer: {reason.upper()} {dstr} retry_in={nap:.0f}s "
-                f"deferred_s={now_ts - t0:.0f}s")
+                f"deferred_s={now_ts - ds_base:.0f}s{_tot}s")
             last_beat = now_ts
             last_reason = reason
         time.sleep(nap)
@@ -761,11 +802,13 @@ def rotate():
 
 
 # ---------------------------------------------------------------------------
-# --selftest：24 枚断言（mock 假世界，零网络/零进程/零文件写入）
+# --selftest：26 枚断言（mock 假世界，零网络/零进程/零文件写入）
 #   T1-T12 = v2.2 bounce 关停状态机（ROTATOR-FIX1）
 #   T13-T24 = v2.4 静默窗/defer（ROTATOR-FIX2）：配置解析/窗口边界/ss 解析/差分五形态/
 #             defer 三剧情（blackout 落地+保险丝 FORCE+inflight 放行与 FORCE）/回滚开关/
 #             探测失败 fail-safe/参数口径锁
+#   T25-T26 = v2.5 窗末 t0 重算（ROTATOR-FIX3）：转档预算满额重算（旧预算不继承+
+#             MON1-AWARE1 deferred_s 契约）/ROTATOR_T0_RESET=0 回滚旧判据回归锁
 # ---------------------------------------------------------------------------
 class _FakeClock:
     """假时钟：sleep 即推进时间，让 90s deadline 分支能瞬间跑完。"""
@@ -919,7 +962,7 @@ def _run_world(mod, world):
 
 
 def selftest():
-    """24 枚断言，全 mock（零网络/零进程操作/零文件写入）。RC=0 即 ALL PASS。"""
+    """26 枚断言，全 mock（零网络/零进程操作/零文件写入）。RC=0 即 ALL PASS。"""
     mod = sys.modules.get("__main__")
     if mod is None or not hasattr(mod, "bounce"):
         mod = sys.modules[__name__]
@@ -1190,13 +1233,15 @@ def selftest():
             return scenario(clock.t)
 
         keys = ("time", "safety_check", "log", "DEFER_RETRY_S", "DEFER_MAX_S",
-                "BLACKOUT_RETRY_S", "BLACKOUT_FUSE_S", "DEFER_BEAT_S")
+                "BLACKOUT_RETRY_S", "BLACKOUT_FUSE_S", "DEFER_BEAT_S",
+                "T0_RESET_ON_INFLIGHT")
         saved = {k: getattr(mod, k) for k in keys}
         mod.time = _T
         mod.safety_check = _check
         mod.log = logs.append
         vals = dict(DEFER_RETRY_S=60.0, DEFER_MAX_S=3600.0, BLACKOUT_RETRY_S=300.0,
-                    BLACKOUT_FUSE_S=21600.0, DEFER_BEAT_S=900.0)
+                    BLACKOUT_FUSE_S=21600.0, DEFER_BEAT_S=900.0,
+                    T0_RESET_ON_INFLIGHT=True)
         vals.update(consts)
         for k, v in vals.items():
             setattr(mod, k, v)
@@ -1323,10 +1368,72 @@ def selftest():
         assert GRACEFUL_GRACE_S <= 5.0, "④评估结论=grace 维持 5s（README v2.4 节），不许悄悄加长"
         src = open(os.path.abspath(__file__), encoding="utf-8").read()
         for frag in ("def " + "wait_until_safe(", "def " + "safety_check(",
-                     "defer: FORCE", "due: SAFE", "rotator_nodefer", "--check-safe"):
-            assert frag in src, f"v2.4 关键件缺失: {frag}"
+                     "defer: FORCE", "due: SAFE", "rotator_nodefer", "--check-safe",
+                     "defer: BUDGET_RESET", "T0_RESET_ON_INFLIGHT"):
+            assert frag in src, f"v2.4/v2.5 关键件缺失: {frag}"
         assert src.count("def " + "wait_until_safe(") == 1, "defer 循环只应有一份实现（禁双轨）"
     case("T24 v2.4 参数口径锁（cap≤60min/保险丝≤6h/grace 维持 5s/关键件在位）", t24)
+
+    # ---------------- v2.5 窗末 t0 重算（ROTATOR-FIX3，亦菲 seq 3393 裁定）T25-T26 ----------------
+
+    # T25 核心锁：BLACKOUT 押送到窗末 → 转在飞探测瞬间预算满额重算（旧预算不继承）。
+    #     剧情=今晚 10-14 21:30:03 活证缩尺：押送 1200s（>DEFER_MAX_S=300）后窗末仍有在飞流，
+    #     旧判据此刻零宽限立即 FORCE（杀链尾）；新判据自窗末起满额 300s，到顶才 FORCE。
+    def t25():
+        t0 = 1000.0
+        end_ts = t0 + 1200.0  # 窗口末端
+        end_dt = datetime.fromtimestamp(end_ts)
+        busy = ([((":9536", "127.0.0.1:33924"), "grew")], 2)
+
+        def scen(t):
+            if t < end_ts:
+                return ("defer", "blackout", end_dt)
+            return ("defer", "inflight", busy)  # 窗末复检转在飞且持续在飞
+
+        (deferred, forced), logs, _c, clock = _run_defer(
+            scen, DEFER_MAX_S=300.0, DEFER_RETRY_S=60.0, BLACKOUT_RETRY_S=300.0)
+        text = "\n".join(logs)
+        assert forced is True, "在飞持续忙→新预算到顶必须 FORCE（有界语义不变）"
+        # 旧预算不继承：FORCE 时刻=窗末+满额 DEFER_MAX_S（±一个重试步长），非窗末当刻
+        assert abs(clock.t - (end_ts + 300.0)) <= 60.0, \
+            f"FORCE 应在窗末+满额预算 ~{end_ts + 300.0}，实测 {clock.t}（若 ≈{end_ts:.0f} 即继承了旧预算=零宽限瞬杀）"
+        assert "defer: BUDGET_RESET" in text, "转档瞬间必须留 BUDGET_RESET 行（可观测性）"
+        reset_line = [l for l in logs if "BUDGET_RESET" in l][0]
+        assert "满额重算" in reset_line and "total_s=1200" in reset_line, f"重算行要带新预算与总时长: {reset_line}"
+        # MON1-AWARE1 契约锁：INFLIGHT 档 deferred_s=预算档内耗时，绝不超 cap（否则监测件误报 defer 异常）
+        ds_vals = [int(m.group(1)) for m in re.finditer(r"defer: INFLIGHT .*?deferred_s=(\d+)", text)]
+        assert ds_vals, "转档后必须有 INFLIGHT 心跳行"
+        assert all(v <= 300 for v in ds_vals), f"INFLIGHT 行 deferred_s 超预算档口径 {ds_vals}（监测件契约破坏）"
+        force_line = [l for l in logs if "defer: FORCE" in l][0]
+        assert "deferred_s=300" in force_line and "total_s=1500" in force_line, \
+            f"FORCE 行=预算档 deferred_s 满额 + total_s 总时长: {force_line}"
+        assert deferred == 1500.0, f"返回值=自原到点总时长 1200+300，实测 {deferred}"
+    case("T25 FIX3 核心锁：窗末转档在飞预算满额重算（旧预算不继承+监测件 deferred_s 契约）", t25)
+
+    # T26 回滚开关锁：ROTATOR_T0_RESET=0 → 旧判据回归（窗末零宽限 FORCE=今晚 21:30:03 活证行为）
+    def t26():
+        t0 = 1000.0
+        end_ts = t0 + 1200.0
+        end_dt = datetime.fromtimestamp(end_ts)
+        busy = ([((":9536", "x:1"), "grew")], 1)
+
+        def scen(t):
+            if t < end_ts:
+                return ("defer", "blackout", end_dt)
+            return ("defer", "inflight", busy)
+
+        (deferred, forced), logs, _c, clock = _run_defer(
+            scen, DEFER_MAX_S=300.0, DEFER_RETRY_S=60.0, BLACKOUT_RETRY_S=300.0,
+            T0_RESET_ON_INFLIGHT=False)
+        text = "\n".join(logs)
+        assert forced is True and clock.t == end_ts, \
+            f"旧判据=窗末当刻零宽限 FORCE（今晚活证行为），实测 {clock.t}/{forced}"
+        assert "BUDGET_RESET" not in text, "开关关闭时不许出现预算重算行"
+        force_line = [l for l in logs if "defer: FORCE" in l][0]
+        assert "deferred_s=1200" in force_line and "total_s=" not in force_line, \
+            f"旧判据 FORCE 行 deferred_s=自原到点总时长、无 total_s 字段: {force_line}"
+        assert deferred == 1200.0, f"返回值=1200（旧语义不变），实测 {deferred}"
+    case("T26 FIX3 回滚开关：T0_RESET=0 → 窗末零宽限 FORCE（旧判据回归锁）", t26)
 
     print(f"\nselftest: {len(total_cases) - len(fails)}/{len(total_cases)} PASS"
           + ("  ALL PASS" if not fails else f"  FAILED={[f[0] for f in fails]}"))
@@ -1373,11 +1480,11 @@ def main():
     if once:
         rotate()  # 手动/测试显式意图：立即执行，不走 defer
         return
-    log(f"rotator v2.4 start, interval={INTERVAL_MIN}min, pool={POOL}, "
+    log(f"rotator v2.5 start, interval={INTERVAL_MIN}min, pool={POOL}, "
         f"shutdown=SIGTERM+{GRACEFUL_GRACE_S:.0f}s→SIGKILL, ready=new_pid+health200, "
         f"defer=blackout[{os.environ.get('ROTATOR_BLACKOUT', DEFAULT_BLACKOUT)}]"
         f"+probe(:{PROBE_PORT} gap{PROBE_GAP_S:.0f}s retry{DEFER_RETRY_S:.0f}s "
-        f"cap{DEFER_MAX_S:.0f}s→FORCE)")
+        f"cap{DEFER_MAX_S:.0f}s→FORCE t0_reset={'on' if T0_RESET_ON_INFLIGHT else 'off'})")
     while True:
         st = load_state()
         last = st.get("last_rotate")

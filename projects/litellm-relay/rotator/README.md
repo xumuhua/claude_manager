@@ -1,4 +1,4 @@
-# rotator — 中转站链头轮转控制器（生产 v2.4）
+# rotator — 中转站链头轮转控制器（生产 v2.5）
 
 生产位：**115.190.64.190（=manager 机=hub 机）`/data/workspace/litellm_relay/rotator.py`**，
 `manager:manager 755`，由 **manager crontab**（注意：不是 root crontab，10-14 勘察实证）
@@ -26,6 +26,8 @@
 - 客户端契约：各家 CC 只认 `kimi-han`，轮转对客户端透明。
 - v2.4 起：**到点轮转先过静默窗检查**（blackout 时段 + 在飞流探测），不安全 defer
   延迟重试，上限兜底 FORCE——详见下文 v2.4 节。
+- v2.5 起：**窗末转档在飞预算满额重算**（BLACKOUT 押送已履行配额让路义务，窗末不再
+  零宽限 FORCE 杀链尾）——详见下文 v2.5 节（亦菲 seq 3393 裁定）。
 
 ## v2.2（ROTATOR-FIX1，2026-10-13，亦菲 seq 3198）
 
@@ -50,7 +52,7 @@ litellm 1.99.0 CLI **不透传** uvicorn `--timeout-graceful-shutdown`（`--help
 ## 自测
 
 ```
-python3 rotator.py --selftest      # 24 枚断言，全 mock：零网络/零进程操作/零文件写入
+python3 rotator.py --selftest      # 26 枚断言，全 mock：零网络/零进程操作/零文件写入
 ```
 
 `--selftest` **不取 flock**（在跑 daemon 持锁时也能验；旧写法会被 flock 静默 exit 0）。
@@ -64,6 +66,10 @@ python3 rotator.py --selftest      # 24 枚断言，全 mock：零网络/零进�
   平坦 idle/已消失→排除）／defer 主剧情（18:10→21:30 精确落地 12000s+心跳 log+无
   FORCE）／病理配置保险丝 FORCE／inflight defer→放行／inflight 持续忙→cap FORCE／
   回滚开关零探测放行／探测失败 fail-safe／v2.4 参数口径锁（cap≤60min/grace 维持 5s）。
+- **T25-T26（v2.5 窗末 t0 重算）**：BLACKOUT 押送超预算后窗末转在飞→预算满额重算
+  （FORCE 时刻=窗末+满额而非窗末当刻=旧预算不继承；INFLIGHT 行 deferred_s 不超 cap=
+  MON1-AWARE1 监测契约；BUDGET_RESET 行留痕）／`ROTATOR_T0_RESET=0` 回滚开关→旧判据
+  窗末零宽限 FORCE 回归锁（今晚 21:30:03 活证行为）。
 
 ## v2.3 实战档位（ROTATOR-FIX1 受控真轮转实测，2026-10-13 10:55）
 
@@ -131,6 +137,26 @@ defer 在轮转时刻源头避让，不再靠感知口径粉饰）。
   （verdict/reason/until|active），不轮转不写状态；`--at` 只注入 blackout 假想时刻，
   探测部分始终活体采样。
 
+## v2.5（ROTATOR-FIX3，2026-10-14，亦菲 seq 3393 裁定）：窗末转档在飞预算满额重算（t0 重算）
+
+**活证缺陷（10-14 21:30:03）**：19:15:54 到点轮转被 BLACKOUT defer 押至 21:30 窗末，
+押送 2h15m 已履行配额让路义务；窗末复检转在飞探测时 inflight cap 预算（自**原到点**
+起算 3600s）早已耗尽 → 零宽限立即 FORCE → SIGKILL 杀在飞流（`grew:127.0.0.1:33924`），
+`downtime_s=40.4` 为七次轮转最高——「保护窗结束瞬间反而最暴力」，恰杀链尾。
+
+**修法**：BLACKOUT defer → 在飞探测的**转档瞬间**，在飞预算起点重置（新 t0=窗末时刻，
+满额 `DEFER_MAX_S`=60min）。两 cap 目的不同——inflight cap 护「配额轮转不被无限拖延」，
+blackout 押送已是更强的履行；重算后最坏 22:30 FORCE，**仍有界**。与哥哥 A/B/C 三案
+裁定兼容（裁 C 夜链消失无损；裁 A/B 链尾跨窗获保护）。
+
+| 项 | 口径 |
+| --- | --- |
+| 转档留痕 | `defer: BUDGET_RESET reason=window_end→inflight 在飞预算满额重算 3600s（新 t0=…）deferred_s=0s total_s=…` |
+| `deferred_s` 语义 | INFLIGHT 档=当前预算档内耗时（重算后另带 `total_s`=自原到点总时长）；BLACKOUT/CLEAR/FORCE(blackout) 档仍=自原到点总时长。**未重算时行形态与 v2.4 字节级一致** |
+| MON1-AWARE1 契约 | 监测件按「INFLIGHT 心跳 `deferred_s`≤cap+宽限」判 defer 异常（0fe16c8）——预算档口径保证窗末重算后监测件零改动不误报（selftest T25 锁死） |
+| 回滚 | `ROTATOR_T0_RESET=0`（daemon 重启生效）恢复旧判据=窗末零宽限 FORCE；改前正本 `bak-rotfix3` |
+| 边界不变 | 探测失败 fail-safe／`--once` 不走 defer／nodefer 旗标／保险丝（锚原 t0）全数保留 |
+
 ## 排查抓手
 
 `rotator.log` 每次换头留一条机读时间线（v2.4 起到点判定也有锚点行）：
@@ -138,9 +164,10 @@ defer 在轮转时刻源头避让，不再靠感知口径粉饰）。
 ```
 due: SAFE reason=clear conns=N → rotate            # 到点即安全（每次到点轮转必有一行）
 defer: BLACKOUT until=… cap=window_end left=…s retry_in=…s deferred_s=…s   # 首条+每15min心跳
-defer: INFLIGHT active=2/5 [grew:1.2.3.4:5678,…] retry_in=60s …            # 带活跃对端抓手
+defer: BUDGET_RESET reason=window_end→inflight 在飞预算满额重算 …s（新 t0=…）…  # 窗末转档（v2.5）
+defer: INFLIGHT active=2/5 [grew:1.2.3.4:5678,…] retry_in=60s deferred_s=…s [total_s=…s]  # 带活跃对端抓手；重算后 deferred_s=预算档内耗时
 defer: CLEAR reason=… probes=N deferred_s=… → rotate                        # 放行
-defer: FORCE reason=… deferred_s=… cap=defer_max|blackout_fuse 到顶 —— 强制轮转  # 配额兜底
+defer: FORCE reason=… deferred_s=… [total_s=…] cap=defer_max|blackout_fuse 到顶 —— 强制轮转  # 配额兜底
 probe: ERROR … —— 本次探测按 clear 处置（blackout 窗仍守护）                     # 传感器故障
 bounce: RESULT ok=True new_pid=… old=[…] sigkill=[…] t_old_gone=…s t_health200=…s downtime_s=… unit[…]
 ```
