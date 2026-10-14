@@ -1209,7 +1209,7 @@ def test_r17_mirror_config_validation(tmp_path):
 # 锁六点：①user 三档解析（login_user 优先/agent 旁路/- 兜底）②路径前缀白名单
 # （扫描器随机路径与 /healthz 机探不进 REQ 层）③query 仅 conversation_id/date 白名单随行，
 # token 类绝不落行（隐私红线）④高频轮询 GET 60s 节流 xN 合并、非 2xx/POST 不节流
-# ⑤handler 抛穿按 500 记行不吞 ⑥MP_REQLOG=0 关断开关
+# ⑤handler 抛穿按 500 记行不吞、路由层 HTTPException 记真实状态 ⑥MP_REQLOG=0 关断开关
 
 
 class RLReq(dict):
@@ -1330,8 +1330,10 @@ def test_r18_throttle_window_and_bypass(rl_log):
 
 
 def test_r18_middleware_status_and_exception(rl_log):
-    """中间件按响应 status 记行；handler 抛穿按 500 记行后原样上抛（不吞异常）。"""
+    """中间件按响应 status 记行；handler 抛穿按 500 记行后原样上抛（不吞异常）；
+    路由层 HTTPException（未匹配 404/405）记真实状态非 500（生产终核扫描器实例回归锁）。"""
     import app as app_mod
+    from aiohttp import web
 
     class RLResp:
         def __init__(self, status):
@@ -1351,6 +1353,13 @@ def test_r18_middleware_status_and_exception(rl_log):
     with pytest.raises(RuntimeError):
         asyncio.run(app_mod.req_log_middleware(RLReq(path="/api/daily_report"), h_boom))
     assert rl_log.lines[-1].endswith(" 500")
+
+    async def h_404(request):                        # 未匹配路由 aiohttp 抛 HTTPNotFound
+        raise web.HTTPNotFound()
+
+    with pytest.raises(web.HTTPNotFound):
+        asyncio.run(app_mod.req_log_middleware(RLReq(path="/api/.env"), h_404))
+    assert rl_log.lines[-1] == "REQ user=- GET /api/.env 404"
 
 
 def test_r18_kill_switch():

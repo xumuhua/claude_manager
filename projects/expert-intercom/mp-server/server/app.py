@@ -145,6 +145,9 @@ async def req_log_middleware(request, handler):
         resp = await handler(request)
         status = resp.status
         return resp
+    except web.HTTPException as e:           # 路由层 404/405 走异常兜底：记真实状态再上抛
+        status = e.status                    #（生产终核实例：扫描器 /api/.env 未匹配路由曾被误记 500）
+        raise
     finally:
         try:
             _log_req(request, status)
