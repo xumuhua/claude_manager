@@ -232,6 +232,13 @@ def load_config(path: Path) -> dict:
     c.setdefault("max", 3)                             # 并发闸硬顶
     c.setdefault("job_timeout", 3600)                  # 任务 claude 超时
     c.setdefault("review_timeout", 3600)               # 复盘 claude 超时
+    # TIMEOUT-TUNE（2026-10-14 亦菲 seq 3362 ③）：dm 触发类长任务的预算按
+    # 「等待+工作」重估——会话常需等自然轮转/装载窗再收尾（stockmodel #4、
+    # coder #19 两次 3h 拖满被杀同构）。dm 会话可按群单独放宽（config 里
+    # concurrency.job_timeouts: {"dm_coder": 14400}），未列出的群回落 job_timeout。
+    jt = c.setdefault("job_timeouts", {})
+    if not isinstance(jt, dict):
+        raise SystemExit("concurrency.job_timeouts 必须是对象（会话名 -> 秒）")
 
     cl = cfg.setdefault("claude", {})
     cl.setdefault("cmd", "claude")
@@ -720,7 +727,10 @@ class Supervisor:
                              trigger_conv=trig["conv"], trigger_seq=trig["seq"],
                              trigger_from=trig["from"],
                              history=history)
-        return self._wrap_prompt(prompt), int(cfg["concurrency"]["job_timeout"])
+        # TIMEOUT-TUNE：dm/群级预算覆盖（「等待+工作」类长任务），未配置回落全局
+        timeout = int(cfg["concurrency"]["job_timeouts"].get(
+            msg["conversation_id"], cfg["concurrency"]["job_timeout"]))
+        return self._wrap_prompt(prompt), timeout
 
     def build_review_prompt(self):
         """复盘 prompt：读落盘 → nightly-review 七步 → 冷热分离 → 校对 → 摘要发群。"""

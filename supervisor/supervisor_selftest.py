@@ -843,6 +843,73 @@ with open(os.environ["FAKEARGV"], "a", encoding="utf-8") as f:
           f"engine=codex 行数={len(eng_lines)} 样例={eng_lines[0].strip() if eng_lines else '无'}")
 
 
+def scenario_I(root: Path):
+    """TIMEOUT-TUNE（2026-10-14 亦菲 seq 3362 ③）：dm 触发类长任务超时预算
+    按会话覆盖。白盒直调 build_job_prompt 断言 timeout 取法：
+    I1 job_timeouts 命中会话 → 覆盖值生效；
+    I2 未列出的会话 → 回落全局 job_timeout；
+    I3 job_timeouts 非法类型 → load_config 拒启动；
+    I4 未配置 job_timeouts（五台现役零改动形态）→ 行为与改动前一致。"""
+    print("=== 场景I：TIMEOUT-TUNE 会话级超时预算覆盖 ===")
+    d = root / "I"; d.mkdir(parents=True)
+    sys.path.insert(0, str(BASE))
+    import supervisor as sup_mod
+
+    expert_dir = d / "expert"
+    expert_dir.mkdir(parents=True)
+    os.environ["SUP_SELFTEST_TOKEN"] = TOKEN
+
+    def mk_cfg(job_timeouts=None, omit=False):
+        cfg = {
+            "hub_url": f"http://127.0.0.1:{HUB_PORT}",
+            "hub_http_url": f"http://127.0.0.1:{HUB_PORT + 1}",
+            "token": "env:SUP_SELFTEST_TOKEN",
+            "agent_name": "coder",
+            "expert_dir": str(expert_dir),
+            "work_dir": str(d / "work"),
+            "concurrency": {"max": 3, "job_timeout": 3600,
+                            "review_timeout": 3600, "job_timeouts": job_timeouts},
+            "claude": {"cmd": "true", "args": [],
+                       "max_chars": 60000, "ctx_keep": 8},
+            "job_template": str(BASE / "prompts" / "job.md"),
+        }
+        (d / "work").mkdir(exist_ok=True)
+        if omit:
+            del cfg["concurrency"]["job_timeouts"]
+        return cfg
+
+    def prompt_timeout(cfg_dict):
+        cfgp = d / "cfg_i.json"
+        cfgp.write_text(json.dumps(cfg_dict, ensure_ascii=False),
+                        encoding="utf-8")
+        cfg = sup_mod.load_config(cfgp)
+        sup = sup_mod.Supervisor(cfg)
+        msg = {"conversation_id": "dm_coder", "seq": 1, "from": "yifei",
+               "type": "text", "body": "test", "mentions": ["coder"]}
+        _, timeout = sup.build_job_prompt(msg, [])
+        return timeout
+
+    t = prompt_timeout(mk_cfg({"dm_coder": 14400}))
+    check("I1 job_timeouts 命中 dm_coder → 覆盖 14400",
+          t == 14400, f"timeout={t}")
+    t = prompt_timeout(mk_cfg({"grp_mp": 14400}))
+    check("I2 未列出会话回落全局 3600", t == 3600, f"timeout={t}")
+    t = prompt_timeout(mk_cfg(omit=True))
+    check("I4 未配置 job_timeouts → 默认空回落全局 3600",
+          t == 3600, f"timeout={t}")
+    # I3 非法类型拒启动
+    cfgp = d / "cfg_i3.json"
+    bad = mk_cfg(None)
+    bad["job_timeouts"] = ["dm_coder", 14400]
+    cfgp.write_text(json.dumps(bad, ensure_ascii=False), encoding="utf-8")
+    try:
+        sup_mod.load_config(cfgp)
+        check("I3 job_timeouts 非法类型 → 拒启动", False, "未抛 SystemExit")
+    except SystemExit as e:
+        check("I3 job_timeouts 非法类型 → 拒启动",
+              "job_timeouts" in str(e), f"exit={e}")
+
+
 def main():
     root = Path(tempfile.mkdtemp(prefix="sup_selftest_"))
     print(f"自验工作目录: {root}")
@@ -855,6 +922,7 @@ def main():
         scenario_F(root)
         scenario_G(root)
         scenario_H(root)
+        scenario_I(root)
     finally:
         print(f"（保留现场供核查：{root}；确认后可 rm -rf）")
     print("=== 汇总 ===")
