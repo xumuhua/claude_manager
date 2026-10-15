@@ -44,6 +44,7 @@ description: 【专用·aitech】技术线每日 09:00 扫描分诊工序——�
 ## 四、落仓衔接（AI-STORE1 新规，哥哥 9/19 令）
 
 - L2 卡**发群照发，不再单卡落仓**；当日收尾把卡片**全文**合并追加到 `ai_research/daily/YYYY-MM-DD_L2汇总.md`（tech 分节，corp/chip 分节位留好）。
+- **成品件风格硬规则（哥哥 10/15 令，yifei seq 3447，10/16 起生效）**：daily/weekly 成品件按「只报结果不报过程」三段式——发生了什么（一手事实+数据锚一句话）→为什么重要（结论直给）→盯什么（1 行结论）；全删会话编号/commit 哈希/回执 seq/占位-兑现/建账工序/「零冲突零撞车」类自证；哨位只写「盯什么+为什么+触发条件」；降级缺口一句话带过结论不写工序。工作帧（回执/收口）与 topics/tracking 照旧不动；风格边界判例分歧归 aichip 坐庄裁。
 - L3 深读卡/L4 专题件不受限，照常单独落仓（`tech/deep/` 或 `tech/YYYY/MM/`）。
 - topics.md（八条主题线）前沿更新+流水记档随扫描同 commit；commit 前缀 `tech:`，push 前 `git pull --rebase`（三专家共仓，撞车 rebase 解决）。
 - 群发帧纪律：bus 七字段齐全、无 ts、reply_to int 或 null、msg_id 完整 UUID；429 熔断 → sleep ≥300s 重发，不密集重试。
