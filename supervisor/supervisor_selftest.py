@@ -910,6 +910,127 @@ def scenario_I(root: Path):
               "job_timeouts" in str(e), f"exit={e}")
 
 
+def scenario_J(root: Path):
+    """SUPERVISOR-5 任务认领锁+滞后帧防重放（哥哥 10/20 催单，亦菲 seq 3837）。
+    E2E：J1 同帧二次投递只点火一次；J2 新鲜帧正常点火（锁不误伤）。
+    白盒：J3 重启幂等（已认领帧重启后不点火）；J4 TTL 过期可重新认领；
+    J5 滞后帧 stale 跳过（补拉路径旧帧不点火，新帧放行）；
+    J6 enabled=false 旁路回退旧行为。"""
+    print("=== 场景J：SUPERVISOR-5 认领锁+滞后帧防重放 ===")
+    d = root / "J"; d.mkdir(parents=True)
+    fake = write_mock_claude(d)
+    fake_log = d / "fake_calls.jsonl"
+    expert_dir = d / "expert"
+
+    # ---- E2E：同帧 seq=51 投递两次（delay 0.5/3.0）+ 新帧 seq=52 一次 ----
+    job = {"seq": 51, "ts": "2026-10-22T00:00:51Z", "from": "yifei",
+           "conversation_id": "grp_mp", "type": "text",
+           "body": "【派单】@coder 认领锁测试 __TRIG1__", "mentions": ["coder"]}
+    job2 = {"seq": 52, "ts": "2026-10-22T00:00:52Z", "from": "yifei",
+            "conversation_id": "grp_mp", "type": "text",
+            "body": "【派单】@coder 认领锁测试2 __TRIG1__", "mentions": ["coder"]}
+    msgs = [{"delay": 1.5, "msg": job},
+            {"delay": 2.5, "msg": job},      # 同帧二次投递（重放）
+            {"delay": 1.0, "msg": job2}]     # 相邻新帧
+    spec = d / "msgs.json"; spec.write_text(json.dumps(msgs), encoding="utf-8")
+
+    rt = time.strftime("%H:%M", time.localtime(time.time() + 3600))  # 复盘不点火
+    cfg = make_config(d, fake, rt, max_conc=3, expert_dir=expert_dir)
+    hub = subprocess.Popen([PY, str(BASE / "mock_hub.py"), str(HUB_PORT), str(spec)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(0.8)
+    sup = start_supervisor(cfg, fake_log)
+    try:
+        # 等 2 次点火（job×1 + job2×1）；若防重失效会是 3 次，给足窗口后判
+        calls = wait_calls(fake_log, 2, timeout=30)
+        time.sleep(6)  # 覆盖二次投递时刻，观察是否多点第 3 把火
+        calls = read_calls(fake_log)
+        std_log = (d / "supervisor_stdout.log").read_text(encoding="utf-8")
+    finally:
+        sup.terminate(); hub.terminate()
+        for p, name_ in ((sup, "supervisor"), (hub, "mock_hub")):
+            try:
+                p.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                p.kill(); p.wait(timeout=5)
+
+    kinds = [c["kind"] for c in calls]
+    check("J1 同帧 seq=51 二次投递只点火一次（共 2 把火：51+52 各一）",
+          kinds.count("job") == 2,
+          f"calls={len(calls)} kinds={kinds}（防重失效=3 把火）")
+    check("J2 新鲜帧 seq=52 正常点火不被锁误伤",
+          len(calls) == 2 and calls[-1]["kind"] == "job",
+          f"calls={len(calls)}")
+    check("J1b 重放跳过有 [claim] 日志留痕",
+          "[claim]" in std_log and "seq51 已认领" in std_log,
+          f"claim 日志={'有' if '[claim]' in std_log else '无'}")
+    lock_file = expert_dir / "claimed_frames.jsonl"
+    check("J2b 锁落盘 claimed_frames.jsonl 两条（51+52）",
+          lock_file.exists() and len(lock_file.read_text(
+              encoding="utf-8").strip().splitlines()) == 2,
+          f"exists={lock_file.exists()}")
+
+    # ---- 白盒：J3 重启幂等 / J4 TTL 过期 / J5 stale / J6 旁路 ----
+    sys.path.insert(0, str(BASE))
+    import supervisor as sup_mod
+    os.environ["SUP_SELFTEST_TOKEN"] = TOKEN
+
+    # J3：拿 E2E 落下的锁文件重启 Supervisor，同帧再来一次不点火
+    cfg2 = sup_mod.load_config(cfg)
+    sup2 = sup_mod.Supervisor(cfg2)
+    m51 = dict(job)
+    check("J3 重启后已认领帧不点火（锁幂等重放）",
+          sup2._claim_frame(m51) is False,
+          "（复用 J1 的 expert_dir 锁文件）")
+
+    # J4：TTL 过期后锁失效可重新认领
+    cs = sup_mod.ClaimStore(expert_dir / "claimed_frames.jsonl", ttl_s=0.05)
+    time.sleep(0.08)
+    check("J4 TTL 过期后锁失效，可重新认领",
+          cs.is_claimed("grp_mp", 51) is False and cs.claim("grp_mp", 51) is True)
+
+    # J5：滞后帧 stale 闸——补拉路径（_catchup_from>0）旧帧跳过、新帧放行
+    d5 = root / "J5"; d5.mkdir(parents=True)
+    ed5 = d5 / "expert"; ed5.mkdir(parents=True, exist_ok=True)
+    cfg5 = make_config(d5, fake, rt, max_conc=3, expert_dir=ed5,
+                       extra={"claim_lock": {"stale_after_s": 1800}})
+    cfg5 = sup_mod.load_config(cfg5)
+    sup5 = sup_mod.Supervisor(cfg5)
+    sup5._catchup_from = 500  # 补拉路径形态（seq≤500 视为历史帧）
+    old_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                           time.gmtime(time.time() - 7200))  # 2h 前
+    old_msg = {"seq": 61, "ts": old_ts, "from": "yifei",
+               "conversation_id": "grp_mp", "type": "text",
+               "body": "【派单】@coder 旧任务", "mentions": ["coder"]}
+    new_msg = {"seq": 601, "ts": old_ts, "from": "yifei",
+               "conversation_id": "grp_mp", "type": "text",
+               "body": "【派单】@coder 补拉窗内新帧", "mentions": ["coder"]}
+    fresh_old_seq = {"seq": 62, "ts": time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "from": "yifei",
+        "conversation_id": "grp_mp", "type": "text",
+        "body": "【派单】@coder 历史位置但新鲜帧", "mentions": ["coder"]}
+    check("J5a 滞后帧（2h 前旧派单）stale 跳过不点火",
+          sup5._claim_frame(old_msg) is False)
+    check("J5b 补拉窗内新帧（seq>水位）放行不受 stale 闸",
+          sup5._claim_frame(new_msg) is True)
+    check("J5c 历史位置但时间戳新鲜（网络延迟送达）放行",
+          sup5._claim_frame(fresh_old_seq) is True)
+
+    # J6：claim_lock.enabled=false 旁路——同帧反复投递全放行（回退旧行为）
+    d6 = root / "J6"; d6.mkdir(parents=True)
+    ed6 = d6 / "expert"; ed6.mkdir(parents=True, exist_ok=True)
+    cfg6 = make_config(d6, fake, rt, max_conc=3, expert_dir=ed6,
+                       extra={"claim_lock": {"enabled": False}})
+    cfg6 = sup_mod.load_config(cfg6)
+    sup6 = sup_mod.Supervisor(cfg6)
+    m6 = {"seq": 71, "ts": old_ts, "from": "yifei",
+          "conversation_id": "grp_mp", "type": "text",
+          "body": "【派单】@coder 旁路测试", "mentions": ["coder"]}
+    r = [sup6._claim_frame(m6) for _ in range(3)]
+    check("J6 enabled=false 旁路：不锁不拦，同帧三连投递全放行（回退口径）",
+          r == [True, True, True], f"r={r}（sup6.claims 应为 None）")
+
+
 def main():
     root = Path(tempfile.mkdtemp(prefix="sup_selftest_"))
     print(f"自验工作目录: {root}")
@@ -923,6 +1044,7 @@ def main():
         scenario_G(root)
         scenario_H(root)
         scenario_I(root)
+        scenario_J(root)
     finally:
         print(f"（保留现场供核查：{root}；确认后可 rm -rf）")
     print("=== 汇总 ===")
@@ -934,4 +1056,5 @@ def main():
     sys.exit(1 if failed else 0)
 
 
-main()
+if __name__ == "__main__":
+    main()

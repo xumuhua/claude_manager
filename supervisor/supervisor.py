@@ -37,6 +37,20 @@ SUPERVISOR-4（哥哥 9/17 拍板，防 claude 协议指纹封号）：
 退出码 0 但 outfile 空视为失败（⚠️ 档回执）。超时/重试/回执/归档/[TASK_DONE]
 判定逻辑引擎无关，不动。
 
+SUPERVISOR-5（哥哥 2026-10-20 催单「锁尽快补，不然亏大发了」，亦菲 seq 3837）：
+任务认领锁+滞后帧防重放。烧钱实证：同一触发帧被派生成多个 claude 会话各自
+点火（aivideo 双会话重复出图/quant 三会话接力撞车），且补拉窗口滞后时旧帧
+再次触发新会话。三层修法：
+①ClaimStore 帧级认领锁——_should_trigger 通过后、gate.submit 前原子认领
+  （(conversation_id, seq) 键），已认领帧二次投递/重启重放只点火一次；
+  锁落盘 expert_dir/claimed_frames.jsonl（追加式+启动全量重放，幂等重启）。
+②滞后帧 stale 闸——补拉/重启路径的历史帧先过「已处理最大 seq」防线，未认领
+  且消息时间戳超过 stale_after_s（默认 1800s）的旧帧标记 stale 跳过不点火
+  （新帧永不受影响；时间戳缺失按新鲜处理，宁误点不误杀派单）。
+③锁 TTL 24h 过期清理——会话完成回执后锁保留（防重复触发），过期自动失效
+  允许重新认领（文件不再无限膨胀）。config claim_lock.enabled=false 一键回退
+  旧行为（不锁不拦，仅留日志）。
+
 落盘六件套（expert_dir/）：
   identity.md / state.yaml / history/YYYY-MM-DD.md / knowledge.md /
   dir_map.yaml / 冷存储 archive_dir
@@ -121,6 +135,18 @@ def utcnow() -> str:
 
 def localnow() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _parse_iso_ts(ts: str) -> datetime:
+    """SUPERVISOR-5：hub 帧 ts（ISO8601，Z 或带偏移）解析为本地 naive datetime。
+    抛异常由调用方兜底。"""
+    t = ts.strip()
+    if t.endswith("Z"):
+        t = t[:-1] + "+00:00"
+    dt = datetime.fromisoformat(t)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)  # 无时区按 UTC（hub 口径）
+    return dt.astimezone().replace(tzinfo=None)  # 本地时区 naive，与 datetime.now() 可比
 
 
 # ---------- 配置 ----------
@@ -254,6 +280,14 @@ def load_config(path: Path) -> dict:
                            "--output-last-message", "{outfile}", "-"])
     cx.setdefault("timeout", 3600)
     cx.setdefault("workdir", "~")
+
+    # SUPERVISOR-5 任务认领锁+滞后帧防重放（哥哥 10/20 催单；enabled=false 回退）
+    ck = cfg.setdefault("claim_lock", {})
+    if not isinstance(ck, dict):
+        raise SystemExit("claim_lock 必须是对象")
+    ck.setdefault("enabled", True)
+    ck.setdefault("stale_after_s", 1800)   # 滞后帧时间闸：超过即 stale 跳过
+    ck.setdefault("ttl_s", 86400)          # 锁保留 24h 防重复触发，过期失效
     return cfg
 
 
@@ -293,6 +327,99 @@ class StateStore:
             "fired": self.fired,
         }, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, self.path)
+
+
+# ---------- SUPERVISOR-5 任务认领锁（claimed_frames.jsonl，幂等重启） ----------
+
+class ClaimStore:
+    """帧级认领锁：同一触发帧（conversation_id, seq）只点火一次。
+
+    - 原子性：单事件循环内 claim 先查后写内存、再追加落盘；asyncio 协程
+      不会在纯同步段内交错，补拉/WS 双路并发也不会双认领。
+    - 幂等重启：启动全量重放 jsonl 恢复已认领集合；append-first（先落盘再
+      返回认领成功）保证进程死在写入后、返回前也不丢锁。
+    - TTL：会话完成回执后锁保留防重复触发，超过 ttl_s 的旧锁在启动
+      重放时静默剔除（文件不再无限膨胀；不主动重写文件——只内存剔除，
+      文件轮换在下次 compaction 时机）。
+    - compaction：启动重放后若有效锁数 < 总行数一半，用有效行原地重写
+      （原子替换），防长期运行文件只增不减。
+    """
+
+    def __init__(self, path: Path, ttl_s: float = 86400.0):
+        self.path = path
+        self.ttl_s = float(ttl_s)
+        self._claimed: dict = {}   # "conv#seq" -> claim epoch
+        self._load_and_compact()
+
+    def _load_and_compact(self):
+        try:
+            lines = self.path.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
+            return
+        except Exception as e:
+            log.warning("claimed_frames 文件损坏，按空锁起步（锁不回放）: %s", e)
+            return
+        now = time.time()
+        valid_lines = []
+        for ln in lines:
+            ln = ln.strip()
+            if not ln:
+                continue
+            try:
+                rec = json.loads(ln)
+                key = str(rec["key"])
+                ts = float(rec["ts"])
+            except Exception:
+                continue  # 坏行跳过不炸启动（与六件套 jsonl 同口径）
+            if now - ts < self.ttl_s:
+                self._claimed[key] = ts
+                valid_lines.append(ln)
+        if valid_lines and len(valid_lines) < len([l for l in lines if l.strip()]):
+            self._rewrite(valid_lines)
+            log.info("claimed_frames 压缩：%d 行 → %d 有效行",
+                     len(lines), len(valid_lines))
+
+    def _rewrite(self, valid_lines: list):
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text("\n".join(valid_lines) + "\n", encoding="utf-8")
+            os.replace(tmp, self.path)
+        except Exception as e:
+            log.warning("claimed_frames 压缩写入失败（不影响内存锁）: %s", e)
+
+    def _key(self, conv: str, seq) -> str:
+        return f"{conv}#{seq}"
+
+    def is_claimed(self, conv: str, seq, now: float = None) -> bool:
+        ts = self._claimed.get(self._key(conv, seq))
+        if ts is None:
+            return False
+        if now is None:
+            now = time.time()
+        return (now - ts) < self.ttl_s  # 过期锁视同未认领（可重新认领）
+
+    def claim(self, conv: str, seq, jid_hint="") -> bool:
+        """认领成功返回 True；已被有效锁占住返回 False。append-first 落盘。"""
+        now = time.time()
+        if self.is_claimed(conv, seq, now):
+            return False
+        key = self._key(conv, seq)
+        self._claimed[key] = now
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps({"key": key, "conv": conv, "seq": seq,
+                                    "ts": now, "jid": jid_hint},
+                                   ensure_ascii=False) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+        except Exception as e:
+            log.error("claimed_frames 追加失败（内存锁仍生效）: %s", e)
+        return True
+
+    def size(self) -> int:
+        return len(self._claimed)
 
 
 # ---------- 落盘六件套 ----------
@@ -386,13 +513,18 @@ def run_killpg(cmd: list, timeout: float, cwd: Path,
     让 on_job_done 按「退出码非0」统一出 ❌ 档回执，任务不悬空。
     SUPERVISOR-4：stdin_text 非 None 时 prompt 经 stdin 喂（codex 口径 "-"），
     None 则走 DEVNULL（prompt 在 argv，stdin 关闭防卡读）。
+    MP-ENV-31（2026-10-08 #21 告警防复发，2026-10-22 SUPERVISOR-5 收编仓版）：
+    env 注入 CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1——kimi-han
+    第三方模型名未被 CLI 识别时未知窗口告警会顶掉会话；setdefault 可被外部覆盖。
     """
+    env = dict(os.environ)
+    env.setdefault("CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT", "1")
     proc = subprocess.Popen(
         cmd,
         stdin=(subprocess.PIPE if stdin_text is not None
                else subprocess.DEVNULL),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        start_new_session=True, cwd=str(cwd))
+        start_new_session=True, cwd=str(cwd), env=env)
     try:
         out, err = proc.communicate(input=stdin_text, timeout=timeout)
         return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
@@ -643,6 +775,11 @@ class Supervisor:
         self.ws = None
         self._stopping = False
         self._catchup_from = self.state.last_seq
+        # SUPERVISOR-5 帧级认领锁（幂等重启；enabled=false 时为 None=回退旧行为）
+        ck = cfg.get("claim_lock", {})
+        self.claims = (ClaimStore(cfg["_expert_dir"] / "claimed_frames.jsonl",
+                                  float(ck.get("ttl_s", 86400)))
+                       if ck.get("enabled", True) else None)
         self.launcher = Launcher(self)
         self.gate = Gate(cfg, self.launcher)
 
@@ -812,6 +949,45 @@ class Supervisor:
                 return False
         return True
 
+    # ---------- SUPERVISOR-5 认领锁+滞后帧闸 ----------
+
+    def _claim_frame(self, msg: dict) -> bool:
+        """_should_trigger 通过后的第二道闸：认领锁+滞后帧 stale 判定。
+
+        - 已认领帧（二次投递/重启重放）：跳过，留 [claim] 日志。
+        - 滞后帧（补拉/重启路径的旧消息）：超过 stale_after_s 不点火——
+          防旧派单在新会话里再次烧钱。实时 WS 帧与缺 ts 帧不判 stale
+          （ts 缺失按新鲜处理：宁误点不误杀真派单）。
+        - claim_lock.enabled=false：整体旁路（回退 SUPERVISOR-4 行为）。
+        """
+        ck = self.cfg.get("claim_lock", {})
+        if not ck.get("enabled", True):
+            return True
+        conv, seq = msg["conversation_id"], msg.get("seq")
+        if self.claims is None:
+            return True
+        if self.claims.is_claimed(conv, seq):
+            log.info("[claim] %s#seq%s 已认领，跳过（防重复点火）", conv, seq)
+            return False
+        # 滞后帧判定：补拉/重启路径（_catchup_from>0 说明非新端首接）的历史帧
+        # 比对消息时间戳；ts 缺失按新鲜（hub 帧皆有 ts，缺失=异常防御）。
+        ts = msg.get("ts")
+        if isinstance(self._catchup_from, int) and self._catchup_from > 0 \
+                and isinstance(seq, int) and seq <= self._catchup_from \
+                and ts:
+            try:
+                age = (datetime.now() - _parse_iso_ts(ts)).total_seconds()
+            except Exception:
+                age = -1  # 解析失败按新鲜
+            if age >= float(ck.get("stale_after_s", 1800)):
+                log.info("[claim] %s#seq%s 滞后帧（%ds 前）超过 stale 阈值，"
+                         "跳过点火", conv, seq, int(age))
+                return False
+        ok = self.claims.claim(conv, seq)
+        if not ok:
+            log.info("[claim] %s#seq%s 认领撞锁（并发双投递），跳过", conv, seq)
+        return ok
+
     async def handle_message(self, msg: dict):
         try:
             self._unfreeze_if_idle(msg)
@@ -823,7 +999,7 @@ class Supervisor:
             elif role is None and msg["from"] in self.cfg["human_names"]:
                 self._human_reset(msg)
             self.context[msg["conversation_id"]].append(msg)
-            if self._should_trigger(msg):
+            if self._should_trigger(msg) and self._claim_frame(msg):
                 conv = msg["conversation_id"]
                 ctx_snapshot = list(self.context[conv])
                 await self.gate.submit(
