@@ -51,6 +51,21 @@ SUPERVISOR-5（哥哥 2026-10-20 催单「锁尽快补，不然亏大发了」�
   允许重新认领（文件不再无限膨胀）。config claim_lock.enabled=false 一键回退
   旧行为（不锁不拦，仅留日志）。
 
+SUPERVISOR-6（哥哥 2026-10-26 拍板「先搞一下这个事情」，亦菲 seq 4168）：
+请示检测器。无头 `claude -p` 没有 AskUserQuestion 工具——「会话问了个问题然后
+退出」与「真干完」在 supervisor 视角都是 exit 0 完成帧，静默烂尾无告警。
+收场判定增补一层：rc==0 时扫输出尾部窗口（默认 2000 字符），
+①有 [TASK_DONE] 但尾部带请示关键词（等审/请拍板/待确认…白名单）→ 回执照发，
+  额外发一帧 🔔 提醒到 escalation.conv（默认 dm_<agent_name>=亦菲私聊信道），
+  含任务号/触发群/尾部摘录 200 字；
+②无 [TASK_DONE] 且尾部以问句（最后非空行 ？/? 收尾）或请示关键词收尾 →
+  🚨 强提醒「疑似问完就死型烂尾」（本单主犯）。
+误报控制：只扫尾部窗口+关键词白名单制，问句只看最后非空行（正文中段反问不
+误伤），拿不准宁可漏报（提醒帧噪音比烂尾便宜）。rc!=0 不判（❌ 档已有告警）。
+提醒帧 from=自己+mentions 空，_should_trigger 自过滤，不会自触发/触发他家。
+config escalation.enabled=false 一键回退。版本号 SUPERVISOR_VERSION 随
+SUPERVISOR-N 里程碑递增（本单起引入，起点 6）。
+
 落盘六件套（expert_dir/）：
   identity.md / state.yaml / history/YYYY-MM-DD.md / knowledge.md /
   dir_map.yaml / 冷存储 archive_dir
@@ -84,6 +99,8 @@ except ImportError:  # 旧版 websockets
 
 log = logging.getLogger("supervisor")
 
+SUPERVISOR_VERSION = "6"                 # SUPERVISOR-6 引入：随 SUPERVISOR-N 里程碑递增
+
 BACKOFF_STEPS = [0, 5, 10, 30, 60]       # R6.3 重连退避：封顶 60s，无限重试
 STOP_BODY = "STOP"                        # F1 §2.3
 ROUND_LIMIT_BODY = "ROUND_LIMIT_REACHED"  # F1 R4.5
@@ -101,6 +118,52 @@ FTR_ECHO_RE = re.compile(r"^\[echo:[^\[\]]*\]")            # bus client 自动�
 FTR_RECEIPT_RE = re.compile(r"^(?:✅|⚠️|❌)[ \t]*#\d+")    # on_job_done 三档兜底回执
 FTR_SCHED_RE = re.compile(r"^\[[^\[\]]*\][ \t]*(?:✅|⚠️|❌)")  # schedules 的 [label] ✅ 回执
 FTR_REVIEW_RE = re.compile(r"^【(?:每日)?复盘")              # 复盘摘要
+
+# SUPERVISOR-6 请示检测（哥哥 10/26 拍板，亦菲 seq 4168）：尾部窗口+关键词
+# 白名单制，拿不准宁可漏报（提醒帧噪音比烂尾便宜）。关键词=明确「在等人裁决」
+# 语义的短语，宁缺毋滥；单字「等」「确认」类宽泛词一律不收。
+ESC_TAIL_CHARS = 2000        # 输出尾部扫描窗口（字符）
+ESC_EXCERPT_CHARS = 200      # 提醒帧尾部摘录预算（字符）
+ESC_KEYWORDS = (
+    "等审", "等哥哥", "请拍板", "等拍板", "待拍板",
+    "请裁决", "等裁决", "待裁决", "请指示", "等示下",
+    "等你示下", "候示下", "待确认", "求决策", "请定夺",
+)
+
+
+def detect_escalation(stdout: str, has_task_done: bool,
+                      tail_chars: int = ESC_TAIL_CHARS,
+                      keywords=None):
+    """SUPERVISOR-6 请示检测三态判定（纯函数，白盒可测）。
+
+    返回 (kind, reason, tail) 或 None：
+    - kind="await"：有 [TASK_DONE] 但尾部窗口带请示关键词 → 回执照发+🔔 提醒帧
+    - kind="question"：无 [TASK_DONE] 且尾部以问句/请示收尾 → 🚨 强提醒
+      「疑似问完就死型烂尾」（无头 claude -p 没有 AskUserQuestion，问完即退
+      与真干完在 exit 0 视角无法区分——本检测就是补这个洞）
+    - None：不提醒（真完成/拿不准）
+
+    误报控制（宁漏勿误）：只扫尾部 tail_chars 窗口；关键词白名单制；问句判据
+    =最后一个非空行以 ？/? 收尾（正文中段反问句不误伤）。reason=人读命中原因。
+    """
+    kws = tuple(keywords) if keywords else ESC_KEYWORDS
+    text = (stdout or "").strip()
+    if not text:
+        return None
+    tail = text[-max(200, int(tail_chars)):]
+    hits = [k for k in kws if k in tail]
+    if has_task_done:
+        return ("await", "、".join(hits), tail) if hits else None
+    if hits:
+        return ("question", "请示关键词：" + "、".join(hits), tail)
+    for line in reversed(tail.splitlines()):
+        s = line.strip()
+        if not s:
+            continue
+        if s.endswith("？") or s.endswith("?"):
+            return ("question", "问句收尾（最后非空行 ？ 结尾）", tail)
+        break  # 只看最后非空行；更早行的问句=正文反问，不判
+    return None
 
 
 def _parse_weekdays(spec: str) -> "set[int] | None":
@@ -288,6 +351,20 @@ def load_config(path: Path) -> dict:
     ck.setdefault("enabled", True)
     ck.setdefault("stale_after_s", 1800)   # 滞后帧时间闸：超过即 stale 跳过
     ck.setdefault("ttl_s", 86400)          # 锁保留 24h 防重复触发，过期失效
+
+    # SUPERVISOR-6 请示检测（enabled=false 一键回退；conv 空=dm_<agent_name>）
+    esc = cfg.setdefault("escalation", {})
+    if not isinstance(esc, dict):
+        raise SystemExit("escalation 必须是对象")
+    esc.setdefault("enabled", True)
+    esc.setdefault("conv", "")             # 提醒帧去向，默认 dm_<agent_name>
+    esc.setdefault("tail_chars", ESC_TAIL_CHARS)
+    esc.setdefault("excerpt_chars", ESC_EXCERPT_CHARS)
+    kw = esc.get("keywords")
+    if kw is not None and (not isinstance(kw, list)
+                           or not all(isinstance(k, str) and k.strip()
+                                      for k in kw)):
+        raise SystemExit("escalation.keywords 必须是非空字符串数组")
     return cfg
 
 
@@ -715,6 +792,11 @@ class Launcher:
     ⚠️ #N 完成但未自报产出（0 无标记）：耗时xs，请人工看一眼
     ❌ #N 异常（非0/超时）：退出码X stderr 摘要
     复盘不发回执（复盘摘要由 claude 自己经 channels 发，属双保险上半）。
+
+    SUPERVISOR-6 第三层·请示检测（rc==0 才判）：回执照发之后扫输出尾部窗口，
+    有标记+请示关键词 → 🔔 提醒帧；无标记+问句/请示收尾 → 🚨 强提醒
+    「疑似问完就死型烂尾」。去向 escalation.conv（默认 dm_<agent_name>），
+    见 _escalation_alert / detect_escalation。
     """
 
     def __init__(self, sup: "Supervisor"):
@@ -757,13 +839,57 @@ class Launcher:
             except Exception:
                 log.exception("#%d 定时任务回执发送失败（conv=%s），仅留日志：%s",
                               jid, conv, body[:120])
+        else:
+            try:
+                # SUPERVISOR-3 修法②：兜底回执是知会消息，mentions 一律清空
+                await self.sup.send_group_message(conv, body, [])
+            except Exception:
+                log.exception("#%d 兜底回执发送失败（conv=%s），仅留日志：%s",
+                              jid, conv, body[:120])
+        # SUPERVISOR-6 请示检测：回执照发之后追判（仅 rc==0——❌ 档已有告警
+        # 不重复；复盘 kind 在函数开头已 return 不判）。失败只留日志不影响回执。
+        if rc == 0:
+            await self._escalation_alert(job, proc, bool(m), dur)
+
+    async def _escalation_alert(self, job: dict,
+                                proc: "subprocess.CompletedProcess",
+                                has_done: bool, dur: int):
+        """SUPERVISOR-6 请示检测提醒帧：await → 🔔 等裁决提醒；question →
+        🚨 疑似问完就死型烂尾强提醒。去向 escalation.conv（默认
+        dm_<agent_name>=亦菲私聊信道），mentions 空（知会纪律）；from=自己，
+        _should_trigger 自过滤不成点火源。enabled=false 整体旁路。"""
+        ec = self.sup.cfg.get("escalation", {})
+        if not ec.get("enabled", True):
             return
+        verdict = detect_escalation(
+            proc.stdout or "", has_done,
+            int(ec.get("tail_chars", ESC_TAIL_CHARS)),
+            keywords=ec.get("keywords"))
+        if verdict is None:
+            return
+        kind, reason, tail = verdict
+        jid = job["id"]
+        conv = job["meta"].get("conv", "?")
+        excerpt = tail[-int(ec.get("excerpt_chars", ESC_EXCERPT_CHARS)):]
+        if kind == "await":
+            body = (f"🔔 [请示提醒] #{jid} 任务在等哥哥裁决（触发群 {conv}，"
+                    f"耗时{dur}s）：已自报 [TASK_DONE] 但输出尾部带请示关键词"
+                    f"（{reason}）——完成回执已照发，裁决请求别沉没。\n"
+                    f"尾部摘录：\n{excerpt}")
+        else:
+            body = (f"🚨 [请示强提醒] #{jid} 疑似「问完就死」型烂尾（触发群 "
+                    f"{conv}，耗时{dur}s）：退出码0但无 [TASK_DONE] 自报，且"
+                    f"输出尾部以问句/请示收尾（{reason}）。请人工介入。\n"
+                    f"尾部摘录：\n{excerpt}")
+        body = cap_chars(body, RECEIPT_BODY_CAP, f"#{jid} 请示提醒 ")
+        target = ec.get("conv") or f"dm_{self.sup.cfg['agent_name']}"
         try:
-            # SUPERVISOR-3 修法②：兜底回执是知会消息，mentions 一律清空
-            await self.sup.send_group_message(conv, body, [])
+            await self.sup.send_group_message(target, body, [])
+            log.info("[escalation] #%d %s 档提醒已发 %s（%s）",
+                     jid, kind, target, reason)
         except Exception:
-            log.exception("#%d 兜底回执发送失败（conv=%s），仅留日志：%s",
-                          jid, conv, body[:120])
+            log.exception("[escalation] #%d 提醒帧发送失败（conv=%s），仅留日志",
+                          jid, target)
 
 
 class Supervisor:
@@ -1285,8 +1411,9 @@ def main():
             loop.add_signal_handler(sig, sup.stop)
         except (NotImplementedError, RuntimeError):
             pass  # Windows 无 add_signal_handler
-    log.info("supervisor 启动：expert=%s pid=%d 并发闸≤%d 复盘时点=%s "
+    log.info("supervisor 启动：v%s expert=%s pid=%d 并发闸≤%d 复盘时点=%s "
              "触发过滤=%s engine=%s 落盘=%s 冷存储=%s",
+             SUPERVISOR_VERSION,
              cfg["agent_name"], os.getpid(), cfg["concurrency"]["max"],
              cfg["review_time"], "开" if cfg.get("trigger_filter", True) else "关",
              cfg.get("responder", {}).get("engine", "claude"),

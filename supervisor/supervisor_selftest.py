@@ -18,9 +18,18 @@ SUPERVISOR-4 追加（场景 H）：
 - H3 全链路 engine=codex：mock codex stdin→outfile→✅回执含 [TASK_DONE] 产出
 - H4 codex 码0但 outfile 空 → ⚠️档回执；H5 点火日志带 engine=codex 标注
 
+SUPERVISOR-6 追加（场景 K）：
+- 请示检测器三态：K2 真完成不提醒 / K3 有标记+请示关键词 → 🔔 提醒帧 /
+  K4 无标记+问句收尾 → 🚨「疑似问完就死型烂尾」强提醒；K5 去向
+  dm_<agent_name>+mentions 空；K6 [escalation] 日志留痕
+- 白盒误报控制：K7 干净完成 / K8 窗口外关键词 / K9 中段反问不误伤 /
+  K10 关键词收尾无问号 / K11 英文问号 / K12 keywords 覆盖 / K13 enabled=false
+  旁路 / K14 conv 配置覆盖
+
 假 claude 落调用日志（kind/prompt 摘要/起止时刻），全部经日志断言，不依赖 ps 全表
 （本环境 ps 全表与 Popen 子进程不同步，见 busfix1 教训）。
 """
+import asyncio
 import json
 import os
 import re
@@ -89,6 +98,18 @@ case "$prompt" in *"seq 22"*) mark="" ;; esac
 case "$prompt" in
   *"__SCHED1__"*) mark="[TASK_DONE] 产出: 自验定时产出Y __SCHED1__" ;;
 esac
+# SUPERVISOR-6 请示检测三态用例：__ESC_CLEAN__=干净完成（不提醒）；
+# __ESC_AWAIT__=有标记+尾部请示关键词（🔔提醒）；__ESC_Q__=无标记+问句收尾（🚨强提醒）
+pre=""; q=""
+case "$prompt" in
+  *"__ESC_CLEAN__"*) mark="[TASK_DONE] 产出: 自验干净完成 __ESC_CLEAN__" ;;
+esac
+case "$prompt" in
+  *"__ESC_AWAIT__"*) pre="代码已交付，部署方案等哥哥拍板后执行。"; mark="[TASK_DONE] 产出: 自验等裁决 __ESC_AWAIT__" ;;
+esac
+case "$prompt" in
+  *"__ESC_Q__"*) q="两处实现口径拿不准：该按方案A还是方案B？" ;;
+esac
 rc=0
 case "$prompt" in *"__RC7__"*) rc=7 ;; esac
 python3 - "$FAKECLAUDE_LOG" "$kind" "$start" "$end" "$has_read_set" "$has_group_log" "$has_archive" "$has_steps" "$trig" "$bodies" <<'EOF'
@@ -103,7 +124,9 @@ if [ "$rc" != "0" ]; then
   echo "FAKECLAUDE-ERROR boom __RC7__" >&2
   exit "$rc"
 fi
+[ -n "$pre" ] && echo "$pre"
 [ -n "$mark" ] && echo "$mark"
+if [ -n "$q" ]; then echo "$q"; exit 0; fi
 echo "FAKECLAUDE-DONE kind=$kind"
 """, encoding="utf-8")
     p.chmod(0o755)
@@ -1031,6 +1054,162 @@ def scenario_J(root: Path):
           r == [True, True, True], f"r={r}（sup6.claims 应为 None）")
 
 
+def scenario_K(root: Path):
+    """SUPERVISOR-6 请示检测器（哥哥 10/26 拍板，亦菲 seq 4168）。
+    E2E 三态：K2 真完成不提醒 / K3 等审回执 🔔 提醒 / K4 问句结尾 🚨 强提醒；
+    提醒帧去向 dm_<agent_name>+mentions 空+含任务号/触发群/尾部摘录。
+    白盒误报控制：窗口外关键词不判/正文中段反问不误伤/无问号关键词收尾仍判/
+    keywords 配置覆盖/enabled=false 旁路。"""
+    print("=== 场景K：SUPERVISOR-6 请示检测器三态 ===")
+    d = root / "K"; d.mkdir(parents=True)
+    fake = write_mock_claude(d)
+    fake_log = d / "fake_calls.jsonl"
+    posts_log = d / "hub_posts.jsonl"
+    expert_dir = d / "expert"
+
+    # 三帧分投三个会话：job prompt 的「第二步」会嵌同会话上下文快照，若同群
+    # 连投，后面 job 的 prompt 会带上前面帧的 __ESC_*__ 标记，mock claude 按
+    # 子串匹配全部命中致三态互相污染（首轮实跑 K4 因此翻车）。分会话=上下文
+    # 隔离（context 按 conv 独立 deque），每把火只见到自己的标记。
+    msgs = [
+        {"delay": 1.5, "msg": {"seq": 81, "ts": "2026-10-26T00:00:81Z",
+         "from": "yifei", "conversation_id": "grp_mp", "type": "text",
+         "body": "任务K1 __ESC_CLEAN__", "mentions": ["coder"]}},
+        {"delay": 1.5, "msg": {"seq": 82, "ts": "2026-10-26T00:00:82Z",
+         "from": "yifei", "conversation_id": "dm_coder", "type": "text",
+         "body": "任务K2 __ESC_AWAIT__", "mentions": ["coder"]}},
+        {"delay": 1.5, "msg": {"seq": 83, "ts": "2026-10-26T00:00:83Z",
+         "from": "yifei", "conversation_id": "grp_experts", "type": "text",
+         "body": "任务K3 __ESC_Q__", "mentions": ["coder"]}},
+    ]
+    spec = d / "msgs.json"; spec.write_text(json.dumps(msgs), encoding="utf-8")
+
+    rt = time.strftime("%H:%M", time.localtime(time.time() + 3600))  # 复盘不点火
+    cfg = make_config(d, fake, rt, max_conc=3, expert_dir=expert_dir,
+                      extra={"trigger_groups": ["grp_mp", "dm_coder",
+                                                "grp_experts"]})
+    hub_env = dict(os.environ); hub_env["MOCK_HUB_POSTS"] = str(posts_log)
+    hub = subprocess.Popen([PY, str(BASE / "mock_hub.py"), str(HUB_PORT), str(spec)],
+                           env=hub_env,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(0.8)
+    sup = start_supervisor(cfg, fake_log)
+    try:
+        calls = wait_calls(fake_log, 3, timeout=40)
+        # 3 回执 + 2 提醒帧（K2 🔔 / K3 🚨）= 5 帖；给足发信窗
+        t0 = time.time()
+        posts = []
+        while time.time() - t0 < 20:
+            if posts_log.exists():
+                posts = [json.loads(l) for l in
+                         posts_log.read_text(encoding="utf-8").splitlines()
+                         if l.strip()]
+                if len(posts) >= 5:
+                    break
+            time.sleep(0.3)
+        time.sleep(2)  # 负向断言窗：#1 若会误发提醒此时应已落帖
+        if posts_log.exists():
+            posts = [json.loads(l) for l in
+                     posts_log.read_text(encoding="utf-8").splitlines()
+                     if l.strip()]
+        std_log = (d / "supervisor_stdout.log").read_text(encoding="utf-8")
+    finally:
+        sup.terminate(); hub.terminate()
+        for p in (sup, hub):
+            try:
+                p.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                p.kill(); p.wait(timeout=5)
+
+    check("K1 三个任务全部点火", len(calls) >= 3, f"calls={len(calls)}")
+    alerts = [p["msg"] for p in posts
+              if p["msg"]["body"].startswith(("🔔", "🚨"))]
+    receipts = [p["msg"] for p in posts
+                if p["msg"]["body"].startswith(("✅", "⚠️", "❌"))]
+    check("K2 真完成不提醒：#1 只有 ✅ 回执，无任何提醒帧",
+          len(receipts) == 3 and not any("#1 " in a["body"] for a in alerts),
+          f"receipts={len(receipts)} alerts={[a['body'][:30] for a in alerts]}")
+    aw = next((a for a in alerts if a["body"].startswith("🔔")), None)
+    check("K3 等审回执提醒：🔔 帧含任务号#2/触发群 dm_coder/尾部摘录关键词",
+          aw is not None and "#2" in aw["body"] and "dm_coder" in aw["body"]
+          and "等哥哥拍板" in aw["body"] and "等哥哥裁决" in aw["body"],
+          f"body={aw['body'][:120] if aw else None}")
+    q = next((a for a in alerts if a["body"].startswith("🚨")), None)
+    check("K4 问句结尾强提醒：🚨 帧含#3/触发群 grp_experts/『问完就死』/问句原文摘录",
+          q is not None and "#3" in q["body"] and "grp_experts" in q["body"]
+          and "问完就死" in q["body"] and "方案A还是方案B？" in q["body"],
+          f"body={q['body'][:120] if q else None}")
+    check("K5 提醒帧去向 dm_coder（dm_<agent_name> 默认）+mentions 空",
+          aw is not None and q is not None
+          and aw["conversation_id"] == "dm_coder"
+          and q["conversation_id"] == "dm_coder"
+          and aw["mentions"] == [] and q["mentions"] == [],
+          f"aw.conv={aw and aw['conversation_id']} q.conv={q and q['conversation_id']}")
+    check("K6 [escalation] 日志留痕两档",
+          "[escalation] #2 await" in std_log and "[escalation] #3 question" in std_log,
+          "（supervisor stdout 日志）")
+
+    # ---- 白盒：误报控制+配置口径 ----
+    sys.path.insert(0, str(BASE))
+    import supervisor as sup_mod
+    os.environ["SUP_SELFTEST_TOKEN"] = TOKEN
+    de = sup_mod.detect_escalation
+    check("K7 干净完成（有标记无关键词）→ 不提醒",
+          de("[TASK_DONE] 产出: 全部完成\n收场归档完毕。", True) is None)
+    far = "请拍板\n" + "x" * 2500 + "\n[TASK_DONE] 产出: 完成"
+    check("K8 关键词落在尾部窗口（2000 字符）之外 → 不提醒（窗口限制生效）",
+          de(far, True) is None)
+    check("K9 正文中段反问+陈述收尾（无标记）→ 不提醒（反问句不误伤）",
+          de("这样做对吗？\n已全部执行完成，测试全绿。", False) is None)
+    v10 = de("部署完毕，剩回滚窗口处置待确认", False)
+    check("K10 无标记+关键词收尾（无问号）→ question 档强提醒",
+          v10 is not None and v10[0] == "question" and "待确认" in v10[1],
+          f"verdict={v10 and v10[:2]}")
+    v11 = de("no TASK_DONE here. should I proceed?", False)
+    check("K11 无标记+英文问号收尾 → question 档",
+          v11 is not None and v11[0] == "question")
+    check("K12 keywords 配置覆盖：默认词不判/自定义词判",
+          de("方案已落地，请拍板。", True, keywords=["特殊暗号"]) is None
+          and de("方案已落地，特殊暗号确认。", True,
+                 keywords=["特殊暗号"]) is not None)
+
+    # K13/K14：Launcher._escalation_alert 旁路与默认去向（假 sup 记录发信）
+    class _FakeSup:
+        def __init__(self, cfg):
+            self.cfg = cfg
+            self.sent = []
+
+        async def send_group_message(self, conv, body, mentions):
+            self.sent.append((conv, body, mentions))
+            return {"msg": {"seq": 1}}
+
+    d13 = root / "K13"; d13.mkdir(parents=True)
+    ed13 = d13 / "expert"; ed13.mkdir(parents=True, exist_ok=True)
+    cfg13p = make_config(d13, fake, rt, max_conc=3, expert_dir=ed13,
+                         extra={"escalation": {"enabled": False}})
+    cfg13 = sup_mod.load_config(cfg13p)
+    lan13 = sup_mod.Launcher(_FakeSup(cfg13))
+    job13 = {"id": 7, "kind": "job", "meta": {"conv": "grp_mp"}}
+    proc_q = subprocess.CompletedProcess([], 0, "该按哪个方案执行？", "")
+    asyncio.run(lan13._escalation_alert(job13, proc_q, False, 5))
+    check("K13 escalation.enabled=false 旁路：问句烂尾也不发提醒（一键回退）",
+          lan13.sup.sent == [], f"sent={lan13.sup.sent}")
+
+    d14 = root / "K14"; d14.mkdir(parents=True)
+    ed14 = d14 / "expert"; ed14.mkdir(parents=True, exist_ok=True)
+    cfg14p = make_config(d14, fake, rt, max_conc=3, expert_dir=ed14,
+                         extra={"escalation": {"conv": "dm_yifei"}})
+    cfg14 = sup_mod.load_config(cfg14p)
+    lan14 = sup_mod.Launcher(_FakeSup(cfg14))
+    asyncio.run(lan14._escalation_alert(job13, proc_q, False, 5))
+    check("K14 conv 配置覆盖生效（escalation.conv=dm_yifei）+🚨 档正文要素齐",
+          len(lan14.sup.sent) == 1
+          and lan14.sup.sent[0][0] == "dm_yifei"
+          and lan14.sup.sent[0][1].startswith("🚨")
+          and lan14.sup.sent[0][2] == [],
+          f"sent={[(c, b[:40]) for c, b, _ in lan14.sup.sent]}")
+
+
 def main():
     root = Path(tempfile.mkdtemp(prefix="sup_selftest_"))
     print(f"自验工作目录: {root}")
@@ -1045,6 +1224,7 @@ def main():
         scenario_H(root)
         scenario_I(root)
         scenario_J(root)
+        scenario_K(root)
     finally:
         print(f"（保留现场供核查：{root}；确认后可 rm -rf）")
     print("=== 汇总 ===")

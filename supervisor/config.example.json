@@ -52,6 +52,12 @@
     "timeout": 3600,
     "workdir": "~"
   },
+  "escalation": {
+    "enabled": true,
+    "conv": "",
+    "tail_chars": 2000,
+    "excerpt_chars": 200
+  },
   "heartbeat_interval": 30,
   "session_idle_timeout": 600,
   "stop_cooldown": 60,
